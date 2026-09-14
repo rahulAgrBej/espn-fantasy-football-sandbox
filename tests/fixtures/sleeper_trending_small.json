@@ -1,0 +1,10 @@
+{
+  "add": [
+    {"player_id": "1001", "count": 45000},
+    {"player_id": "1002", "count": 12000},
+    {"player_id": "1006", "count": 500}
+  ],
+  "drop": [
+    {"player_id": "1005", "count": 8000}
+  ]
+}

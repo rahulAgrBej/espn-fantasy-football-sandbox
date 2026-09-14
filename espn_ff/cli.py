@@ -4,12 +4,18 @@ import argparse
 import sys
 from datetime import date
 
+import pandas as pd
+
 from . import config, constants, stats
 from .client import EspnClient, EspnError
 from .extract import draft, matchups, players, rosters, settings, teams
 from .extract._common import team_name
 from .cache import ttl_for
 from .extract import transactions as txn
+from .sleeper import ids as sleeper_ids
+from .sleeper import signals as sleeper_signals
+from .sleeper import snapshots as sleeper_snapshots
+from .sleeper.client import SleeperClient
 
 
 def _out_path(name):
@@ -165,7 +171,117 @@ def cmd_export(client, args):
     return 0
 
 
-COMMANDS = {"probe": cmd_probe, "team": cmd_team, "pull": cmd_pull, "export": cmd_export}
+def _read_id_map():
+    if config.SLEEPER_ID_MAP.exists():
+        return pd.read_csv(config.SLEEPER_ID_MAP)
+    return pd.DataFrame(columns=sleeper_ids.MAP_COLUMNS)
+
+
+def _write_id_map(map_df):
+    config.SLEEPER_DIR.mkdir(parents=True, exist_ok=True)
+    map_df.to_csv(config.SLEEPER_ID_MAP, index=False)
+
+
+def cmd_sleeper(client, args):
+    """Daily batch job: fetch + slim the Sleeper player pool, trending,
+    prune old snapshots, and resolve ids against ESPN. No terminal
+    rendering -- run `status` afterward to build the CSV."""
+    s_client = SleeperClient()
+
+    df, from_cache = sleeper_snapshots.fetch_players(client=s_client, refresh=args.refresh)
+    print(f"Sleeper players: {len(df)} active rows{' (cached, already ran today)' if from_cache else ''}")
+
+    adds = sleeper_snapshots.fetch_trending("add", client=s_client, limit=args.trending_limit)
+    drops = sleeper_snapshots.fetch_trending("drop", client=s_client, limit=args.trending_limit)
+    sleeper_snapshots.write_trending(adds, drops)
+    print(f"Trending: {len(adds)} adds, {len(drops)} drops")
+
+    espn_players = players.players_frame(client.get_player_pool(), season=client.season)
+    map_df, unmatched = sleeper_ids.resolve(df, espn_players, existing_map=_read_id_map())
+    _write_id_map(map_df)
+    if unmatched:
+        print(f"  {len(unmatched)} Sleeper player(s) unmatched to ESPN (logged, not dropped): {unmatched[:10]}")
+
+    current = client.current_scoring_period()
+    roster_payload = client.get_league(
+        ["mRoster", "mTeam"], scoring_period=current, ttl=ttl_for(current, current)
+    )
+    roster_df = rosters.rosters_frame(roster_payload, season=client.season, week=current)
+    team_espn_ids = set(roster_df.loc[roster_df["team_id"] == args.team_id, "player_id"])
+    missing = sleeper_ids.missing_from_roster(map_df, team_espn_ids)
+    if missing:
+        raise EspnError(
+            f"{len(missing)} player(s) on team {args.team_id}'s roster have no Sleeper match: "
+            f"{missing}. Fix these in {config.SLEEPER_ID_MAP} before trusting the status table."
+        )
+
+    print("Done.")
+    return 0
+
+
+def cmd_status(client, args):
+    """Build the derived signal table from existing Sleeper snapshots and
+    write it to data/out/. No network."""
+    today = date.today()
+    latest = sleeper_snapshots.read_slim(today)
+    if latest is None or latest.empty:
+        print("No Sleeper snapshot for today yet -- run `sleeper` first.", file=sys.stderr)
+        return 1
+
+    id_map = _read_id_map()
+    trending_csv = sleeper_snapshots.trending_path(today)
+    trending_df = (
+        pd.read_csv(trending_csv)
+        if trending_csv.exists()
+        else pd.DataFrame(columns=["player_id", "count", "kind"])
+    )
+
+    snapshot_dates = sleeper_snapshots.list_slim_dates()
+    snapshots_by_date = {d: sleeper_snapshots.read_slim(d) for d in snapshot_dates}
+
+    rows = []
+    for _, row in latest.iterrows():
+        sleeper_id = row["sleeper_id"]
+        tier = sleeper_signals.availability_tier(row.get("injury_status"), row.get("practice_participation"))
+        trajectory = sleeper_signals.practice_trajectory(snapshots_by_date, sleeper_id, today=today)
+        delta = sleeper_signals.depth_chart_delta(
+            row, snapshots_by_date, sleeper_id, lookback_days=args.depth_lookback, today=today
+        )
+        trending_flag, trending_count = sleeper_signals.trending_flag(
+            trending_df, sleeper_id, kind="add", limit=args.trending_limit, floor=args.trending_floor or 0
+        )
+        espn_match = id_map.loc[id_map["sleeper_id"] == sleeper_id, "espn_player_id"]
+        rows.append(
+            {
+                "sleeper_id": sleeper_id,
+                "espn_player_id": espn_match.iloc[0] if not espn_match.empty else None,
+                "full_name": row.get("full_name"),
+                "team": row.get("team"),
+                "position": row.get("position"),
+                "injury_status": row.get("injury_status"),
+                "practice_participation": row.get("practice_participation"),
+                "tier": tier,
+                "practice_trajectory": sleeper_signals.format_trajectory(trajectory),
+                "depth_chart_order": row.get("depth_chart_order"),
+                "depth_chart_improved": delta["improved"] if delta else None,
+                "depth_chart_promoted": delta["promoted"] if delta else None,
+                "depth_chart_days_used": delta["days_used"] if delta else None,
+                "trending_add": trending_flag,
+                "trending_add_count": trending_count,
+            }
+        )
+    _write(pd.DataFrame(rows), "sleeper-status")
+    return 0
+
+
+COMMANDS = {
+    "probe": cmd_probe,
+    "team": cmd_team,
+    "pull": cmd_pull,
+    "export": cmd_export,
+    "sleeper": cmd_sleeper,
+    "status": cmd_status,
+}
 
 
 def main(argv=None):
@@ -177,6 +293,18 @@ def main(argv=None):
     ap.add_argument("--week", type=int, help="scoring period; defaults to current")
     ap.add_argument("--weeks", help="range like 1-18 or list like 1,2,5")
     ap.add_argument("--refresh", action="store_true", help="bypass the cache")
+    ap.add_argument(
+        "--depth-lookback", type=int, default=3,
+        help="days back to diff depth_chart_order against (status command)",
+    )
+    ap.add_argument(
+        "--trending-limit", type=int, default=25,
+        help="top-N by Sleeper add count to fetch/flag as trending",
+    )
+    ap.add_argument(
+        "--trending-floor", type=int, default=0,
+        help="minimum raw add count required to flag as trending",
+    )
     args = ap.parse_args(argv)
 
     client = EspnClient(season=args.season, league_id=args.league_id, refresh=args.refresh)

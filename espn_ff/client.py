@@ -1,7 +1,8 @@
 """HTTP client for ESPN's undocumented fantasy API.
 
-The only module that touches the network. Every response is written to the
-on-disk cache before it is returned.
+Every response is written to the on-disk cache before it is returned.
+`espn_ff/sleeper/client.py` also touches the network, for the player-status
+layer -- this is the ESPN half of it, not the only module that does.
 """
 
 import json

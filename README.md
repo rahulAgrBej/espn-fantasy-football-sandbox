@@ -58,10 +58,13 @@ hook is a guardrail, not a sandbox.
 .venv/bin/python -m espn_ff team --week 1    # one team's roster and points
 .venv/bin/python -m espn_ff pull             # cache raw JSON for all views
 .venv/bin/python -m espn_ff export           # cached JSON -> tidy CSVs
+.venv/bin/python -m espn_ff sleeper          # daily Sleeper fetch/slim/resolve (batch job)
+.venv/bin/python -m espn_ff status           # derived player-status table -> data/out/
 ```
 
 Flags: `--season`, `--league-id`, `--team-id`, `--week`, `--weeks 1-18`,
-`--refresh` (bypass cache).
+`--refresh` (bypass cache), `--depth-lookback` (default 3, for `status`),
+`--trending-limit` (default 25), `--trending-floor` (default 0).
 
 CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`.
 
@@ -69,12 +72,34 @@ CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`.
 
 | Path | Role |
 |---|---|
-| `espn_ff/client.py` | The only module that touches the network |
+| `espn_ff/client.py` | ESPN HTTP client |
 | `espn_ff/cache.py` | Raw JSON cache keyed by request |
 | `espn_ff/stats.py` | Stat-row selection — see below |
 | `espn_ff/constants.py` | Slot/position maps; stat dictionary from ESPN |
-| `espn_ff/extract/` | One module per view → tidy DataFrame |
+| `espn_ff/extract/` | One module per ESPN view → tidy DataFrame |
+| `espn_ff/sleeper/` | Sleeper player-status layer — client, snapshots, ESPN id join, derived signals |
 | `scripts/probe.py` | Dump key paths from a cached payload |
+| `scripts/practice_coverage.py` | practice_participation coverage report |
+
+## Sleeper player-status layer
+
+ESPN collapses every "Questionable" into one undifferentiated `injuryStatus`
+string. Sleeper's free, unauthenticated read API adds practice participation,
+depth chart order, injury detail and community add/drop trending, joined onto
+ESPN's `player_id` in `espn_ff/sleeper/ids.py`.
+
+`sleeper` is the daily batch job: fetch + slim the player pool (once a day,
+per Sleeper's own ask), pull trending, resolve ids against ESPN, and fail
+loudly if anyone on your own roster comes back unmatched. `status` builds the
+derived table (availability tier, Wed/Thu/Fri practice trajectory, depth
+chart delta, trending flag) from the snapshots already on disk — no network.
+
+Practice trajectory needs three consecutive daily `sleeper` runs to fill in;
+before that it reads `— / — / —` or partial. `scripts/practice_coverage.py`
+reports how complete `practice_participation` actually is before trusting the
+tier table for a start/sit call.
+
+Trending is alerting context only — it is shown, never scored or sorted on.
 
 ## The stats[] trap
 

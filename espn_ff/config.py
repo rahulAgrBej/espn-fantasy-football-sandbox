@@ -17,6 +17,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 OUT_DIR = PROJECT_ROOT / "data" / "out"
 
+# Sleeper player-status layer -- entirely separate store, ISO dates (see
+# espn_ff/sleeper/snapshots.py for why).
+SLEEPER_DIR = PROJECT_ROOT / "data" / "sleeper"
+SLEEPER_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "sleeper"
+SLEEPER_SLIM_DIR = SLEEPER_DIR / "slim"
+SLEEPER_ID_MAP = SLEEPER_DIR / "player_id_map.csv"
+
 USER_AGENT = "Mozilla/5.0"
 
 # Regular season is 18 weeks; ESPN scoring periods run 1..18.
