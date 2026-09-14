@@ -88,6 +88,7 @@ CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`.
 | `scripts/probe.py` | Dump key paths from a cached payload |
 | `scripts/practice_coverage.py` | practice_participation coverage report |
 | `scripts/nflverse_coverage.py` | nflverse id-resolution and manifest-freshness coverage report |
+| `docs/data-sources.md` | Field-level freshness reference for every output CSV, across all three feeds |
 
 ## Sleeper player-status layer
 
