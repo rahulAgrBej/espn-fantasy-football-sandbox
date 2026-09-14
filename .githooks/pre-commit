@@ -29,4 +29,28 @@ if [ -n "$offenders" ]; then
     exit 1
 fi
 
+# The Odds API key is metered -- unlike ESPN's cookies, leaking it has a
+# real dollar cost. Scan added lines only (not the whole file, so an
+# already-committed match elsewhere in history never re-triggers this) for
+# an `ODDS_API_KEY=<value>` assignment with a plausible key-shaped value (16+
+# alnum chars, so a doc's own placeholder text like `ODDS_API_KEY=<value>`
+# or an empty `ODDS_API_KEY=` in .env.example never false-positives) or a
+# bare 32-hex-character key.
+added_lines=$(git diff --cached -U0 -- . ':(exclude).githooks/pre-commit' | grep -E '^\+[^+]' || true)
+key_hit=$(printf '%s\n' "$added_lines" | grep -E "ODDS_API_KEY[[:space:]]*=[[:space:]]*['\"]?[0-9A-Za-z_-]{16,}" || true)
+hex_hit=$(printf '%s\n' "$added_lines" | grep -E '(^|[^0-9a-fA-F])[0-9a-fA-F]{32}([^0-9a-fA-F]|$)' || true)
+
+if [ -n "$key_hit" ] || [ -n "$hex_hit" ]; then
+    echo >&2
+    echo "BLOCKED: a staged change looks like it contains an Odds API key." >&2
+    echo >&2
+    [ -n "$key_hit" ] && printf '%s\n' "$key_hit" | sed 's/^/    /' >&2
+    [ -n "$hex_hit" ] && printf '%s\n' "$hex_hit" | sed 's/^/    /' >&2
+    echo >&2
+    echo "ODDS_API_KEY is metered -- it must never land in a commit. Remove the" >&2
+    echo "key (or the file holding it) from the staged change and retry." >&2
+    echo >&2
+    exit 1
+fi
+
 exit 0

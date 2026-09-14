@@ -1,0 +1,51 @@
+{
+  "id": "evt_gb_min_2026wk3",
+  "sport_key": "americanfootball_nfl",
+  "commence_time": "2026-09-21T17:00:00Z",
+  "home_team": "Minnesota Vikings",
+  "away_team": "Green Bay Packers",
+  "bookmakers": [
+    {
+      "key": "draftkings",
+      "title": "DraftKings",
+      "last_update": "2026-09-18T12:00:00Z",
+      "markets": [
+        {
+          "key": "player_receptions",
+          "outcomes": [
+            {"name": "Over", "description": "Jayden Reed", "price": -115, "point": 4.5},
+            {"name": "Under", "description": "Jayden Reed", "price": -105, "point": 4.5}
+          ]
+        },
+        {
+          "key": "player_anytime_td",
+          "outcomes": [
+            {"name": "Yes", "description": "Jayden Reed", "price": 145},
+            {"name": "No", "description": "Jayden Reed", "price": -180}
+          ]
+        }
+      ]
+    },
+    {
+      "key": "fanduel",
+      "title": "FanDuel",
+      "last_update": "2026-09-18T12:00:00Z",
+      "markets": [
+        {
+          "key": "player_receptions",
+          "outcomes": [
+            {"name": "Over", "description": "Jayden Reed", "price": -120, "point": 5.0},
+            {"name": "Under", "description": "Jayden Reed", "price": 100, "point": 5.0}
+          ]
+        },
+        {
+          "key": "player_anytime_td",
+          "outcomes": [
+            {"name": "Yes", "description": "Jayden Reed", "price": 150},
+            {"name": "No", "description": "Jayden Reed", "price": -190}
+          ]
+        }
+      ]
+    }
+  ]
+}

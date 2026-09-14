@@ -20,6 +20,10 @@ from .nflverse import features as nflverse_features
 from .nflverse import ids as nflverse_ids
 from .nflverse import store as nflverse_store
 from .nflverse.client import NflverseError
+from .odds import jobs as odds_jobs
+from .odds import ledger as odds_ledger
+from .odds import projections as odds_projections
+from .odds.ledger import OddsError
 
 
 def _out_path(name):
@@ -384,6 +388,75 @@ def cmd_features(client, args):
     return 0
 
 
+def _print_credits_footer(con):
+    s = odds_ledger.state(con)
+    print(f"  credits used / {s['quota']}: {s['spent']}/{s['quota']}  (remaining {s['remaining']})")
+    if s["warn"]:
+        print(f"  [warning] remaining credits below ODDS_WARN_THRESHOLD ({config.ODDS_WARN_THRESHOLD})")
+    if config.odds_quota_reset_day() is None:
+        print(f"  [warning] ODDS_QUOTA_RESET_DAY not set -- capped at the {config.ODDS_SAFETY_CAP}-credit safety cap until observed")
+
+
+def cmd_odds(client, args):
+    """Metered batch job dispatcher. Unlike every other command in this
+    CLI, each of these jobs can spend real credits -- there is no
+    `--refresh`-style "just check again" here. `--dry-run` runs the same
+    event-selection walk and prints the estimate without issuing anything
+    to the Odds API; `--events` narrows the props/pre_lock pull to an
+    explicit set of event ids."""
+    if not args.job or args.job not in odds_jobs.JOBS:
+        print(f"Usage: odds <job>  where job is one of: {', '.join(odds_jobs.JOBS)}", file=sys.stderr)
+        return 1
+
+    con = odds_ledger.open_db()
+    event_ids = set(args.events.split(",")) if args.events else None
+
+    if args.dry_run:
+        est = odds_jobs.estimate_cost(
+            args.job, espn_client=client, team_id=args.team_id, today=None, con=con, event_ids=event_ids
+        )
+        s = odds_ledger.state(con)
+        floor = 0 if args.job == "pre_lock" else config.ODDS_RESERVE
+        would_pass = s["spent"] + est <= s["quota"] - floor
+        print(f"[dry-run] odds {args.job}: estimated cost {est} credit(s), issuing nothing")
+        print(f"  {'would pass' if would_pass else 'WOULD EXCEED BUDGET'} the guard at {s['spent']}/{s['quota']} used")
+        _print_credits_footer(con)
+        return 0 if would_pass else 1
+
+    if args.job == "results":
+        result = odds_jobs.results(con=con)
+    elif args.job == "line_movement":
+        result = odds_jobs.line_movement(client, con=con)
+    elif args.job == "props":
+        result = odds_jobs.props_primary(client, team_id=args.team_id, con=con, force=args.force, event_ids=event_ids)
+    elif args.job == "pre_lock":
+        result = odds_jobs.pre_lock(client, team_id=args.team_id, con=con, event_ids=event_ids)
+    else:  # "slate"
+        result = odds_jobs.slate_context(client, team_id=args.team_id, con=con)
+
+    print(f"  odds {args.job}: {result}")
+    _print_credits_footer(con)
+    return 0
+
+
+def cmd_projections(client, args):
+    """Derived betting-market projections, built entirely from disk -- no
+    network. Run an `odds` job first; an empty CSV here means nothing has
+    been captured yet, not an error."""
+    week = args.week or client.current_scoring_period()
+    props_points, team_totals_points = odds_projections.build(week=week)
+    _write(props_points, "odds-player-props")
+    _write(team_totals_points, "odds-team-totals")
+    _print_credits_footer(odds_ledger.open_db())
+    return 0
+
+
+def cmd_credits(client, args):
+    """Free: reads the ledger only."""
+    _print_credits_footer(odds_ledger.open_db())
+    return 0
+
+
 COMMANDS = {
     "probe": cmd_probe,
     "team": cmd_team,
@@ -393,12 +466,19 @@ COMMANDS = {
     "status": cmd_status,
     "nflverse": cmd_nflverse,
     "features": cmd_features,
+    "odds": cmd_odds,
+    "projections": cmd_projections,
+    "credits": cmd_credits,
 }
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="espn_ff")
     ap.add_argument("command", choices=sorted(COMMANDS))
+    ap.add_argument(
+        "job", nargs="?",
+        help=f"job name for the `odds` command: {', '.join(odds_jobs.JOBS)}",
+    )
     ap.add_argument("--season", type=int, default=config.SEASON)
     ap.add_argument("--league-id", type=int, default=config.LEAGUE_ID)
     ap.add_argument("--team-id", type=int, default=config.TEAM_ID)
@@ -423,18 +503,26 @@ def main(argv=None):
     )
     ap.add_argument(
         "--force", action="store_true",
-        help="bypass the nflverse timestamp short-circuit and re-download every asset",
+        help="nflverse: bypass the timestamp short-circuit and re-download every asset. "
+        "odds props: bypass the Wednesday weekday check only -- never the credit budget.",
     )
     ap.add_argument(
         "--min-snap-pct", type=float, default=0.0,
         help="display filter on the features CSV: minimum offense_pct to include (default 0)",
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true",
+        help="odds command: estimate the credit cost and check the guard without issuing any request",
+    )
+    ap.add_argument(
+        "--events", help="odds props/pre_lock: comma-separated event ids to restrict the pull to",
     )
     args = ap.parse_args(argv)
 
     client = EspnClient(season=args.season, league_id=args.league_id, refresh=args.refresh)
     try:
         return COMMANDS[args.command](client, args)
-    except (EspnError, NflverseError) as exc:
+    except (EspnError, NflverseError, OddsError) as exc:
         print(f"\n{exc}", file=sys.stderr)
         return 1
 

@@ -20,4 +20,5 @@ include = ["espn_ff*"]
 testpaths = ["tests"]
 markers = [
     "integration: hits the live ESPN API; needs ESPN_S2/SWID",
+    "odds_live: spends real credits",
 ]

@@ -4,7 +4,8 @@ Free, public, unauthenticated. Release assets are periodically rebuilt
 parquet files, not a request-shaped API: freshness is checked via each
 release tag's `timestamp.json` and a conditional GET, not a cache TTL.
 `espn_ff/client.py` talks to ESPN and `espn_ff/sleeper/client.py` talks to
-Sleeper; this is the third and last module that touches the network.
+Sleeper; this is the third of what is now four modules that touch the
+network -- the metered espn_ff/odds/client.py is the fourth and last.
 
 Verified live: GitHub redirects a release-asset GET (302) to a signed Azure
 blob URL, and `If-None-Match` sent on the original request is honoured

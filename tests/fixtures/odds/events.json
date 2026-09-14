@@ -1,0 +1,16 @@
+[
+  {
+    "id": "evt_gb_min_2026wk3",
+    "sport_key": "americanfootball_nfl",
+    "commence_time": "2026-09-21T17:00:00Z",
+    "home_team": "Minnesota Vikings",
+    "away_team": "Green Bay Packers"
+  },
+  {
+    "id": "evt_kc_bal_2026wk3",
+    "sport_key": "americanfootball_nfl",
+    "commence_time": "2026-09-21T20:25:00Z",
+    "home_team": "Baltimore Ravens",
+    "away_team": "Kansas City Chiefs"
+  }
+]

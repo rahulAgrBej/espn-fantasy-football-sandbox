@@ -35,6 +35,15 @@ These are session credentials -- they expire, and `probe` will start returning
 
 The public player pool and the stat dictionary need no credentials.
 
+The Odds API layer needs its own key, `ODDS_API_KEY`, from
+[the-odds-api.com](https://the-odds-api.com). Unlike the ESPN cookies above,
+this credential is **metered** -- 500 free-tier credits per billing period,
+no historical endpoint -- so leaking it or over-using it has a real dollar
+cost, not just an inconvenience. It is never logged (every URL, exception,
+and error message is redacted before it's printed) and the pre-commit hook
+below blocks any staged file containing an `ODDS_API_KEY=<value>` assignment
+or a bare 32-hex-character key.
+
 ### Keeping secrets out of git
 
 Two layers. `.gitignore` covers `.env*`, `*.env`, `.envrc`, `.Renviron`,
@@ -62,6 +71,9 @@ hook is a guardrail, not a sandbox.
 .venv/bin/python -m espn_ff status           # derived player-status table -> data/out/
 .venv/bin/python -m espn_ff nflverse         # daily nflverse fetch + crosswalk (batch job)
 .venv/bin/python -m espn_ff features         # derived player-week role-feature table -> data/out/
+.venv/bin/python -m espn_ff odds <job>       # metered! one of: slate, props, line_movement, pre_lock, results
+.venv/bin/python -m espn_ff projections      # derived betting-market projections -> data/out/ (no network)
+.venv/bin/python -m espn_ff credits          # credits used / 500 (free, local, reads the ledger only)
 ```
 
 Flags: `--season`, `--league-id`, `--team-id`, `--week`, `--weeks 1-18`,
@@ -69,8 +81,12 @@ Flags: `--season`, `--league-id`, `--team-id`, `--week`, `--weeks 1-18`,
 `--trending-limit` (default 25), `--trending-floor` (default 0),
 `--seasons` (range like `2024-2026` or list like `2024,2026`, for
 `nflverse`/`features`; defaults to the current season), `--force` (bypass
-the nflverse timestamp short-circuit), `--min-snap-pct` (display filter on
-the `features` CSV, default 0).
+the nflverse timestamp short-circuit for `nflverse`; bypass only the
+Wednesday weekday check -- never the credit budget -- for `odds props`),
+`--min-snap-pct` (display filter on the `features` CSV, default 0),
+`--dry-run` (odds: estimate the credit cost and check the guard without
+issuing anything), `--events` (odds `props`/`pre_lock`: comma-separated
+event ids to restrict the pull to).
 
 CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`.
 
@@ -85,10 +101,12 @@ CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`.
 | `espn_ff/extract/` | One module per ESPN view → tidy DataFrame |
 | `espn_ff/sleeper/` | Sleeper player-status layer — client, snapshots, ESPN id join, derived signals |
 | `espn_ff/nflverse/` | nflverse role-feature layer — client, parquet store, ESPN id crosswalk, derived features |
+| `espn_ff/odds/` | The Odds API betting-market layer — credit ledger, metered client, parquet store, name join, derived projections |
 | `scripts/probe.py` | Dump key paths from a cached payload |
 | `scripts/practice_coverage.py` | practice_participation coverage report |
 | `scripts/nflverse_coverage.py` | nflverse id-resolution and manifest-freshness coverage report |
-| `docs/data-sources.md` | Field-level freshness reference for every output CSV, across all three feeds |
+| `docs/data-sources.md` | Field-level freshness reference for every output CSV, across all four feeds |
+| `docs/odds-budget.md` | The Odds API's credit-budget invariant, cost table, job schedule, and guard runbook |
 
 ## Sleeper player-status layer
 
@@ -171,6 +189,56 @@ Deferred, below).
 the-5 metrics, the `ffopportunity` expected-points feed, a FantasyPros ECR
 baseline, and a `recommendations` backtesting loop.
 
+## The betting-market layer
+
+ESPN, Sleeper and nflverse all describe *what already happened* or *who can
+play*. None of them carries a forward-looking, market-priced projection,
+which is what the start/sit question actually needs: where is my lineup
+weak, who do I start, what are my odds this week. A sportsbook's line is
+exactly that kind of projection — priced by people with money on the
+outcome — and `espn_ff/odds/` layers it onto the ESPN roster.
+
+**Implied team totals are the DST and game-script signal.** `spreads` and
+`totals` from one `/odds` call cover the entire slate for 2 credits;
+`projections.implied_team_totals` converts them per team via
+`total/2 - spread/2` — a favorite's negative spread number *adds* to half
+the total, an underdog's positive number subtracts from it.
+
+**The credit budget is an enforced invariant, not a guideline.** 500
+credits per billing period, free tier, no historical endpoint. Every
+request passes through `espn_ff/odds/ledger.py:guard` — one atomic
+transaction that reads spend, checks it against budget, and records the
+new request, so two concurrent jobs can never both pass on stale state.
+There is no bypass flag anywhere in this package; see `docs/odds-budget.md`
+for the full contract.
+
+**The de-vig step, and why a raw `player_anytime_td` price overstates.**
+A two-sided market's raw prices always sum to more than 100% implied
+probability — that's the book's vig. `projections.devig_two_way` strips it
+by normalizing both sides so they sum to exactly 1, and that de-vigged
+probability is what gets multiplied by the league's own points-per-TD
+value (from `league_scoring.json`, never a hardcoded 6) to become fantasy
+points.
+
+**The name-join caveat.** The Odds API ships no player ids at all — a
+prop's `description` field is a full name, nothing else, and a game odds
+response doesn't even say which team a player is on. `espn_ff/odds/ids.py`
+matches on name first, using a team hint (filled in from our own roster
+walk, where available) only to break a tie on a shared surname. Unmatched
+rows are kept, not dropped — a prop on a just-signed player is exactly the
+signal this layer exists to surface.
+
+**History only exists if we save it.** `/v4/historical/*` is paid-tier and
+blocked at the client, unconditionally, so `player_props.parquet` and
+`team_totals.parquet` are append-only and never pruned — see
+`espn_ff/odds/store.py`'s module docstring. Every other feed in this repo
+can be re-fetched for free if a snapshot gets lost; this one can't.
+
+**Deferred, intentionally**: the roster-vs-league-average weakness
+diagnostic by category (rush/receiving/passing). It needs 4–6 weeks of
+accumulated snapshots that don't exist on a fresh clone and cannot be
+backfilled — it ships as a documented gap, not a noisy number.
+
 ## The stats[] trap
 
 A player's `stats[]` array mixes seasons, sources and split types in one flat
@@ -235,6 +303,23 @@ snap counts; the id crosswalk falls back to
 [dynastyprocess](https://github.com/dynastyprocess/data)'s `db_playerids.csv`.
 This project stays private for now, per that data's terms.
 
+The Odds API layer is not on this cadence, and deliberately not on this
+crontab, for the reason stated throughout `docs/odds-budget.md`: **the
+nflverse commands above are idempotent and free to re-run; these are not.**
+Re-running `odds props` spends credits again, even if nothing about the
+market changed. A commented starting point, opted into explicitly and only
+after `ODDS_API_KEY` is set:
+
+```cron
+# Metered -- unlike the nflverse crontab above, none of these are free to
+# re-run. Each line matches one row of docs/odds-budget.md's job schedule.
+0 9  * * 2  cd /path/to/repo && .venv/bin/python -m espn_ff odds slate
+0 10 * * 4  cd /path/to/repo && .venv/bin/python -m espn_ff odds props
+0 10 * * 5  cd /path/to/repo && .venv/bin/python -m espn_ff odds line_movement
+30 10 * * 0 cd /path/to/repo && .venv/bin/python -m espn_ff odds pre_lock
+0 9  * * 1  cd /path/to/repo && .venv/bin/python -m espn_ff odds results
+```
+
 ## Tests
 
 ```bash
@@ -248,7 +333,13 @@ The nflverse fixtures under `tests/fixtures/nflverse/` are small hand-built
 CSVs (read via pandas, not committed parquet, so they stay diffable) across
 a 5-team, 3-week universe engineered to exercise a bye sandwiched between two
 played weeks, a snap row with no `stats_player` row, a zero-snap week, and an
-unresolvable `pfr_player_id` orphan.
+unresolvable `pfr_player_id` orphan. The odds fixtures under
+`tests/fixtures/odds/` are hand-trimmed `events`/`featured_odds`/`event_odds`/
+`scores` JSON, same "small and diffable" spirit as the nflverse CSVs, and
+**none of them contains a key** -- every odds test uses a fake session that
+records calls rather than a real `ODDS_API_KEY`, so the suite spends zero
+credits. A separate `odds_live` pytest marker exists for a future test that
+actually spends real credits; nothing under it runs by default.
 
 ## Endpoint reference
 

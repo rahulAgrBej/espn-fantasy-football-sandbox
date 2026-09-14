@@ -1,0 +1,53 @@
+[
+  {
+    "id": "evt_gb_min_2026wk3",
+    "sport_key": "americanfootball_nfl",
+    "commence_time": "2026-09-21T17:00:00Z",
+    "home_team": "Minnesota Vikings",
+    "away_team": "Green Bay Packers",
+    "bookmakers": [
+      {
+        "key": "draftkings",
+        "title": "DraftKings",
+        "last_update": "2026-09-18T12:00:00Z",
+        "markets": [
+          {
+            "key": "spreads",
+            "outcomes": [
+              {"name": "Minnesota Vikings", "price": -130, "point": -2.5},
+              {"name": "Green Bay Packers", "price": 110, "point": 2.5}
+            ]
+          },
+          {
+            "key": "totals",
+            "outcomes": [
+              {"name": "Over", "price": -110, "point": 44.5},
+              {"name": "Under", "price": -110, "point": 44.5}
+            ]
+          }
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "FanDuel",
+        "last_update": "2026-09-18T12:00:00Z",
+        "markets": [
+          {
+            "key": "spreads",
+            "outcomes": [
+              {"name": "Minnesota Vikings", "price": -125, "point": -2.5},
+              {"name": "Green Bay Packers", "price": 105, "point": 2.5}
+            ]
+          },
+          {
+            "key": "totals",
+            "outcomes": [
+              {"name": "Over", "price": -108, "point": 45.0},
+              {"name": "Under", "price": -112, "point": 45.0}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -1,9 +1,18 @@
 # Data sources
 
-Three independent feeds land in this pipeline, and each refreshes on a completely
-different clock: ESPN's undocumented fantasy API, Sleeper's free player API, and
-nflverse's GitHub release assets. This doc answers one question per field: *how
-stale can the number in front of you be?*
+Four independent feeds land in this pipeline, and each refreshes on a completely
+different clock: ESPN's undocumented fantasy API, Sleeper's free player API,
+nflverse's GitHub release assets, and The Odds API's metered betting-market
+feed. This doc answers one question per field: *how stale can the number in
+front of you be?*
+
+The fourth feed is a different kind of exception to that question. ESPN,
+Sleeper and nflverse are all free to re-check, so their freshness ceiling is a
+TTL or an ETag -- a cadence. The Odds API is metered (500 credits per billing
+period, no historical endpoint), so its freshness ceiling is a *budget*: a
+value is exactly as fresh as the last job that had credit left to run, not as
+fresh as the clock says it could be. See `docs/odds-budget.md` for the credit
+invariant itself; this document still covers its field-level cadence below.
 
 ## How to read this
 
@@ -414,6 +423,129 @@ miss on a skim:**
 
 ---
 
+## The Odds API
+
+**Access.** Base `https://api.the-odds-api.com/v4`, key in `ODDS_API_KEY`
+(never logged -- `espn_ff/odds/client.py` redacts it from every URL,
+exception, and error message at the single point a URL is stringified).
+`regions=us` only, enforced at client construction (a comma anywhere in
+`regions` throws before a request is built). `/v4/historical/*` is blocked
+at the client layer, unconditionally -- it's paid-tier only and there is no
+override. Retries 3 attempts, 2s exponential backoff, ≥1s spacing between
+requests -- all three numbers deliberately smaller than the other three
+clients' shared `4` / `1.5s`, because a retry here is a new billed request,
+not a free do-over.
+
+**Freshness mechanism.** *Documented*, and the one genuinely new mechanism
+in this document: **freshness is purchased.** ESPN/Sleeper/nflverse are all
+free to re-check, so their freshness ceiling is a TTL or an ETag. This feed
+has a hard 500-credit-per-billing-period quota (`espn_ff/odds/ledger.py`)
+and no historical endpoint, so nothing here refreshes on its own — every
+value is exactly as fresh as the last job that had budget to run, and a
+budget-aborted job leaves the prior snapshot in place with no visible
+difference from a fresh one except `captured_at` and `last_run.json.stale`.
+There is no `--refresh` flag anywhere in this layer, because re-running a
+paid job is not free the way it is for the other three feeds.
+
+### Market-open windows
+
+The odds analogue of nflverse's feed-level cadence table — an exception to
+the field-level rule below for the same reason nflverse's table is: these
+three markets settle on genuinely different clocks, and every field in the
+two output CSVs inherits its cadence from exactly one of them.
+
+| Market | Opens | Settles | Our ingest |
+|---|---|---|---|
+| `spreads` / `totals` | Sun night for the coming week | Kickoff | Tue (`slate`), Fri (`line_movement`), Sun (`pre_lock`) — 3 pulls/wk, 2 credits each |
+| player props | Wed–Thu | Kickoff | Thu (`props`), plus Sun (`pre_lock`) for undecided slots only |
+| `scores` | Post-game | Final | Mon (`results`), `daysFrom=3` |
+
+*Documented* (handoff §7). `espn_ff/odds/jobs.py:props_primary` refuses to
+run before Wednesday for exactly this reason — an earlier pull is free but
+returns nothing, which would otherwise look identical to "markets are
+thin this week" rather than "markets aren't open yet."
+
+### `odds-team-totals.csv` / `data/odds/team_totals.parquet` — `jobs._flatten_featured` + `projections.implied_team_totals`
+
+Append-only, **never pruned** — see `espn_ff/odds/store.py`'s module
+docstring for why this layer can't do what `sleeper/snapshots.py`'s
+`KEEP_SLIM` does. Every `slate`/`line_movement`/`pre_lock` run adds rows;
+none are ever deleted.
+
+| Field | Meaning | Upstream release cadence | Our ingest |
+|---|---|---|---|
+| `captured_at` | ISO timestamp of the pull that produced this row — the actual freshness stamp, never the file's mtime | — | Observed |
+| `week` | Scoring period the pull was taken for | — | — |
+| `event_id` | The Odds API's own event id | — | — |
+| `team` | ESPN abbreviation, resolved from the API's full team name via `names.TEAM_ALIASES` at flatten time (`spreads` rows only; `totals` rows are game-level and carry `team=None`) | — | — |
+| `market` | `spreads` or `totals` | Sun night–Sun (see table above) | Documented |
+| `book` / `outcome_name` / `price` / `point` | Raw per-book quote, kept alongside the derived `projections.consensus_line` median rather than only the median — so a book-level line-shopping question is still answerable later | Per-book, real time | Observed |
+| `implied_team_total` | `projections.implied_team_totals`'s derived field: `total/2 - spread/2` per team, the DST and game-script signal | n/a — derived | Recomputed by `projections`, offline, from whatever's captured |
+
+### `odds-player-props.csv` / `data/odds/player_props.parquet` — `jobs._flatten_event_odds` + `projections.prop_to_points`
+
+Same append-only contract as team_totals.parquet.
+
+| Field | Meaning | Upstream release cadence | Our ingest |
+|---|---|---|---|
+| `captured_at` / `week` / `event_id` | Same as team_totals.parquet | — | — |
+| `player_name` | The Odds API's `description` field — a full name, and the **only** identifying information a prop carries; there is no player id anywhere in this feed | — | — |
+| `team` | Filled in from `jobs.decision_events`'s roster walk where possible; `None` for a prop whose player isn't on either fantasy roster we happened to be tracking that week (e.g. surfaced only via a game-level market) | n/a — derived from our own roster, not the API | — |
+| `market` / `book` / `outcome_name` / `price` / `point` | Raw per-book quote | Wed–Thu (see table above) | Documented |
+| `espn_player_id` / `match_source` | Resolved by `espn_ff/odds/ids.py` — `xwalk` / `sleeper_map` / `espn_pool` / `unmatched`, name-first because the API gives no id and often no team either; **`unmatched` rows are kept, not dropped** | n/a — derived | Recomputed every `projections`/resolution run |
+| `fantasy_points` | `projections.prop_to_points`'s derived field — the consensus line or de-vigged probability converted through `league_scoring.json`, never a hardcoded points-per-stat value | n/a — derived | Recomputed offline from whatever's captured |
+
+### `data/odds/league_scoring.json`
+
+Snapshot of `settings.scoring_frame`, written by the free `slate` job since
+it already holds an authenticated `EspnClient`. Resolves handoff §12's open
+item (PPR/half-PPR, TD values, DST tiers) by reading the league's actual
+settings rather than hand-configuring them.
+
+| Field | Meaning | Upstream release cadence | Our ingest |
+|---|---|---|---|
+| `stat_id` / `stat_abbrev` / `points` / `is_reverse` / `points_overrides` | Identical shape to `scoring-rules.csv` above (`settings.scoring_frame`) | League creation; effectively static in-season | Re-snapshotted every `slate` run, whether or not it changed |
+
+### `data/odds/last_run.json`
+
+Same shape and role as `data/sleeper/last_run.json`, but keyed per job name
+(`slate` / `props` / `line_movement` / `pre_lock` / `results`) so one job's
+staleness never masks another's.
+
+| Field | Meaning | Upstream release cadence | Our ingest |
+|---|---|---|---|
+| `ran_at` | Epoch seconds of that job's last run, successful or not | — | Written every run of that job |
+| `credits_spent` | Credits that specific run actually spent | — | — |
+| `stale` | `true` if the run returned nothing (markets not open, budget aborted) — the CSVs on disk are the last good capture, not this run's | — | — |
+| `reason` | Human-readable reason when `stale` is `true` | — | — |
+
+### `data/odds/ledger.db` — the credit ledger itself
+
+Unlike everywhere else in this document, the ledger is treated here as a
+data artifact, not plumbing — its `spent_estimated` vs. `spent_authoritative`
+split is exactly the kind of field-level caveat this document exists for.
+Full invariants and the guard/reconcile contract live in
+`docs/odds-budget.md`; this is the field reference.
+
+| Table | Field | Meaning |
+|---|---|---|
+| `credit_ledger_entry` | `estimated_cost` | Worst-case pre-flight estimate (`markets_requested × regions`), recorded atomically with the budget check |
+| | `actual_cost` | From `x-requests-last` once reconciled; equals `estimated_cost` on a `failed_assumed_charged` row |
+| | `status` | `estimated` → `reconciled` (headers came back) or `failed_assumed_charged` (network error, or a response with no usage headers) |
+| `credit_period_state` | `spent_estimated` | Running total of estimated cost for unreconciled entries plus actual cost for reconciled ones |
+| | `spent_authoritative` | The high-water mark of the API's own `x-requests-used` header — catches usage from outside this app (a manual curl, another environment sharing the key) |
+| | *(governing spend)* | `max(spent_estimated, spent_authoritative)` — always the more pessimistic of the two |
+| `job_run` | `run_budget` / `spent_in_run` | Per-invocation budget, independent of the period budget — one runaway job can't eat the month even with quota to spare |
+
+**Deferred, intentionally**: the §9 category-level weakness diagnostic
+(roster vs. league-average production by rush/receiving/passing category).
+It needs 4–6 weeks of accumulated snapshots that do not exist yet on a
+fresh clone, and `/v4/historical/*` cannot backfill them. It ships as a
+documented gap, not a noisy number computed on insufficient history —
+render "insufficient history" rather than a number before then.
+
+---
+
 ## Closing notes
 
 **Deferred, intentionally** (worth listing so this reads as a complete audit,
@@ -436,6 +568,19 @@ codebase today.
   the depth chart in week 3" after week 4 has landed.
 - ESPN session cookies expire silently and surface only as a `401` on the next
   `probe` (or any other command) — there is no advance warning.
+- **No backfill is possible for the Odds API layer.** `/v4/historical/*` is
+  paid-tier and blocked at the client, so this layer's history begins the day
+  the first job runs, with no pre-history, ever — unlike ESPN/Sleeper/nflverse,
+  which can all be re-pulled for a past date.
+- A budget-aborted odds job leaves the prior snapshot in place, and a stale
+  line looks identical to a fresh one on disk — read `captured_at` and
+  `last_run.json.stale`, never the parquet file's mtime.
+- An empty odds props response is free and is **not** success; it means the
+  market hasn't opened yet, not that no props exist this week.
+- The odds name join (`espn_ff/odds/ids.py`) is the only name join in this
+  repo where the API gives no id and often no team hint either;
+  `match_source == "unmatched"` rows are present in `player_props.parquet` and
+  unscored, by design, rather than silently dropped.
 
 **Before trusting any table above, check actual freshness, not just this
 document:** `scripts/practice_coverage.py` reports how complete

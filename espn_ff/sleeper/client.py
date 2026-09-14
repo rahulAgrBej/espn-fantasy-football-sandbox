@@ -2,8 +2,9 @@
 
 Free, unauthenticated, no per-league scoping -- our league lives on ESPN, this
 only pulls the NFL-wide player pool and trending lists. `espn_ff/client.py`
-no longer holds a monopoly on the network; this is the second and last module
-that touches it.
+no longer holds a monopoly on the network; this is the second of what is now
+four modules that touch it (nflverse's client is the third, the metered
+espn_ff/odds/client.py the fourth and last).
 """
 
 import time

@@ -1,0 +1,14 @@
+[
+  {
+    "id": "evt_gb_min_2026wk2",
+    "sport_key": "americanfootball_nfl",
+    "commence_time": "2026-09-14T17:00:00Z",
+    "completed": true,
+    "home_team": "Minnesota Vikings",
+    "away_team": "Green Bay Packers",
+    "scores": [
+      {"name": "Minnesota Vikings", "score": "20"},
+      {"name": "Green Bay Packers", "score": "27"}
+    ]
+  }
+]
