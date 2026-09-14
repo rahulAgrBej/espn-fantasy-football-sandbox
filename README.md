@@ -11,7 +11,7 @@ Default target: league `1681721675`, season `2026`, team `5`.
 ## Setup
 
 ```bash
-uv venv && uv pip install requests pandas pytest
+uv venv && uv pip install requests pandas duckdb pyarrow pytest
 ```
 
 ### Credentials
@@ -60,11 +60,17 @@ hook is a guardrail, not a sandbox.
 .venv/bin/python -m espn_ff export           # cached JSON -> tidy CSVs
 .venv/bin/python -m espn_ff sleeper          # daily Sleeper fetch/slim/resolve (batch job)
 .venv/bin/python -m espn_ff status           # derived player-status table -> data/out/
+.venv/bin/python -m espn_ff nflverse         # daily nflverse fetch + crosswalk (batch job)
+.venv/bin/python -m espn_ff features         # derived player-week role-feature table -> data/out/
 ```
 
 Flags: `--season`, `--league-id`, `--team-id`, `--week`, `--weeks 1-18`,
 `--refresh` (bypass cache), `--depth-lookback` (default 3, for `status`),
-`--trending-limit` (default 25), `--trending-floor` (default 0).
+`--trending-limit` (default 25), `--trending-floor` (default 0),
+`--seasons` (range like `2024-2026` or list like `2024,2026`, for
+`nflverse`/`features`; defaults to the current season), `--force` (bypass
+the nflverse timestamp short-circuit), `--min-snap-pct` (display filter on
+the `features` CSV, default 0).
 
 CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`.
 
@@ -78,8 +84,10 @@ CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`.
 | `espn_ff/constants.py` | Slot/position maps; stat dictionary from ESPN |
 | `espn_ff/extract/` | One module per ESPN view → tidy DataFrame |
 | `espn_ff/sleeper/` | Sleeper player-status layer — client, snapshots, ESPN id join, derived signals |
+| `espn_ff/nflverse/` | nflverse role-feature layer — client, parquet store, ESPN id crosswalk, derived features |
 | `scripts/probe.py` | Dump key paths from a cached payload |
 | `scripts/practice_coverage.py` | practice_participation coverage report |
+| `scripts/nflverse_coverage.py` | nflverse id-resolution and manifest-freshness coverage report |
 
 ## Sleeper player-status layer
 
@@ -100,6 +108,67 @@ reports how complete `practice_participation` actually is before trusting the
 tier table for a start/sit call.
 
 Trending is alerting context only — it is shown, never scored or sorted on.
+
+## The nflverse role layer
+
+ESPN and Sleeper both describe *availability* — who can play. Neither
+publishes anything like snap share, which is the strongest available signal
+for *role* — how much of the offence a player actually accounts for.
+[nflverse](https://github.com/nflverse/nflverse-data) publishes `offense_pct`
+per player-game and `target_share` / `air_yards_share` / `wopr` per
+player-week as free public GitHub release assets, rebuilt several times a
+day. `nflverse` fetches and mirrors those assets to `data/raw/nflverse/`;
+`features` derives `player_week_features.parquet` from them, offline, with
+DuckDB querying the parquet in place.
+
+**The id chain, and why it is never a name join.** nflverse's own id is
+`gsis_id`, not ESPN's `player_id`. The crosswalk in `espn_ff/nflverse/ids.py`
+resolves `gsis_id <-> espn_id` directly off `players.parquet` (both ids ship
+on the same row), falling back to dynastyprocess's `db_playerids.csv` only
+where that's null. Snap-level data carries a third id, `pfr_player_id`
+(Pro Football Reference), which the crosswalk also carries as `pfr_id` so
+`snap_counts` can join to `gsis_id` without ever touching a player's name.
+Verified against the live 2026 pool: 168 of 181 week-1 roster rows matched
+`espn_id` directly, and all 13 misses were D/ST — nflverse has no player row
+for a team defence by design, so those are excluded before the join, not
+counted as orphans. Real orphans that week: zero (a since-elevated
+practice-squad player the following week is the expected steady state).
+
+**The missing-stats-row trap.** A `snap_counts` row for a player who did not
+also appear in `stats_player` means *zero production, not missing data* — he
+played, and produced nothing. Verified live: only 332 of 395 week-1
+skill-position snap rows had a matching `stats_player` row; Calvin Ridley
+played 32 snaps (64% of the offense) in week 1 with no `stats_player` row at
+all. `espn_ff/nflverse/features.py` `COALESCE`s `targets`,
+`target_share`, `air_yards_share` and `wopr` to 0 on that join — dropping
+that `COALESCE` would silently erase every low-usage starter's week from the
+table, exactly the players a role signal exists to catch.
+
+**Bye vs. inactive vs. not-yet-signed.** These three "no snap data this
+week" cases must never collapse into one:
+
+| Case | `bye` | `played` | `offense_pct` |
+|---|---|---|---|
+| Team had no game (bye) | `true` | `false` | `null` |
+| Team played, player did not appear | `false` | `false` | `null` |
+| Not yet on the team / no longer on it | *(row absent entirely)* | — | — |
+
+A bye is derived from `games.parquet`: a `(team, week)` pair absent from
+the season's team-week expansion. `snap_pct_delta_1w`/`_3w` and
+`snap_pct_trend` are computed over games the player actually played, never a
+dense week axis — a stable starter's trend must read flat across his own
+bye, not swing to "falling" then "rising" around a week of no information.
+
+**`depth_charts` has no `week` column** — it is an append-only log keyed
+only on a `dt` timestamp, 178 distinct snapshots and 518k+ rows for the 2026
+season alone. `store.load("depth_charts", ...)` collapses it to the latest
+`dt` per team on read; anyone who wants "the depth chart as of week 3" needs
+a snapshot taken in week 3, which this layer does not yet retain (see
+Deferred, below).
+
+**Deferred**, intentionally, out of this layer: play-by-play red-zone/inside-
+the-5 metrics, the `ffopportunity` expected-points feed, a FantasyPros ECR
+baseline, and a `recommendations` backtesting loop.
 
 ## The stats[] trap
 
@@ -140,15 +209,45 @@ cached forever and only the live week is re-fetched (5 min TTL). This matters:
 of weekly rosters is one request per week. Rate limits are undocumented —
 hammering the API during live games is how people get blocked.
 
+## Refresh cadence
+
+nflverse feeds settle over the course of the day as source data lands; both
+`nflverse` and `features` are idempotent and cheap to re-run — a re-run
+against an unchanged `timestamp.json` makes no parquet download at all.
+Thursday's read is the canonical one for the prior week: stat corrections
+land Tuesday/Wednesday, so anything read before Thursday should be treated
+as `provisional = true`, which is exactly the flag `features` sets when a
+week's games aren't all complete yet. Nothing here is wired into cron —
+that's a deliberate choice so a fresh clone never surprises anyone with a
+background job. A commented starting point:
+
+```cron
+# nflverse settles through the day; both commands are idempotent.
+0 9,13,18 * * *  cd /path/to/repo && .venv/bin/python -m espn_ff nflverse && .venv/bin/python -m espn_ff features
+# Thursday's read is canonical for the prior week -- stat corrections land Tue/Wed.
+0 9 * * 4        cd /path/to/repo && .venv/bin/python -m espn_ff nflverse --force && .venv/bin/python -m espn_ff features
+```
+
+nflverse data is built by [nflverse](https://github.com/nflverse) from
+public NFL data plus [Pro Football Reference](https://www.pro-football-reference.com/)
+snap counts; the id crosswalk falls back to
+[dynastyprocess](https://github.com/dynastyprocess/data)'s `db_playerids.csv`.
+This project stays private for now, per that data's terms.
+
 ## Tests
 
 ```bash
 .venv/bin/pytest
 ```
 
-Run entirely off fixtures in `tests/fixtures/` — no network. The fixture holds
-five real players chosen so that some list 2026 first in `stats[]` and others
-list 2025 first, which is what makes the ordering bug reproducible.
+Run entirely off fixtures in `tests/fixtures/` — no network. The ESPN fixture
+holds five real players chosen so that some list 2026 first in `stats[]` and
+others list 2025 first, which is what makes the ordering bug reproducible.
+The nflverse fixtures under `tests/fixtures/nflverse/` are small hand-built
+CSVs (read via pandas, not committed parquet, so they stay diffable) across
+a 5-team, 3-week universe engineered to exercise a bye sandwiched between two
+played weeks, a snap row with no `stats_player` row, a zero-snap week, and an
+unresolvable `pfr_player_id` orphan.
 
 ## Endpoint reference
 

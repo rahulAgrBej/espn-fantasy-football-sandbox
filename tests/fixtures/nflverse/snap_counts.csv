@@ -1,0 +1,10 @@
+game_id,pfr_player_id,player,position,team,opponent,season,week,game_type,offense_snaps,offense_pct
+2026_01_GB_MIN,ReedJa00,Jayden Reed,WR,GB,MIN,2026,1,REG,50,0.80
+2026_02_GB_LV,ReedJa00,Jayden Reed,WR,GB,LV,2026,2,REG,52,0.82
+2026_03_GB_DEN,ReedJa00,Jayden Reed,WR,GB,DEN,2026,3,REG,55,0.85
+2026_01_LV_DEN,RidlCa00,Calvin Ridley,WR,DEN,LV,2026,1,REG,32,0.64
+2026_03_GB_DEN,RidlCa00,Calvin Ridley,WR,DEN,GB,2026,3,REG,40,0.70
+2026_01_GB_MIN,JeffJu00,Justin Jefferson,WR,MIN,GB,2026,1,REG,48,0.90
+2026_02_MIN_SEA,JeffJu00,Justin Jefferson,WR,MIN,SEA,2026,2,REG,50,0.92
+2026_02_MIN_SEA,BeepBe00,Bench Guy,RB,SEA,MIN,2026,2,REG,0,0.00
+2026_01_LV_DEN,WhitCo00,Cody White,WR,LV,DEN,2026,1,REG,20,0.40

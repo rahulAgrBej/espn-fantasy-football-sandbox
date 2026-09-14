@@ -19,47 +19,18 @@ ESPN's is "Seahawks D/ST". There is exactly one D/ST per team, so those rows
 resolve on team + position alone, skipping the name comparison entirely.
 """
 
-import re
-
 import pandas as pd
 
-TEAM_ALIASES = {
-    "WAS": "WSH",
-    "JAC": "JAX",
-    "LA": "LAR",
-}
-
-POSITION_ALIASES = {
-    "DEF": "D/ST",
-}
-
-_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
+from ..names import (
+    POSITION_ALIASES,
+    TEAM_ALIASES,
+    _text,
+    normalize_name,
+    normalize_position,
+    normalize_team,
+)
 
 MAP_COLUMNS = ["sleeper_id", "espn_player_id", "source"]
-
-
-def _text(value):
-    """None/NaN-safe string coercion. A DataFrame cell with no value comes
-    back as float NaN, not None -- and NaN is truthy, so a plain `or ""`
-    guard silently lets it through."""
-    return "" if pd.isna(value) else str(value)
-
-
-def normalize_name(name):
-    name = _text(name).lower().replace("'", "").replace(".", "")
-    name = re.sub(r"[^a-z0-9\s]", " ", name)
-    tokens = [t for t in name.split() if t not in _SUFFIXES]
-    return " ".join(tokens)
-
-
-def normalize_team(team):
-    team = _text(team).strip().upper()
-    return TEAM_ALIASES.get(team, team)
-
-
-def normalize_position(position):
-    position = _text(position).strip().upper()
-    return POSITION_ALIASES.get(position, position)
 
 
 def _name_index(espn_players_df):

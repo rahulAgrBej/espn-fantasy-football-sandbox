@@ -16,6 +16,10 @@ from .sleeper import ids as sleeper_ids
 from .sleeper import signals as sleeper_signals
 from .sleeper import snapshots as sleeper_snapshots
 from .sleeper.client import SleeperClient
+from .nflverse import features as nflverse_features
+from .nflverse import ids as nflverse_ids
+from .nflverse import store as nflverse_store
+from .nflverse.client import NflverseError
 
 
 def _out_path(name):
@@ -40,6 +44,15 @@ def _weeks(spec, current):
         lo, hi = spec.split("-", 1)
         return list(range(int(lo), int(hi) + 1))
     return [int(w) for w in spec.split(",")]
+
+
+def _seasons(spec, current):
+    if not spec:
+        return [current]
+    if "-" in spec:
+        lo, hi = spec.split("-", 1)
+        return list(range(int(lo), int(hi) + 1))
+    return [int(s) for s in spec.split(",")]
 
 
 def _player_names(client, season, weeks):
@@ -274,6 +287,103 @@ def cmd_status(client, args):
     return 0
 
 
+def cmd_nflverse(client, args):
+    """Daily batch job: refresh the nflverse parquet mirror (players,
+    schedules, then the seasonal sets for --seasons), rebuild the player
+    crosswalk, and cross-check it against your ESPN roster. No terminal
+    rendering of the feature table -- run `features` afterward to build the
+    CSV."""
+    seasons = _seasons(args.seasons, client.season)
+    label = f"{seasons[0]}-{seasons[-1]}" if len(seasons) > 1 else str(seasons[0])
+    print(f"nflverse refresh -- season(s) {label}")
+
+    results = nflverse_store.refresh(seasons=seasons, force=args.force)
+    for result in results:
+        row_label = f"{result.name} {result.season}" if result.season else result.name
+        if result.status == "updated":
+            detail = f"{result.rows:,} rows  (updated)"
+        elif result.status == "unchanged":
+            rows = f"{result.rows:,} rows  " if result.rows is not None else ""
+            detail = f"{rows}(unchanged)"
+        elif result.status == "missing":
+            detail = f"(missing -- feed unavailable: {result.message or 'n/a'})"
+        else:
+            detail = f"(error: {result.message})"
+        print(f"  {row_label:<28} {detail}")
+
+    manifest = nflverse_store.read_manifest()
+    stale = [key for key, entry in manifest.items() if nflverse_store.is_stale(entry)]
+    if stale:
+        print(f"  stale (>36h since last successful check): {stale}")
+
+    players_df = nflverse_store.load("players")
+    fallback_df = nflverse_ids.fetch_fallback()
+    xwalk_df, xwalk_stats = nflverse_ids.build_xwalk(players_df, fallback_df)
+    config.NFLVERSE_DIR.mkdir(parents=True, exist_ok=True)
+    xwalk_df.to_csv(config.NFLVERSE_XWALK, index=False)
+    print(
+        f"  crosswalk: {xwalk_stats['total']:,} players, {xwalk_stats['espn_matched']:,} espn-matched "
+        f"({xwalk_stats['from_players']:,} from players.parquet, "
+        f"{xwalk_stats['from_db_playerids']:,} from db_playerids fallback)"
+    )
+
+    current_season = seasons[-1]
+    snaps = nflverse_store.load("snap_counts", season=current_season)
+    reg_snaps = snaps[(snaps["game_type"] == "REG") & (snaps["position"].isin(nflverse_features.SKILL_POSITIONS))]
+    xwalk_by_pfr = xwalk_df.rename(columns={"pfr_id": "pfr_player_id"})
+    snap_orphans = nflverse_ids.orphans(reg_snaps, xwalk_by_pfr, on="pfr_player_id", label_cols=["player", "team", "position"])
+    if not snap_orphans.empty:
+        print(f"  {len(snap_orphans)} snap-count player(s) with no gsis_id match: {snap_orphans['player'].tolist()}")
+
+    current = client.current_scoring_period()
+    roster_payload = client.get_league(
+        ["mRoster", "mTeam"], scoring_period=current, ttl=ttl_for(current, current)
+    )
+    roster_df = rosters.rosters_frame(roster_payload, season=client.season, week=current)
+    team_roster = roster_df[roster_df["team_id"] == args.team_id]
+    matched_espn_ids = set(xwalk_df["espn_player_id"].dropna().astype(int))
+    unresolved = team_roster[
+        (team_roster["position"] != "D/ST") & (~team_roster["player_id"].isin(matched_espn_ids))
+    ]
+    if not unresolved.empty:
+        # Warns rather than raises -- a just-signed player missing from
+        # players.parquet is expected (~1/week) and is exactly the emerging
+        # player this layer exists to surface, so it must not block the run.
+        print(
+            f"  {len(unresolved)} non-D/ST player(s) on team {args.team_id}'s roster have no nflverse "
+            f"match (expected for a just-signed player): {unresolved['player_name'].tolist()}"
+        )
+
+    print("Done.")
+    return 0
+
+
+def cmd_features(client, args):
+    """Build the derived nflverse role-feature table from parquet already on
+    disk and write it to data/nflverse/ and data/out/. No network."""
+    seasons = _seasons(args.seasons, client.season)
+    if not nflverse_store.local_path("players").exists() or not nflverse_store.local_path("schedules").exists():
+        print("No nflverse data on disk yet -- run `nflverse` first.", file=sys.stderr)
+        return 1
+
+    df = nflverse_features.build(seasons)
+    if df.empty:
+        print(
+            "No feature rows built -- check that `nflverse` has fetched snap_counts/stats_player "
+            "for these seasons.",
+            file=sys.stderr,
+        )
+        return 1
+
+    config.NFLVERSE_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(config.NFLVERSE_FEATURES, index=False)
+    print(f"  player_week_features  {len(df):>5} rows -> {config.NFLVERSE_FEATURES}")
+
+    display_df = df[df["offense_pct"].fillna(0) >= (args.min_snap_pct or 0)]
+    _write(display_df, "player-week-features")
+    return 0
+
+
 COMMANDS = {
     "probe": cmd_probe,
     "team": cmd_team,
@@ -281,6 +391,8 @@ COMMANDS = {
     "export": cmd_export,
     "sleeper": cmd_sleeper,
     "status": cmd_status,
+    "nflverse": cmd_nflverse,
+    "features": cmd_features,
 }
 
 
@@ -305,12 +417,24 @@ def main(argv=None):
         "--trending-floor", type=int, default=0,
         help="minimum raw add count required to flag as trending",
     )
+    ap.add_argument(
+        "--seasons", help="nflverse seasons: range like 2024-2026 or list like 2024,2026; "
+        "defaults to the current season (nflverse/features commands)",
+    )
+    ap.add_argument(
+        "--force", action="store_true",
+        help="bypass the nflverse timestamp short-circuit and re-download every asset",
+    )
+    ap.add_argument(
+        "--min-snap-pct", type=float, default=0.0,
+        help="display filter on the features CSV: minimum offense_pct to include (default 0)",
+    )
     args = ap.parse_args(argv)
 
     client = EspnClient(season=args.season, league_id=args.league_id, refresh=args.refresh)
     try:
         return COMMANDS[args.command](client, args)
-    except EspnError as exc:
+    except (EspnError, NflverseError) as exc:
         print(f"\n{exc}", file=sys.stderr)
         return 1
 

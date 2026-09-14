@@ -1,0 +1,8 @@
+player_id,season,week,season_type,team,position,targets,target_share,air_yards_share,wopr,fantasy_points_ppr
+00-0001,2026,1,REG,GB,WR,5,0.20,0.10,0.40,10.0
+00-0001,2026,2,REG,GB,WR,6,0.22,0.12,0.45,11.0
+00-0001,2026,3,REG,GB,WR,7,0.25,0.15,0.50,13.0
+00-0002,2026,3,REG,DEN,WR,4,0.18,0.09,0.35,8.0
+00-0003,2026,1,REG,MIN,WR,9,0.30,0.20,0.60,15.0
+00-0003,2026,2,REG,MIN,WR,10,0.32,0.22,0.65,16.0
+00-0004,2026,2,REG,SEA,RB,0,0.00,0.00,0.00,0.0

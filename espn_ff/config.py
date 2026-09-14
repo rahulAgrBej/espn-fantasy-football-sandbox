@@ -24,6 +24,14 @@ SLEEPER_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "sleeper"
 SLEEPER_SLIM_DIR = SLEEPER_DIR / "slim"
 SLEEPER_ID_MAP = SLEEPER_DIR / "player_id_map.csv"
 
+# nflverse role-feature layer -- raw release-asset parquet mirrored to disk
+# and queried in place by DuckDB; no persistent .duckdb file.
+NFLVERSE_DIR = PROJECT_ROOT / "data" / "nflverse"
+NFLVERSE_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "nflverse"
+NFLVERSE_MANIFEST = NFLVERSE_DIR / "manifest.json"
+NFLVERSE_XWALK = NFLVERSE_DIR / "player_xwalk.csv"
+NFLVERSE_FEATURES = NFLVERSE_DIR / "player_week_features.parquet"
+
 USER_AGENT = "Mozilla/5.0"
 
 # Regular season is 18 weeks; ESPN scoring periods run 1..18.
