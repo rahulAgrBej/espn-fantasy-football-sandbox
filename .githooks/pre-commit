@@ -1,0 +1,32 @@
+#!/bin/sh
+# Block secrets and Claude instruction files from ever being committed.
+#
+# .gitignore is advisory -- it does nothing for `git add -f` or for a file that
+# is already tracked. This hook is the enforcement layer.
+#
+# Enable (once per clone):  git config core.hooksPath .githooks
+
+set -u
+
+FORBIDDEN='(^|/)\.env($|\.)|\.env$|(^|/)\.envrc$|(^|/)\.Renviron$|(^|/)\.Rprofile$|(^|/)[Cc][Ll][Aa][Uu][Dd][Ee]([.-][^/]*)?\.[Mm][Dd]$|(^|/)\.claude(/|$)|\.pem$|\.key$|(^|/)secrets\.|(^|/)credentials\.'
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+offenders=$(printf '%s\n' "$staged" | grep -E "$FORBIDDEN" || true)
+
+if [ -n "$offenders" ]; then
+    echo >&2
+    echo "BLOCKED: refusing to commit environment or Claude instruction files." >&2
+    echo >&2
+    printf '%s\n' "$offenders" | sed 's/^/    /' >&2
+    echo >&2
+    echo "These may hold credentials or local-only instructions and must stay" >&2
+    echo "out of version control. To unstage:" >&2
+    echo >&2
+    printf '%s\n' "$offenders" | sed 's/^/    git restore --staged /' >&2
+    echo >&2
+    exit 1
+fi
+
+exit 0

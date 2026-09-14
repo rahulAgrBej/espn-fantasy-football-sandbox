@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Secrets and environment files -- never commit.
+# Patterns are broad on purpose: .gitignore is the first line of defence, and
+# .githooks/pre-commit blocks these even if forced with `git add -f`.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+*.env
+.envrc
+.Renviron
+.Rprofile
+*.pem
+*.key
+secrets.*
+credentials.*
+
+# Claude Code instruction and session files -- never commit.
+CLAUDE.md
+CLAUDE.*.md
+**/CLAUDE.md
+**/CLAUDE.*.md
+claude.md
+**/claude.md
+.claude/
+.claude*
+
+# Data is never committed
+data/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# macOS
+.DS_Store
