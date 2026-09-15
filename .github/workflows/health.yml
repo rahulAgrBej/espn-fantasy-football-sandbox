@@ -1,0 +1,84 @@
+name: health
+
+# Are the ESPN session cookies still alive?
+#
+# They are browser session credentials that expire on their own schedule and
+# cannot be refreshed programmatically, which makes them the one part of this
+# pipeline that fails silently and needs a person. Rotating a secret does not
+# help: the cookies die *between* rotations, and nothing changes when they do.
+#
+# So check on a clock rather than on an event. This runs twice daily and
+# ahead of Sunday's live-scoring window, because Sunday in-progress scoring is
+# the only data here that cannot be backfilled once missed.
+#
+# Deliberately touches no S3 and assumes no role: `probe` needs the two
+# cookies and nothing else. A failure here therefore means the cookies, not
+# the infrastructure.
+on:
+  schedule:
+    - cron: "0 11 * * *"    # 07:00 ET daily -- before the day's collection
+    - cron: "0 23 * * *"    # 19:00 ET daily
+    - cron: "0 16 * * 0"    # Sun 12:00 ET -- one hour before kickoff
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: health
+  cancel-in-progress: true
+
+jobs:
+  cookies:
+    if: github.repository == 'rahulAgrBej/espn-fantasy-football-sandbox'
+    runs-on: ubuntu-latest
+    environment: gh_env
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+
+      - name: Probe ESPN
+        id: probe
+        env:
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+        run: |
+          # No S3 restore, so the cache is cold and this is always a real
+          # authenticated request rather than a replay of a cached payload.
+          set +e
+          .venv/bin/python -m espn_ff probe
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Interpret the result
+        run: |
+          case "${{ steps.probe.outputs.code }}" in
+            0)
+              echo "::notice::ESPN cookies are valid"
+              ;;
+            3)
+              # EXIT_AUTH. Nothing retries its way out of this one.
+              echo "::error::ESPN cookies have EXPIRED -- collection is failing now."
+              echo "Re-grab espn_s2 and SWID from a logged-in browser"
+              echo "(DevTools > Application > Cookies > fantasy.espn.com), then:"
+              echo "  ./scripts/rotate_espn_cookies.sh"
+              exit 1
+              ;;
+            *)
+              # Could be an ESPN outage or a network blip; worth seeing, but
+              # it is not the cookies and may well pass on the next run.
+              echo "::warning::probe failed (exit ${{ steps.probe.outputs.code }}) -- not an auth failure; likely transient"
+              exit 1
+              ;;
+          esac

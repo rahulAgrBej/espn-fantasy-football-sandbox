@@ -7,7 +7,7 @@ from datetime import date
 import pandas as pd
 
 from . import config, constants, stats
-from .client import EspnClient, EspnError
+from .client import EspnClient, EspnError, PrivateLeagueError
 from .extract import draft, matchups, players, rosters, settings, teams
 from .extract._common import team_name
 from .cache import ttl_for
@@ -463,11 +463,13 @@ def cmd_credits(client, args):
     return 0
 
 
-# Exit codes. 0 success, 1 something went wrong and needs a human, 2 the
-# Odds credit guard declined to spend -- expected, and not a failure.
+# Exit codes. Unattended runs are alerted on from these alone, so the two
+# predictable, actionable failures get their own rather than sharing 1 with
+# every transient outage.
 EXIT_OK = 0
 EXIT_ERROR = 1
-EXIT_BUDGET = 2
+EXIT_BUDGET = 2   # Odds credit guard declined to spend; nothing was issued
+EXIT_AUTH = 3     # ESPN session cookies expired or missing
 
 COMMANDS = {
     "probe": cmd_probe,
@@ -548,6 +550,13 @@ def main(argv=None):
     )
     try:
         return COMMANDS[args.command](client, args)
+    except PrivateLeagueError as exc:
+        # ESPN's cookies are browser session credentials that expire on their
+        # own schedule and cannot be refreshed programmatically. That makes
+        # this the one failure here a person must act on, and it should never
+        # be confused with ESPN simply being down.
+        print(f"\n{exc}", file=sys.stderr)
+        return EXIT_AUTH
     except BudgetExceeded as exc:
         # Distinct from a failure on purpose. The credit guard firing means
         # the code worked: it declined to spend and issued nothing. An

@@ -31,6 +31,7 @@ Cadence and behavioural claims below are tagged the same three ways as
 | `espn.yml` | `0 13 * * 1`, `0 13 * * 2` | Mon/Tue 09:00 ET | `pull --refresh`, `export --refresh` | no |
 | `espn.yml` | `*/30 17-23 * * 0`, `*/30 0-4 * * 1` | Sun 13:00 ET – Mon 00:30 ET | same, every 30 min | no |
 | `odds.yml` | five slots, see below | Tue/Thu/Fri/Sun/Mon | `odds <job>`, `projections` | **yes** |
+| `health.yml` | `0 11,23 * * *`, `0 16 * * 0` | 07:00/19:00 ET, Sun 12:00 ET | `probe` | no |
 | `tests.yml` | on push / PR | — | `pytest` | no |
 
 The `odds.yml` slots map one-to-one onto the five-job schedule in
@@ -156,12 +157,18 @@ in CI — `config.load_dotenv` uses `os.environ.setdefault`, so workflow
 | Code | Meaning | CI treatment |
 |---|---|---|
 | 0 | Success | notice |
-| 1 | Something broke and needs a human | **failure** |
+| 1 | Transient or unexpected failure | **failure** |
 | 2 | The Odds credit guard declined to spend; nothing was issued | warning |
+| 3 | ESPN session cookies expired | **failure — act now** |
 
-`BudgetExceeded` subclasses `OddsError`, so before this split a correct,
-expected budget abort looked identical to expired ESPN cookies. Exit 2
-exists so unattended alerting stays worth reading.
+Unattended runs are alerted on from the exit status alone, so the two
+*predictable, actionable* failures get their own code instead of sharing 1
+with every ESPN outage and network blip. Both subclass a broader error
+(`BudgetExceeded` < `OddsError`, `PrivateLeagueError` < `EspnError`), so
+the distinction lives entirely in `cli.py`'s handler ordering — which
+`tests/test_cli_exit_codes.py` pins.
+
+Exit 3 is the only one that always needs a person: see the runbook below.
 
 ## Runbook
 
@@ -172,16 +179,35 @@ likely to happen and the one with no automated fix — they are browser
 session cookies and cannot be refreshed programmatically.
 
 Re-grab both from a logged-in browser (DevTools → Application → Cookies →
-`fantasy.espn.com`) and update the `gh_env` secrets:
+`fantasy.espn.com`), then:
 
 ```bash
-gh secret set ESPN_S2 --env gh_env --repo rahulAgrBej/espn-fantasy-football-sandbox
-gh secret set SWID    --env gh_env --repo rahulAgrBej/espn-fantasy-football-sandbox
+./scripts/rotate_espn_cookies.sh
 ```
 
-Then re-dispatch the affected workflow. Nothing is lost — ESPN's views are
-free to re-fetch — except live Sunday scoring during the outage window,
-which cannot be backfilled.
+It sets both `gh_env` secrets and immediately dispatches `espn.yml`, waiting
+for the verdict. Validating as part of rotating is the point: a truncated
+`espn_s2`, or a `SWID` pasted without its braces, is indistinguishable from
+a good value until something actually authenticates with it.
+
+**There is no way to make GitHub run a workflow when a secret changes** —
+Actions has no such event — so the rotation has to do it itself.
+
+Nothing is lost while the cookies are dead, since ESPN's views are free to
+re-fetch, *except* live Sunday scoring during the outage window, which
+cannot be backfilled.
+
+### How expiry gets noticed in the first place
+
+`.github/workflows/health.yml` runs `probe` twice daily and again an hour
+before Sunday kickoff. It touches no S3 and assumes no role — just the two
+cookies — so a failure there means the credentials and not the
+infrastructure. Exit 3 from it is the signal to rotate.
+
+This is a schedule and not an event on purpose: the cookies die *between*
+rotations, silently, and nothing changes at the moment they do. Triggering
+on a secret change would only ever confirm the value you just pasted, never
+catch the one quietly going stale.
 
 ### An odds job exited 2
 
@@ -215,7 +241,10 @@ spend credits for a value that already exists.
 
 - **Expired ESPN cookies are unavoidable and unpredictable.** There is no
   API to refresh them and no advance warning before they lapse. This is the
-  single biggest weakness in unattended operation.
+  single biggest weakness in unattended operation. `health.yml` shortens the
+  window between expiry and discovery to at most ~12 hours; it cannot
+  prevent it, and a cookie that dies mid-Sunday still costs that afternoon's
+  live scoring.
 - **Scheduled workflows are disabled after 60 days of repository
   inactivity** and silently re-enabled by any push *(Documented — GitHub)*.
   That window lands squarely in the offseason; check before Week 1.

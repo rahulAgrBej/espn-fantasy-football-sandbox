@@ -122,6 +122,7 @@ by the scheduled workflows -- see `docs/automation.md`.
 | `docs/automation.md` | How the schedule runs unattended: workflows, S3 state/archive split, OIDC, runbook |
 | `.github/workflows/` | The five scheduled collection workflows plus CI |
 | `scripts/s3_sync.sh` | Restore/archive/push the `data/` tree against S3 |
+| `scripts/rotate_espn_cookies.sh` | Rotate the ESPN cookies and validate them in CI |
 | `infra/*.json.example` | IAM trust + S3 policy templates (`<ACCOUNT_ID>` placeholders) |
 
 ## Sleeper player-status layer
