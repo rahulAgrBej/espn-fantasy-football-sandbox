@@ -42,6 +42,7 @@ Times are ET and hold year-round: the schedules are pinned to
 | `odds.yml` | five slots, see below | `odds <job>`, `projections` | **yes** |
 | `health.yml` | 07:04 / 19:04 daily, Sun 12:04 | `probe` | no |
 | `report.yml` | Mon 10:30 | `report --day monday` | no |
+| `report.yml` | Tue 10:00 | `report --day tuesday` | no |
 | `tests.yml` | on push / PR (GitHub's own trigger) | `pytest` | no |
 
 `tests.yml` is the only workflow GitHub still triggers by itself; it runs on

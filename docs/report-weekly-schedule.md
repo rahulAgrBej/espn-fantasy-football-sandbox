@@ -361,8 +361,16 @@ mechanics; three points specific to reports are worth stating here.
 **Monday is dispatched.** `infra/scheduler.yaml`'s `report-monday` schedule
 fires `.github/workflows/report.yml` at Mon 10:30 ET, 67 minutes after
 both Monday's ESPN export and nflverse's routine pull, the two feeds this
-report reads. Gated behind `ReportScheduleState`, default `DISABLED` like
-every other collection schedule.
+report reads. **Tuesday is dispatched too.** `infra/scheduler.yaml`'s
+`report-tuesday` schedule fires the same workflow at Tue 10:00 ET, 52
+minutes after Tuesday's ESPN export, the only feed that report reads.
+Both share the `ReportScheduleState` flag, like every other family
+(Espn, Nflverse, Odds) shares one enable/disable flag across its
+schedules. The template's own default for that flag is `DISABLED`, like
+every other collection schedule — but the deployed stack's
+`ReportScheduleState` was already `ENABLED` before `report-tuesday` was
+added, so it activated immediately on deploy rather than needing a
+separate rollout step, unlike a brand-new workflow family.
 
 **Reports read state and own none of it, except the reports themselves.**
 `report.yml` restores every state subtree it needs and pushes none of

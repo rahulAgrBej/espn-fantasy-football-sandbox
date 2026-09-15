@@ -77,7 +77,7 @@ fields the schedule puts in the event detail.
 
 ## The schedules
 
-All sixteen are pinned to `America/New_York`. EventBridge cron takes six fields
+All seventeen are pinned to `America/New_York`. EventBridge cron takes six fields
 — minute, hour, day-of-month, month, day-of-week, year — and requires `?` in
 one of the two day fields.
 
@@ -99,6 +99,7 @@ one of the two day fields.
 | `odds-pre-lock` | `cron(38 10 ? * SUN *)` | Sun 10:38 | `job=pre_lock`, `dry_run=false` |
 | `odds-results` | `cron(38 9 ? * MON *)` | Mon 09:38 | `job=results`, `dry_run=false` |
 | `report-monday` | `cron(30 10 ? * MON *)` | Mon 10:30 | `day=monday` |
+| `report-tuesday` | `cron(0 10 ? * TUE *)` | Tue 10:00 | `day=tuesday` |
 
 ### DST stops mattering
 
@@ -122,7 +123,9 @@ hour, with identical coverage — 24 fires from Sun 13:08 through Mon 00:38.
    read has to land last to be the one that survives.
 3. **espn `:08` and nflverse `:23` → report `:30` on Monday.** The Monday
    report reads both the ESPN export and nflverse's routine injury pull, so
-   it must go after both.
+   it must go after both. Tuesday's analogous gap is simpler: espn `:08` →
+   report `:00` on Tuesday, with no nflverse dependency, since Tuesday's
+   report never reads nflverse.
 4. **`odds` never auto-retries** — see below.
 
 ## Retry policy is deliberately not uniform
@@ -271,7 +274,9 @@ auto-disable.
   the DLQ/alarm here does not and cannot cover, since that alarm only
   watches dispatch delivery, not what the workflow does once it starts. See
   `docs/report-weekly-schedule.md`'s known gaps for what the report itself
-  cannot see.
+  cannot see. `report-tuesday` is newly added and has never fired at all
+  yet, sharing the same un-Observed caveat and the same git-push-race blind
+  spot.
 - **Sunday has never been exercised at all.** The ESPN live-scoring grid, the
   Sunday `health` probe and `odds pre_lock` have never fired once, under either
   scheduler. The first Sunday after cutover should be watched live.

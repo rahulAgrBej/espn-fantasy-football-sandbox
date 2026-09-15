@@ -845,6 +845,33 @@ Resources:
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn
 
+  # 52 minutes after espn-tuesday's 09:08 ET slot, the only feed this
+  # report reads at review time. Preserve the gap if either side is ever
+  # retimed.
+  ReportTuesdaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: report-tuesday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref ReportScheduleState
+      ScheduleExpression: cron(0 10 ? * TUE *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Tue 10:00 ET -- week in review
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"day":"tuesday"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.report
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
 # ---------------------------------------------------------------------------
 
 Outputs:
