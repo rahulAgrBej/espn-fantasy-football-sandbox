@@ -47,11 +47,11 @@ either way.
 
 | Job (`odds <job>`) | Cron slot (ET) | Run budget | Priority | Typical cost |
 |---|---|---|---|---|
-| `slate` | Tue 09:00 | 4 | normal | 2 (spreads+totals, all games) |
+| `slate` | Tue 09:30 | 4 | normal | 2 (spreads+totals, all games) |
 | `props` | Thu 10:00 | 40 | normal | ~10–20 (6–10 decision-relevant events, 3–4 markets each) |
 | `line_movement` | Fri 10:00 | 4 | normal | 2 |
 | `pre_lock` | Sun 10:30 | 25 | **critical** | ~5–15 (featured + undecided-slot props only) |
-| `results` | Mon 09:00 | 4 | normal | 2 (`daysFrom=3`) |
+| `results` | Mon 09:30 | 4 | normal | 2 (`daysFrom=3`) |
 
 Steady state: roughly 50–67 credits/week, ~250–335 per billing period out
 of 500 — the remainder is headroom for playoff weeks and ad-hoc research.

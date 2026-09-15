@@ -31,12 +31,12 @@ Cadence and behavioural claims below are tagged the same three ways as
 | `espn.yml` | `0 13 * * 1`, `0 13 * * 2` | Mon/Tue 09:00 ET | `pull --refresh`, `export --refresh` | no |
 | `espn.yml` | `*/30 17-23 * * 0`, `*/30 0-4 * * 1` | Sun 13:00 ET – Mon 00:30 ET | same, every 30 min | no |
 | `odds.yml` | five slots, see below | Tue/Thu/Fri/Sun/Mon | `odds <job>`, `projections` | **yes** |
-| `health.yml` | `0 11,23 * * *`, `0 16 * * 0` | 07:00/19:00 ET, Sun 12:00 ET | `probe` | no |
+| `health.yml` | `0 11 * * *`, `0 23 * * *`, `0 16 * * 0` | 07:00/19:00 ET, Sun 12:00 ET | `probe` | no |
 | `tests.yml` | on push / PR | — | `pytest` | no |
 
 The `odds.yml` slots map one-to-one onto the five-job schedule in
-`docs/odds-budget.md`: `slate` (Tue 09:00 ET), `props` (Thu 10:00),
-`line_movement` (Fri 10:00), `pre_lock` (Sun 10:30), `results` (Mon 09:00).
+`docs/odds-budget.md`: `slate` (Tue 09:30 ET), `props` (Thu 10:00),
+`line_movement` (Fri 10:00), `pre_lock` (Sun 10:30), `results` (Mon 09:30).
 That document owns the credit invariant, the cost table, and the run
 budgets; this one does not restate them.
 
