@@ -2,25 +2,26 @@ name: report
 
 # Renders one of docs/report-weekly-schedule.md's reports from data already
 # on disk and commits the result to reports/, mirroring it to S3 as well.
-# `monday` and `tuesday` are implemented (espn_ff/cli.py's REPORTS) -- the
-# workflow forwards whatever `day` AWS sends and lets cmd_report's own "not
-# implemented" guard handle the rest, so a future report day needs no new
-# workflow file, just a wider `options:` list below plus a new schedule.
+# `monday`, `tuesday` and `tuesday-waivers` are implemented (espn_ff/cli.py's
+# REPORTS) -- the workflow forwards whatever `day` AWS sends and lets
+# cmd_report's own "not implemented" guard handle the rest, so a future
+# report day needs no new workflow file, just a wider `options:` list below
+# plus a new schedule.
 #
 # Unlike every other workflow here, this one writes back to the repo, not
 # just to S3 -- reports/<season>/week-NN/ is git-tracked and this job needs
 # contents: write to commit its own output.
 #
-# The clock lives in AWS. EventBridge Scheduler dispatches Monday 10:30 ET,
-# after Monday's ESPN 09:08 export and nflverse's 09:23 routine pull, both
-# of which this report reads. See docs/aws-scheduling.md.
+# The clock lives in AWS. EventBridge Scheduler dispatches Monday 10:30 ET
+# and Tuesday 10:00/11:00 ET, after that day's ESPN/nflverse/odds exports,
+# all of which some report here reads. See docs/aws-scheduling.md.
 on:
   workflow_dispatch:
     inputs:
       day:
         description: "Which day's report to render"
         type: choice
-        options: [monday, tuesday]
+        options: [monday, tuesday, tuesday-waivers]
         required: true
 
 permissions:
@@ -49,22 +50,29 @@ jobs:
           day="${{ inputs.day }}"
           if [ -z "$day" ]; then
             echo "::error::No day named on this dispatch -- refusing to run." \
-                 "The caller must send one of: monday, tuesday"
+                 "The caller must send one of: monday, tuesday, tuesday-waivers"
             exit 1
           fi
           echo "day=$day" >> "$GITHUB_OUTPUT"
           echo "Resolved day: $day"
 
-      # data/out/ is never covered by state-paths -- Monday's and Tuesday's
-      # reports read matchups/weekly-rosters/player-pool/roster-slots/teams
+      # data/out/ is never covered by state-paths -- these reports read
+      # matchups/weekly-rosters/player-pool/roster-slots/teams/transactions
       # exports that only exist in S3 under latest/out/, seeded here via
-      # restore-out-datasets. `teams` is Tuesday-only (its standings
-      # section), but restoring it unconditionally is harmless for Monday.
+      # restore-out-datasets, and tuesday-waivers additionally reads
+      # data/odds/ via state-paths' `odds` subtree.
+      #
+      # Restoring the union unconditionally (rather than per-day) is
+      # deliberate: a missing dataset does not fail the run, it degrades the
+      # report while still exiting 0 -- so a per-day list is a silent-failure
+      # surface, not an optimisation. `push-paths` stays empty: this workflow
+      # only reads `odds`, odds.yml remains its sole writer, and no
+      # `--delete` race appears.
       - uses: ./.github/actions/ff-run
         with:
           command: "report --day ${{ steps.pick.outputs.day }}"
-          state-paths: "raw sleeper nflverse raw/nflverse"
-          restore-out-datasets: "matchups weekly-rosters player-pool roster-slots teams"
+          state-paths: "raw sleeper nflverse raw/nflverse odds"
+          restore-out-datasets: "matchups weekly-rosters player-pool roster-slots teams transactions"
           push-paths: ""
           aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
