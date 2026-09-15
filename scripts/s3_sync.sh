@@ -29,11 +29,19 @@ DATA="$ROOT/data"
 
 # Subtrees that make up "state". Anything not listed here is either derived
 # (data/out) or reproducible, and is archived rather than mirrored.
+# "raw" covers ESPN's cache only (see sync_excludes below), so each vendor's
+# raw mirror is listed separately -- otherwise this default, which is what a
+# manual seed or a full disaster-recovery restore uses, would silently skip
+# the nflverse parquet assets and the Sleeper gz snapshots. Workflows pass
+# an explicit subset and never rely on this list.
 STATE_SUBTREES=(
     "odds"
     "sleeper"
     "nflverse"
     "raw"
+    "raw/nflverse"
+    "raw/sleeper"
+    "raw/odds"
 )
 
 # data/raw is shared: config.py puts ESPN's per-season cache at
@@ -45,11 +53,16 @@ STATE_SUBTREES=(
 # mirror whenever it happened to run with a cold copy of it.
 VENDOR_RAW_SUBDIRS=(sleeper nflverse odds)
 
-# Echo the --exclude flags that scope a "raw" sync to the ESPN cache.
-raw_excludes() {
-    local sub="$1"
+# Never mirror macOS cruft into the bucket. .DS_Store is gitignored, but the
+# sync reads the filesystem, not git.
+COMMON_EXCLUDES=(--exclude '*.DS_Store' --exclude '.DS_Store')
+
+# Echo the --exclude flags for a subtree: the common ones, plus -- for the
+# shared "raw" tree -- the vendor subdirectories that belong to other feeds.
+sync_excludes() {
+    local sub="$1" d
+    printf -- '%s ' "${COMMON_EXCLUDES[@]}"
     [ "$sub" = "raw" ] || return 0
-    local d
     for d in "${VENDOR_RAW_SUBDIRS[@]}"; do
         printf -- '--exclude %s/* ' "$d"
     done
@@ -79,7 +92,7 @@ cmd_restore() {
     for sub in "${want[@]}"; do
         say "restore state/$sub -> data/$sub"
         # shellcheck disable=SC2046  # word splitting is the point here
-        s3 s3 sync "s3://$BUCKET/state/$sub" "$DATA/$sub" $(raw_excludes "$sub") --only-show-errors
+        s3 s3 sync "s3://$BUCKET/state/$sub" "$DATA/$sub" $(sync_excludes "$sub") --only-show-errors
     done
 }
 
@@ -132,7 +145,7 @@ cmd_push_state() {
         [ -d "$DATA/$sub" ] || continue
         say "push data/$sub -> state/$sub"
         # shellcheck disable=SC2046  # word splitting is the point here
-        s3 s3 sync "$DATA/$sub" "s3://$BUCKET/state/$sub" $(raw_excludes "$sub") --delete --only-show-errors
+        s3 s3 sync "$DATA/$sub" "s3://$BUCKET/state/$sub" $(sync_excludes "$sub") --delete --only-show-errors
     done
 }
 
