@@ -61,11 +61,14 @@ runs:
           echo "::add-mask::${{ inputs.odds-api-key }}"
         fi
 
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
-    - uses: astral-sh/setup-uv@v5
+    - uses: astral-sh/setup-uv@v10
       with:
         enable-cache: true
+        # No lockfile exists, so key the cache on the dependency declaration
+        # -- otherwise it never invalidates.
+        cache-dependency-glob: "pyproject.toml"
 
     - name: Install
       shell: bash
@@ -75,7 +78,7 @@ runs:
         uv venv
         uv pip install -e ".[dev]"
 
-    - uses: aws-actions/configure-aws-credentials@v4
+    - uses: aws-actions/configure-aws-credentials@v6
       with:
         role-to-assume: ${{ inputs.aws-role-arn }}
         aws-region: ${{ inputs.aws-region }}

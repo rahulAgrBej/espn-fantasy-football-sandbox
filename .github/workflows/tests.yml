@@ -21,11 +21,14 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
+          # No lockfile exists, so key the cache on the dependency
+          # declaration -- otherwise it never invalidates.
+          cache-dependency-glob: "pyproject.toml"
 
       - name: Install
         run: |
