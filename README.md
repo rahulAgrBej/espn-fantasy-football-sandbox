@@ -347,6 +347,35 @@ A manual run is still the right tool for anything ad hoc:
 gh workflow run odds.yml -f job=props -f dry_run=false   # or run it in CI
 ```
 
+## Weekly collection schedule
+
+Times are ET, pinned to their EDT (UTC-4) equivalent — each slot fires an
+hour earlier in local time once DST ends in November. *(Observed — cron
+schedules in `.github/workflows/`.)* See
+`docs/data-collection-weekly-schedule.md` for what each row means for a
+lineup or waiver decision, and `docs/automation.md` for the workflow/S3
+runbook this schedule runs on.
+
+| Day | Time (ET) | Data metric | Data source |
+|---|---|---|---|
+| Monday | 08:00 daily | Daily player status refresh | Sleeper — `sleeper` |
+| Monday | 09:00 | Final scores, closed matchup results, weekend transactions | ESPN — `--refresh` on `matchups.csv` / `transactions.csv` |
+| Monday | 09:30 | Prior week's game results (`daysFrom=3`) | The Odds API — `results` job |
+| Tuesday | 09:00 | Waiver-processing results | ESPN — `--refresh` on `transactions.csv` |
+| Tuesday | 09:00 / 13:00 / 18:00 | Stat corrections begin landing | nflverse — `stats_player` feed, routine 3x/day pull |
+| Tuesday | 09:30 | Opening spreads/totals for the coming week | The Odds API — `slate` job |
+| Wednesday | 08:00 daily | Practice participation, day 1 of 3 | Sleeper — `sleeper` |
+| Wednesday | 09:00 / 13:00 / 18:00 | Stat corrections continue landing | nflverse — routine 3x/day pull |
+| Wednesday | No scheduled job | Player-props market opens (nothing decision-relevant yet) | The Odds API — market open |
+| Thursday | 08:00 daily | Practice participation, day 2 of 3 | Sleeper — `sleeper` |
+| Thursday | 09:00 | First canonical read of the prior week's stats (`provisional` resolves) | nflverse — `--force` refresh |
+| Thursday | 10:00 | Player-props snapshot | The Odds API — `props` job |
+| Friday | 08:00 daily | Practice participation, day 3 of 3 — `practice_trajectory` complete | Sleeper — `sleeper` |
+| Friday | 10:00 | Line movement since Tuesday's open | The Odds API — `line_movement` job |
+| Saturday | 09:00 / 13:00 / 18:00 | Routine background refresh only, no new decision-relevant data | nflverse — routine 3x/day pull |
+| Sunday | 10:30 EDT / 09:30 EST | Featured + undecided-slot prop lines, final line before lock | The Odds API — `pre_lock` job (critical priority) |
+| Sunday | 13:00–19:30, then 20:00–00:30 Mon | Live scoring, live rosters | ESPN — `LIVE_TTL`-gated `--refresh` (weekly-rosters, matchups), every 30 min |
+
 ## Tests
 
 ```bash
