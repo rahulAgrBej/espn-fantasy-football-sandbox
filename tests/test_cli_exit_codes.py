@@ -79,7 +79,7 @@ def test_report_day_tuesday_dispatches_to_the_tuesday_builder(monkeypatch, tmp_p
     now routes tuesday to report_tuesday.build rather than falling
     through to that error path."""
     stub = lambda season, week, team_id=None: "stub tuesday report\n"
-    monkeypatch.setitem(cli.REPORTS, "tuesday", (stub, "week-in-review"))
+    monkeypatch.setitem(cli.REPORTS, "tuesday", (stub, "tuesday", "week-in-review"))
     monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
 
     code = cli.main(["report", "--day", "tuesday", "--week", "2"])

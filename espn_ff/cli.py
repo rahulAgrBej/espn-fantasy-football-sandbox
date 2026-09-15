@@ -26,13 +26,18 @@ from .odds import projections as odds_projections
 from .odds.ledger import BudgetExceeded, OddsError
 from .report import monday as report_monday
 from .report import tuesday as report_tuesday
+from .report import waivers as report_waivers
 
-# day -> (build function, output filename slug). cmd_report looks up this
-# table instead of a bare set of implemented days so the "not implemented
-# yet" guard and the output path both derive from the same source.
+# day key -> (build function, <day> filename segment, output slug). The key
+# is usually the day, but Tuesday carries two reports, so "tuesday-waivers"
+# shares the "tuesday" filename segment with "tuesday" while remaining its
+# own REPORTS entry. cmd_report looks up this table instead of a bare set
+# of implemented days so the "not implemented yet" guard and the output
+# path both derive from the same source.
 REPORTS = {
-    "monday": (report_monday.build, "monday-night-call"),
-    "tuesday": (report_tuesday.build, "week-in-review"),
+    "monday": (report_monday.build, "monday", "monday-night-call"),
+    "tuesday": (report_tuesday.build, "tuesday", "week-in-review"),
+    "tuesday-waivers": (report_waivers.build, "tuesday", "waiver-wire"),
 }
 
 
@@ -485,14 +490,14 @@ def cmd_report(client, args):
         print(f"report --day {args.day}: not implemented yet -- only {sorted(REPORTS)} is", file=sys.stderr)
         return 1
 
-    build_fn, slug = REPORTS[args.day]
+    build_fn, day_label, slug = REPORTS[args.day]
     season = args.season
     week = args.week or client.current_scoring_period()
     text = build_fn(season, week, team_id=args.team_id)
 
     out_dir = config.PROJECT_ROOT / "reports" / str(season) / f"week-{week:02d}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{date.today():%Y-%m-%d}-{args.day}-{slug}.md"
+    path = out_dir / f"{date.today():%Y-%m-%d}-{day_label}-{slug}.md"
     path.write_text(text)
     print(f"  wrote {path}")
     return 0

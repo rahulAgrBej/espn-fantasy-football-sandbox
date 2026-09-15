@@ -18,6 +18,7 @@ import pandas as pd
 
 from .. import config
 from ..nflverse import store as nflverse_store
+from ..odds import store as odds_store
 
 _DATE_PREFIX = re.compile(r"^(\d{2})-(\d{2})-(\d{4})-")
 
@@ -81,13 +82,42 @@ def _espn_freshness(season=None):
     return latest, (time.time() - latest) > ESPN_STALE_HOURS * 3600
 
 
+def _odds_freshness():
+    """The `slate_context` job specifically -- not the whole last_run.json
+    -- so one odds job's staleness never masks another's
+    (docs/report-weekly-schedule.md:336-341). Prefers the team-totals
+    parquet's own max `captured_at` (an ISO string written by
+    odds/jobs.py's `_flatten_featured`, converted to epoch here) over the
+    last-run file's `ran_at`, because a budget-aborted run
+    (docs/odds-budget.md) writes a fresh `ran_at` over an unchanged
+    snapshot -- `ran_at` says when the job ran, `captured_at` says when its
+    contents were true, the same "never a file's mtime" principle this
+    module's docstring states, applied one level in.
+
+    `stale` is True when the last-run file or its `slate_context` entry is
+    absent, when that entry's own `stale` flag is set, or when the parquet
+    is missing or empty."""
+    entry = odds_store.read_last_run("slate_context")
+    totals_df = pd.read_parquet(config.ODDS_TEAM_TOTALS) if config.ODDS_TEAM_TOTALS.exists() else pd.DataFrame()
+
+    captured_at = None
+    if not totals_df.empty and "captured_at" in totals_df.columns:
+        captured_at = pd.Timestamp(totals_df["captured_at"].max()).timestamp()
+
+    ran_at = entry.get("ran_at") if entry else None
+    stale = entry is None or bool(entry.get("stale")) or totals_df.empty
+    return (captured_at if captured_at is not None else ran_at), stale
+
+
 def freshness(season=None):
     """{"sleeper": (fetched_at, stale), "nflverse": (fetched_at, stale),
-    "espn": (fetched_at, stale)} -- the freshness header every report
-    opens with. `fetched_at` is a Unix timestamp or None when the feed has
-    never run; `stale` is always a bool."""
+    "espn": (fetched_at, stale), "odds": (fetched_at, stale)} -- the
+    freshness header every report opens with. `fetched_at` is a Unix
+    timestamp or None when the feed has never run; `stale` is always a
+    bool."""
     return {
         "sleeper": _sleeper_freshness(),
         "nflverse": _nflverse_freshness(),
         "espn": _espn_freshness(season=season),
+        "odds": _odds_freshness(),
     }

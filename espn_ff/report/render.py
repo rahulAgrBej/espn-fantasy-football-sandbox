@@ -36,8 +36,13 @@ def _fmt_ts(ts):
 
 
 def freshness_lines(fresh):
+    """Iterates a fixed feed order, tolerating a `fresh` dict that carries
+    fewer keys than the full set -- an older caller passing a three-key
+    dict still works."""
     lines = []
-    for name in ("sleeper", "nflverse", "espn"):
+    for name in ("sleeper", "nflverse", "espn", "odds"):
+        if name not in fresh:
+            continue
         ts, stale = fresh[name]
         flag = " (STALE)" if stale else ""
         lines.append(f"- {name}: {_fmt_ts(ts)}{flag}")

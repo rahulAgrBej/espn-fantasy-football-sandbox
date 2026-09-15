@@ -1,15 +1,16 @@
 # Monday night call -- 2026 week 2
 
 ## Freshness
-- sleeper: 2026-09-15 04:14:28
-- nflverse: 2026-09-15 17:24:07
-- espn: 2026-09-15 18:10:04
+- sleeper: 2026-09-14 19:13:41
+- nflverse: 2026-09-15 04:46:47
+- espn: 2026-09-15 16:31:36
+- odds: never (STALE)
 
 ## Tonight's game
 - NYG @ LAR, 20:15 ET
 
 ## Live margin
-**insufficient data** -- both sides read 0.0 -- the ESPN refresh likely has not landed
+**insufficient data** -- points_live missing for one or both sides
 
 ## Who is left
 - (ours) Cam Skattebo -- RB NYG
@@ -25,23 +26,24 @@
 
 ## Alternatives
 ### Cam Skattebo (RB)
-- free agent: Devin Singletary (NYG, 6.7 proj), drop De'Zhaun Stribling
+- free agent: Devin Singletary (NYG, 7.0 proj), drop De'Zhaun Stribling
 - free agent: Patrick Ricard (NYG, 0.4 proj), drop De'Zhaun Stribling
 - free agent: Tyrone Tracy Jr. (NYG, 0.4 proj), drop De'Zhaun Stribling
 - free agent: Najee Harris (NYG, 0.0 proj), drop De'Zhaun Stribling
 - free agent: Ronnie Rivers (LAR, 0.0 proj), drop De'Zhaun Stribling
 ### Malik Nabers (WR)
 - free agent: Malachi Fields (NYG, 6.2 proj), drop De'Zhaun Stribling
-- free agent: Darnell Mooney (NYG, 5.3 proj), drop De'Zhaun Stribling
+- free agent: Darnell Mooney (NYG, 4.8 proj), drop De'Zhaun Stribling
+- free agent: Odell Beckham Jr. (NYG, 3.0 proj), drop De'Zhaun Stribling
 - free agent: Jordan Whittington (LAR, 2.6 proj), drop De'Zhaun Stribling
-- free agent: Odell Beckham Jr. (NYG, 2.5 proj), drop De'Zhaun Stribling
 - free agent: Konata Mumpfield (LAR, 1.7 proj), drop De'Zhaun Stribling
 - free agent: Xavier Smith (LAR, 0.7 proj), drop De'Zhaun Stribling
 - free agent: Braxton Berrios (NYG, 0.1 proj), drop De'Zhaun Stribling
-- free agent: CJ Daniels (LAR, 0.0 proj), drop De'Zhaun Stribling
 - free agent: Tutu Atwell (LAR, 0.0 proj), drop De'Zhaun Stribling
+- free agent: CJ Daniels (LAR, 0.0 proj), drop De'Zhaun Stribling
 - free agent: Calvin Austin III (NYG, 0.0 proj), drop De'Zhaun Stribling
 - free agent: Gunner Olszewski (NYG, 0.0 proj), drop De'Zhaun Stribling
+- free agent: Dalen Cambre (NYG, 0.0 proj), drop De'Zhaun Stribling
 
 ## What this report cannot see
 - Official inactives drop roughly 90 minutes before kickoff, in no feed this pipeline touches.
