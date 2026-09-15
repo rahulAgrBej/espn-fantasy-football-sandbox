@@ -1,5 +1,7 @@
 #!/bin/sh
-# Block secrets and Claude instruction files from ever being committed.
+# Block secrets and local/session Claude files from ever being committed.
+# The project-level CLAUDE.md at the repo root is tracked deliberately;
+# variants like CLAUDE.local.md and .claude/ session files stay blocked.
 #
 # .gitignore is advisory -- it does nothing for `git add -f` or for a file that
 # is already tracked. This hook is the enforcement layer.
@@ -8,7 +10,7 @@
 
 set -u
 
-FORBIDDEN='(^|/)\.env($|\.)|\.env$|(^|/)\.envrc$|(^|/)\.Renviron$|(^|/)\.Rprofile$|(^|/)[Cc][Ll][Aa][Uu][Dd][Ee]([.-][^/]*)?\.[Mm][Dd]$|(^|/)\.claude(/|$)|\.pem$|\.key$|(^|/)secrets\.|(^|/)credentials\.'
+FORBIDDEN='(^|/)\.env($|\.)|\.env$|(^|/)\.envrc$|(^|/)\.Renviron$|(^|/)\.Rprofile$|(^|/)[Cc][Ll][Aa][Uu][Dd][Ee][.-][^/]*\.[Mm][Dd]$|(^|/)\.claude(/|$)|\.pem$|\.key$|(^|/)secrets\.|(^|/)credentials\.'
 
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
 [ -z "$staged" ] && exit 0
