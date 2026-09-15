@@ -71,7 +71,7 @@ aws iam update-assume-role-policy --role-name espn-ff-github-actions \
 
 ## The scheduler stack
 
-`scheduler.yaml` holds everything that fires the workflows: 15 EventBridge
+`scheduler.yaml` holds everything that fires the workflows: 18 EventBridge
 schedules, the `ff-dispatch` bus, one rule per workflow, the API destination
 and connection that reach GitHub, a dead-letter queue and an alarm. It creates
 its own two IAM roles, so `CAPABILITY_NAMED_IAM` is required.
@@ -82,6 +82,27 @@ aws cloudformation deploy \
   --stack-name ff-scheduler \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides GitHubToken="$GH_DISPATCH_TOKEN" AlarmEmail=you@example.com
+```
+
+That command is the **bootstrap** form, for standing the stack up the first
+time. It is actively dangerous for an incremental change (adding a schedule,
+retiming one, widening a workflow's `options:`): `GitHubToken` and
+`AlarmEmail` have no default, so `aws cloudformation deploy` without
+`--parameter-overrides` retains whatever the stack already has for them, but
+passing a stale `$GH_DISPATCH_TOKEN` here **updates the
+`ff-github-dispatch` connection and breaks every schedule, not just the one
+you meant to touch** — `scripts/rotate_dispatch_token.sh` owns that
+connection outside CloudFormation by design. For an incremental change, omit
+both parameters and preview first:
+
+```bash
+aws cloudformation deploy \
+  --template-file infra/scheduler.yaml \
+  --stack-name ff-scheduler \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --no-execute-changeset
+# then aws cloudformation describe-change-set / execute-change-set --
+# see docs/aws-scheduling.md
 ```
 
 Every schedule defaults to `DISABLED`; the `*ScheduleState` parameters enable

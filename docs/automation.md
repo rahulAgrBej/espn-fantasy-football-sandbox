@@ -43,6 +43,7 @@ Times are ET and hold year-round: the schedules are pinned to
 | `health.yml` | 07:04 / 19:04 daily, Sun 12:04 | `probe` | no |
 | `report.yml` | Mon 10:30 | `report --day monday` | no |
 | `report.yml` | Tue 10:00 | `report --day tuesday` | no |
+| `report.yml` | Tue 11:00 | `report --day tuesday-waivers` | no |
 | `tests.yml` | on push / PR (GitHub's own trigger) | `pytest` | no |
 
 `tests.yml` is the only workflow GitHub still triggers by itself; it runs on
@@ -116,7 +117,7 @@ needs to read but **pushes back only what it owns**:
 | `sleeper.yml` | `sleeper raw raw/sleeper` | `sleeper`, `raw/sleeper` |
 | `nflverse.yml` | `nflverse raw raw/nflverse` | `nflverse`, `raw/nflverse` |
 | `odds.yml` | `odds raw raw/odds` | `odds`, `raw/odds` |
-| `report.yml` | `raw sleeper nflverse raw/nflverse`, plus `latest/out/{matchups,weekly-rosters,player-pool,roster-slots}` | none of `data/` — see below |
+| `report.yml` | `raw sleeper nflverse raw/nflverse odds`, plus `latest/out/{matchups,weekly-rosters,player-pool,roster-slots,teams,transactions}` | none of `data/` — see below |
 
 `report.yml` is the odd one out twice over: it is the first workflow that
 passes an empty `push-paths` and means it (it restores several subtrees
@@ -126,7 +127,11 @@ and it also reads a slice of `data/out/` that `restore` never covers at all.
 `data/out/` is purely an archive destination for every other workflow —
 `report.yml` seeds it from `s3://$BUCKET/latest/out/<dataset>.csv` instead
 (the "newest copy" convenience prefix from the bucket layout below), via a
-new `s3_sync.sh restore-out` subcommand.
+new `s3_sync.sh restore-out` subcommand. `odds` is the one subtree in that
+list `report.yml` restores that is owned by a *metered* workflow
+(`odds.yml`) rather than a free one — still read-only and still pushed back
+nowhere, but the read exists specifically so the Tuesday 11:00 waiver
+report can price `implied_team_total` off the Tuesday `slate` job.
 
 `report.yml` also owns state genuinely outside `data/`: it writes to
 `reports/<season>/week-NN/`, which is git-tracked rather than S3-state, and
@@ -323,3 +328,15 @@ spend credits for a value that already exists.
   an upstream release can break CI with no local change.
 - **`latest/` duplicates `archive/`.** It exists for convenience; drop it
   if the redundancy stops earning its keep.
+- **A report can succeed and say nothing.** The skip-on-missing discipline
+  in `s3_sync.sh` is correct on the collection side — a missing dataset
+  degrades a job rather than failing it, so a transient gap in one feed
+  doesn't cascade into every workflow that reads state. On the
+  consumption side, the same discipline converts a configuration error
+  into a content error: `report.yml` restoring the wrong `state-paths` or
+  `restore-out-datasets` list looks identical, at exit 0, to the upstream
+  feed genuinely having nothing yet. `report-tuesday-waivers` hit exactly
+  this during its own rollout, for an unrelated reason (a dedupe-key bug
+  in `espn_ff/odds/store.py`, since fixed) — the run exited 0 and
+  committed a report with every `implied_team_total` cell reading
+  "insufficient data," which is far harder to notice than a red run.

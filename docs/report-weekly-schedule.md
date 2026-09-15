@@ -16,17 +16,18 @@ collection run takes, which is minutes. The 37–82 minutes below are ample,
 and the reason the times still look offset rather than aligned is that
 they are anchored to the collection slots.
 
-**Monday and Tuesday's week-in-review are implemented; the rest of the
-week is still a specification.** `espn_ff/report/` is the report engine.
-`python -m espn_ff report --day monday` renders the Monday-night call from
-data already on disk *(Observed)*, and `python -m espn_ff report --day
-tuesday` renders the week-in-review. `espn_ff/cli.py`'s `REPORTS` dict has
-no `wednesday`, `thursday`, etc. entries yet, nor a second Tuesday entry
-for the 11:00 waiver report -- calling `report --day` with any other value
-exits with a clear "not implemented" rather than an empty file. This
-document is still the specification for the remaining six reports, not a
-description of them, which is why no claim in those sections is tagged
-**Observed**.
+**Monday, Tuesday's week-in-review, and Tuesday's waiver wire are
+implemented; the rest of the week is still a specification.**
+`espn_ff/report/` is the report engine. `python -m espn_ff report --day
+monday` renders the Monday-night call from data already on disk
+*(Observed)*, `python -m espn_ff report --day tuesday` renders the
+week-in-review, and `python -m espn_ff report --day tuesday-waivers`
+renders the waiver wire and opening market. `espn_ff/cli.py`'s `REPORTS`
+dict has no `wednesday`, `thursday`, etc. entries yet -- calling `report
+--day` with any other value exits with a clear "not implemented" rather
+than an empty file. This document is still the specification for the
+remaining five reports, not a description of them, which is why no claim
+in those sections is tagged **Observed**.
 
 ## Overview
 
@@ -58,11 +59,13 @@ Sunday's slot is the one with a hard deadline behind it: 11:30 ET leaves 90
 minutes before 13:00 ET kickoffs, and unlike the old UTC pinning that holds
 in November too rather than drifting to 10:30.
 
-When these are built they belong in `infra/scheduler.yaml` alongside the
-collection schedules, with one rule per report workflow. The only
-odds-dependent margin is Tuesday's 11:00 report at 82 minutes; the
-tightest margins are the 37-minute Wednesday and Saturday slots, which
-wait only on feeds that do auto-retry (`docs/aws-scheduling.md`).
+When the remaining five are built they belong in `infra/scheduler.yaml`
+alongside the collection schedules, with one rule per report workflow,
+the same way `ReportTuesdayWaiversSchedule` was added for the 11:00
+waiver report. The only odds-dependent margin currently live is that
+82-minute Tuesday 11:00 slot; the tightest margins among the rest are the
+37-minute Wednesday and Saturday slots, which wait only on feeds that do
+auto-retry (`docs/aws-scheduling.md`).
 
 ## What every report contains
 
@@ -176,10 +179,19 @@ trades a real bye-week problem for a marginal add.
 
 ## Tuesday — waiver wire and opening market
 
+*(Observed — `python -m espn_ff report --day tuesday-waivers --week 2` on
+Tue 2026-09-15, once the odds bugs below were fixed and a real `slate`
+had captured. See the known-gaps entry for the bugs themselves.)*
+
 **What it shows.** Waiver settlements from the refreshed
 `transactions.csv` — `execution_type`, `is_pending`, and `bid_amount`
 per claim — alongside `teams.csv`'s `waiver_rank`, the free-agent pool,
 and `implied_team_total` for the coming week from the `slate` job.
+*(Observed)* Our waiver rank rendered 4 of 12; seven per-slot add-candidate
+blocks (D/ST, K, QB, TE, RB, WR, RB/WR) rendered in that most-constrained-first
+order; 5 legal drops were identified; and the WR and RB/WR blocks repeated
+the same three candidates verbatim, exactly as the "shares eligible
+candidates" note below anticipates.
 
 **What to look out for.** **`player-pool.csv` carries `on_team_id = 0`
 on every row.** It is pulled from the ownership-free
@@ -202,9 +214,11 @@ settled one.
 **Swap and drop candidates.** Ranked add candidates from the derived
 free-agent pool, scored by `week_projected` against the weakest bench
 player eligible for the same slot, with each add paired to a named drop
-so the move is roster-legal as presented. Temper each by the added
-player's `implied_team_total`: a low team total is reason to discount a
-bench-and-hope add before any practice or injury signal exists at all.
+so the move is roster-legal as presented. Each row also carries the
+added player's `implied_team_total` as a displayed column *(Observed)* —
+the spec above once described "tempering" the add by that number, but
+what shipped is a column for the reader to weigh, not a re-rank; a low
+team total does not move a candidate down the list on its own.
 
 ## Wednesday — availability watchlist
 
@@ -361,26 +375,38 @@ mechanics; three points specific to reports are worth stating here.
 **Monday is dispatched.** `infra/scheduler.yaml`'s `report-monday` schedule
 fires `.github/workflows/report.yml` at Mon 10:30 ET, 67 minutes after
 both Monday's ESPN export and nflverse's routine pull, the two feeds this
-report reads. **Tuesday is dispatched too.** `infra/scheduler.yaml`'s
-`report-tuesday` schedule fires the same workflow at Tue 10:00 ET, 52
-minutes after Tuesday's ESPN export, the only feed that report reads.
-Both share the `ReportScheduleState` flag, like every other family
+report reads. **Tuesday is dispatched twice.** `report-tuesday` fires the
+same workflow at Tue 10:00 ET, 52 minutes after Tuesday's ESPN export, the
+only feed the week-in-review reads; `report-tuesday-waivers` fires it
+again at Tue 11:00 ET, 82 minutes after Odds `slate`'s 09:38 slot — the
+tighter of that report's two margins, the other being ESPN's 09:08. All
+three share the `ReportScheduleState` flag, like every other family
 (Espn, Nflverse, Odds) shares one enable/disable flag across its
 schedules. The template's own default for that flag is `DISABLED`, like
 every other collection schedule — but the deployed stack's
 `ReportScheduleState` was already `ENABLED` before `report-tuesday` was
-added, so it activated immediately on deploy rather than needing a
-separate rollout step, unlike a brand-new workflow family.
+added, so both `report-tuesday` and `report-tuesday-waivers` activated
+immediately on deploy rather than needing a separate rollout step, unlike
+a brand-new workflow family. Both Tuesday runs also share
+`report.yml`'s `report` concurrency group with `cancel-in-progress:
+false`, so a long-running 10:00 job queues the 11:00 dispatch behind it
+rather than racing it to `git push` — the 11:00 checkout is guaranteed to
+already contain the 10:00 commit.
 
 **Reports read state and own none of it, except the reports themselves.**
 `report.yml` restores every state subtree it needs and pushes none of
 `data/` back — an empty `push-paths`, which `scripts/s3_sync.sh`'s
 `push-state` now correctly treats as "own nothing" rather than its old,
-dangerous default of "own everything." `data/out/` exports the report
-reads (`matchups`, `weekly-rosters`, `player-pool`, `roster-slots`) are
-never restored by the ordinary state restore either — they come from
-S3's `latest/out/` convenience copy via a new `restore-out` subcommand,
-since `data/out/` is otherwise purely an archive destination.
+dangerous default of "own everything." `data/out/` exports the reports
+read (`matchups`, `weekly-rosters`, `player-pool`, `roster-slots`,
+`teams`, `transactions`) are never restored by the ordinary state restore
+either — they come from S3's `latest/out/` convenience copy via a new
+`restore-out` subcommand, since `data/out/` is otherwise purely an
+archive destination. The waiver report additionally reads `data/odds/`,
+restored via `state-paths`' `odds` subtree — the first report to read a
+subtree owned by a metered workflow (`odds.yml`), though still read-only:
+`report.yml`'s `push-paths` stays empty, so `odds.yml` remains that
+subtree's sole writer.
 
 **Committing to the repository is resolved: reports live in both places,
 kept as mirrors.** `reports/<season>/week-<NN>/` is git-tracked in this
@@ -401,13 +427,23 @@ and `dd-mm-yyyy` does not. One consequence worth pinning down:
 by byte offset, so reports must be archived through a separate path and
 must never be written into `data/out/`, where they would be mis-keyed.
 
+`<day>` in that path is a **filename segment, distinct from the `--day`
+key** passed on the command line. `espn_ff/cli.py`'s `REPORTS` maps each
+key to a `(build_fn, day_label, slug)` 3-tuple, and `<day>` above is
+`day_label`, not the key: `--day tuesday-waivers` writes
+`<YYYY-MM-DD>-tuesday-waiver-wire.md`, sharing Tuesday's `tuesday`
+filename segment with `--day tuesday`'s `<YYYY-MM-DD>-tuesday-week-in-review.md`
+while remaining a distinct `REPORTS` entry with its own `slug`. This is
+new behavior from `REPORTS` becoming 3-tuples rather than a bare
+key-to-function map, and was previously undocumented here.
+
 ## Known gaps
 
-- **Monday and Tuesday's week-in-review are the only reports that have
-  been Observed running.** The other six report slots (five days, plus
-  Tuesday's second, 11:00 waiver report) are still intent, not
-  description — every time, threshold, and behavior in those sections is
-  a specification until something has run a real NFL week.
+- **Monday, Tuesday's week-in-review, and Tuesday's waiver wire are the
+  only reports that have been Observed running.** The other five report
+  slots are still intent, not description — every time, threshold, and
+  behavior in those sections is a specification until something has run
+  a real NFL week.
 - **`freshness()` never validates a `data/out` export's own content**, only
   each feed's last-run sidecar (`last_run.json` / `manifest.json` /
   `.meta.json`). If the morning's ESPN export silently fails to produce a
@@ -432,14 +468,27 @@ must never be written into `data/out/`, where they would be mis-keyed.
   that is a property of this season's schedule, not a rule. The report
   handles zero Monday games (week 18) and more than one, but neither case
   has been Observed against a real slate.
-- **The odds layer has never produced data.** `data/odds/ledger.db`
-  holds zero rows in all three of its ledger tables, and no parquet,
-  `last_run.json`, or `league_scoring.json` exists yet. Every
-  odds-dependent section — Tuesday's team totals, Thursday's props,
-  Friday's line movement, Sunday's entire premise — renders
-  "insufficient data" until the first `slate` job succeeds. There is no
-  historical endpoint, so the window before that first run cannot be
-  backfilled, ever.
+- **The odds layer produced data for the first time on 2026-09-15, and it
+  exposed two real bugs, both now fixed.** `TOTALS_DEDUPE_KEYS` (and
+  `PROPS_DEDUPE_KEYS` the same way) omitted `outcome_name`, so a two-sided
+  market's Over/Under or Yes/No rows collided on write within a single
+  capture and only the last-written side survived — the totals market
+  lost its Over side entirely, on every run, until fixed. Separately,
+  `consensus_line()` applied an Over/Yes outcome filter to the `spreads`
+  market, whose rows are already split one-per-team with the team's own
+  name as the outcome label, never "Over" — that filter matched nothing
+  and produced `NaN` for every team, on every run, regardless of the
+  dedupe bug. Together these meant `implied_team_total` rendered
+  "insufficient data" for all 32 teams even on a fresh, non-stale
+  `slate` capture — *(Observed)* a real 6-credit `slate` run on
+  2026-09-15 reproduced exactly this before the fix, and real numbers
+  after it (`espn_ff/odds/store.py`, `espn_ff/odds/projections.py`).
+  Thursday's props, Friday's line movement, and Sunday's premise still
+  await their own first live run to confirm the fix covers their shapes
+  too — the fix is general (both dedupe keys, not just totals') but only
+  the totals path has been Observed end-to-end. There is still no
+  historical endpoint, so no window before a report's first real run can
+  ever be backfilled.
 - **`practice_trajectory` currently reads `— / — / —` for every row.**
   Only two daily Sleeper snapshots exist and neither falls in a
   Wednesday–Friday window, so the single most decision-relevant Sleeper
@@ -447,9 +496,9 @@ must never be written into `data/out/`, where they would be mis-keyed.
   degrades.
 - **The free-agent pool is a derivation, not an artifact.** Nothing on
   disk distinguishes free agents from rostered players. The anti-join
-  itself now exists (`espn_ff/report/pool.py`, built for Monday's
-  alternatives section), but Tuesday's waiver report — the section that
-  most depends on it — has not been built yet.
+  itself lives in `espn_ff/report/pool.py`, built for Monday's
+  alternatives section and now also the basis for Tuesday's waiver
+  report's add candidates.
 - **Our league's waiver-processing night is recorded in no artifact.**
   Tuesday's and Wednesday's claim-deadline guidance is therefore
   league-setting dependent and unverified — it should be stated as an
@@ -462,12 +511,14 @@ must never be written into `data/out/`, where they would be mis-keyed.
   exists the thresholds in Friday's lineup solve are chosen rather than
   fitted.
 - **`.githooks/pre-commit` blocks any bare 32-hex string in an added
-  line**, a guard aimed at a leaked API key. The Odds API's `event_id`
-  values are plausibly that shape *(Inferred — never verified against a
-  real response, since no odds data has been captured)*, which would
-  make a report that prints raw event ids uncommittable locally. Worth
-  checking against the first real `slate` response before the reports
-  render any event id.
+  line**, a guard aimed at a leaked API key. *(Observed — 2026-09-15
+  `slate` response)* Odds API `event_id` values are indeed 32-hex
+  strings (32 lowercase hex characters), confirming the prior
+  inference. `team_totals()` already drops `event_id` before it reaches
+  the renderer, and `grep -cE '\b[0-9a-f]{32}\b'` against the committed
+  Tuesday waiver report returns `0` — the guard is a non-issue for this
+  report as written, but would fire immediately if any future section
+  ever surfaced a raw event id.
 - **Tuesday's regret table falls back to a pure-position slot-eligibility
   map for any player dropped since the reviewed week** (no
   `player-pool.csv` row that week), and its rest-of-season projection is

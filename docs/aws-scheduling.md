@@ -77,7 +77,7 @@ fields the schedule puts in the event detail.
 
 ## The schedules
 
-All seventeen are pinned to `America/New_York`. EventBridge cron takes six fields
+All eighteen are pinned to `America/New_York`. EventBridge cron takes six fields
 — minute, hour, day-of-month, month, day-of-week, year — and requires `?` in
 one of the two day fields.
 
@@ -100,6 +100,7 @@ one of the two day fields.
 | `odds-results` | `cron(38 9 ? * MON *)` | Mon 09:38 | `job=results`, `dry_run=false` |
 | `report-monday` | `cron(30 10 ? * MON *)` | Mon 10:30 | `day=monday` |
 | `report-tuesday` | `cron(0 10 ? * TUE *)` | Tue 10:00 | `day=tuesday` |
+| `report-tuesday-waivers` | `cron(0 11 ? * TUE *)` | Tue 11:00 | `day=tuesday-waivers` |
 
 ### DST stops mattering
 
@@ -123,10 +124,17 @@ hour, with identical coverage — 24 fires from Sun 13:08 through Mon 00:38.
    read has to land last to be the one that survives.
 3. **espn `:08` and nflverse `:23` → report `:30` on Monday.** The Monday
    report reads both the ESPN export and nflverse's routine injury pull, so
-   it must go after both. Tuesday's analogous gap is simpler: espn `:08` →
-   report `:00` on Tuesday, with no nflverse dependency, since Tuesday's
-   report never reads nflverse.
-4. **`odds` never auto-retries** — see below.
+   it must go after both. Tuesday carries two reports, and only the first is
+   the simpler case: espn `:08` → report `:00` on Tuesday, with no nflverse
+   dependency, since the week-in-review never reads nflverse. The second,
+   `report-tuesday-waivers` at `:00`(11), additionally waits on odds `slate`
+   `:38` — an 82-minute margin, the tightest in the report family and the
+   only one whose upstream feed is metered (see the next gap).
+4. **`odds` never auto-retries** — see below. `report-tuesday-waivers` is the
+   first report that reads `odds`' output, which sharpens what that gap
+   means downstream: a missed or budget-aborted `slate` doesn't just leave
+   `odds`'s own state stale, it also leaves the 11:00 report's Opening
+   market section reading "insufficient data" 82 minutes later, at exit 0.
 
 ## Retry policy is deliberately not uniform
 
@@ -268,15 +276,20 @@ auto-disable.
   ordering gaps were verified before deploying, but no full week has run
   through this path. Treat the timings as intent until `logs/runs/` has a few
   weeks to measure against.
-- **`report-monday` has never fired on a real week.** It is also the first
-  schedule whose dispatched workflow (`report.yml`) writes back to the repo
-  rather than only to S3 — a class of failure (a lost git-push race) that
-  the DLQ/alarm here does not and cannot cover, since that alarm only
-  watches dispatch delivery, not what the workflow does once it starts. See
+- **`report-monday`, `report-tuesday`, and `report-tuesday-waivers` have
+  never fired on a real week under the scheduler.** `report.yml`'s
+  dispatched workflow writes back to the repo rather than only to S3 — a
+  class of failure (a lost git-push race) that the DLQ/alarm here does not
+  and cannot cover, since that alarm only watches dispatch delivery, not
+  what the workflow does once it starts. See
   `docs/report-weekly-schedule.md`'s known gaps for what the report itself
-  cannot see. `report-tuesday` is newly added and has never fired at all
-  yet, sharing the same un-Observed caveat and the same git-push-race blind
-  spot.
+  cannot see. `report-tuesday-waivers` carries one more risk this alarm
+  cannot see either: it is the first scheduled report reading `odds`'
+  output, and a missing or stale `team_totals.parquet` degrades it at exit
+  0 — that output looks identical whether the cause is a budget-aborted
+  `slate`, an `odds` state-path restore that didn't run, or a
+  `restore-out-datasets` list missing `transactions`. Neither the DLQ alarm
+  nor the run receipt distinguishes those causes *(Inferred)*.
 - **Sunday has never been exercised at all.** The ESPN live-scoring grid, the
   Sunday `health` probe and `odds pre_lock` have never fired once, under either
   scheduler. The first Sunday after cutover should be watched live.

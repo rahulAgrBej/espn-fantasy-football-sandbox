@@ -115,8 +115,8 @@ def team_totals(week):
     odds/jobs.py:_flatten_featured via names.normalize_team, so it is used
     as-is. `event_id` never reaches `by_team` -- a bare 32-hex string in a
     committed report is rejected by .githooks/pre-commit, and Odds API
-    event ids are plausibly that shape (Inferred -- never verified, no
-    odds data has ever been captured)."""
+    event ids are indeed that shape -- 32 lowercase hex characters
+    (Observed against a real 2026-09-15 slate response)."""
     empty = {"insufficient": True, "by_team": {}, "captured_at": None}
 
     if not config.ODDS_TEAM_TOTALS.exists():
