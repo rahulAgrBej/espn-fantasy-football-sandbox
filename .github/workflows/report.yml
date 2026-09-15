@@ -1,0 +1,99 @@
+name: report
+
+# Renders one of docs/report-weekly-schedule.md's reports from data already
+# on disk and commits the result to reports/, mirroring it to S3 as well.
+# Only `monday` is implemented (espn_ff/cli.py's REPORT_DAYS) -- the
+# workflow forwards whatever `day` AWS sends and lets cmd_report's own "not
+# implemented" guard handle the rest, so a future report day needs no new
+# workflow file, just a wider `options:` list below plus a new schedule.
+#
+# Unlike every other workflow here, this one writes back to the repo, not
+# just to S3 -- reports/<season>/week-NN/ is git-tracked and this job needs
+# contents: write to commit its own output.
+#
+# The clock lives in AWS. EventBridge Scheduler dispatches Monday 10:30 ET,
+# after Monday's ESPN 09:08 export and nflverse's 09:23 routine pull, both
+# of which this report reads. See docs/aws-scheduling.md.
+on:
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "Which day's report to render"
+        type: choice
+        options: [monday]
+        required: true
+
+permissions:
+  id-token: write
+  contents: write
+
+concurrency:
+  group: report
+  cancel-in-progress: false
+
+jobs:
+  render:
+    if: github.repository == 'rahulAgrBej/espn-fantasy-football-sandbox'
+    runs-on: ubuntu-latest
+    environment: gh_env
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Mirrors nflverse.yml's/odds.yml's guard against an empty dispatch
+      # input running as a bare, dayless `report`.
+      - name: Resolve the day for this trigger
+        id: pick
+        run: |
+          day="${{ inputs.day }}"
+          if [ -z "$day" ]; then
+            echo "::error::No day named on this dispatch -- refusing to run." \
+                 "The caller must send one of: monday"
+            exit 1
+          fi
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "Resolved day: $day"
+
+      # data/out/ is never covered by state-paths -- Monday's report reads
+      # matchups/weekly-rosters/player-pool/roster-slots exports that only
+      # exist in S3 under latest/out/, seeded here via restore-out-datasets.
+      - uses: ./.github/actions/ff-run
+        with:
+          command: "report --day ${{ steps.pick.outputs.day }}"
+          state-paths: "raw sleeper nflverse raw/nflverse"
+          restore-out-datasets: "matchups weekly-rosters player-pool roster-slots"
+          push-paths: ""
+          aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          s3-bucket: ${{ vars.S3_BUCKET }}
+          espn-s2: ${{ secrets.ESPN_S2 }}
+          swid: ${{ secrets.SWID }}
+
+      # Tolerates "nothing changed" (e.g. a same-day retry) without failing
+      # the job -- there is no new content to commit, not an error.
+      - name: Commit the rendered report
+        run: |
+          if git status --porcelain reports/ | grep -q .; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add reports/
+            git commit -m "add ${{ steps.pick.outputs.day }} report"
+            git fetch origin main
+            git rebase origin/main
+            git push origin HEAD:main
+          else
+            echo "::notice::No new report content to commit"
+          fi
+
+      # Runs even if the commit above found nothing new, or lost a push
+      # race against a concurrent human push -- best effort, matching
+      # ff-run's own always()-gated persistence steps. No separate
+      # configure-aws-credentials call is needed: the OIDC session ff-run
+      # assumed persists as environment variables for the rest of the job.
+      - name: Mirror reports/ to S3
+        if: always()
+        shell: bash
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+        run: ./scripts/s3_sync.sh sync-reports

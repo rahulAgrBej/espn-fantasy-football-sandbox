@@ -93,6 +93,11 @@ Parameters:
     Default: DISABLED
     AllowedValues: [ENABLED, DISABLED]
 
+  ReportScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+
 Conditions:
 
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
@@ -388,6 +393,32 @@ Resources:
             InputTemplate: !Sub '{"ref":"${GitHubRef}","inputs":{"job":"<job>","dry_run":"<dry_run>"}}'
           RetryPolicy:
             MaximumRetryAttempts: 0
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig:
+            Arn: !GetAtt DispatchDlq.Arn
+
+  # report is a pure, idempotent re-render with no metered spend -- unlike
+  # odds, it keeps the default auto-retry every other workflow gets.
+  ReportRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ff-dispatch-report
+      EventBusName: !Ref DispatchBus
+      EventPattern:
+        source: [ff.scheduler]
+        detail-type: [dispatch.report]
+      Targets:
+        - Id: github
+          Arn: !GetAtt GitHubDispatchDestination.Arn
+          RoleArn: !GetAtt DispatchInvokeRole.Arn
+          HttpParameters:
+            PathParameterValues: [report.yml]
+          InputTransformer:
+            InputPathsMap:
+              day: $.detail.day
+            InputTemplate: !Sub '{"ref":"${GitHubRef}","inputs":{"day":"<day>"}}'
+          RetryPolicy:
+            MaximumRetryAttempts: 5
             MaximumEventAgeInSeconds: 3600
           DeadLetterConfig:
             Arn: !GetAtt DispatchDlq.Arn
@@ -783,6 +814,33 @@ Resources:
           DetailType: dispatch.odds
         RetryPolicy:
           MaximumRetryAttempts: 0
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  # 82 minutes after espn-monday (09:08) and 67 after nflverse-routine's
+  # 09:23 slot -- both feeds this report reads, and nflverse's is the
+  # tighter margin. Preserve the gap if either side is ever retimed.
+  ReportMondaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: report-monday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref ReportScheduleState
+      ScheduleExpression: cron(30 10 ? * MON *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Mon 10:30 ET -- the Monday night call
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"day":"monday"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.report
+        RetryPolicy:
+          MaximumRetryAttempts: 5
           MaximumEventAgeInSeconds: 3600
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn

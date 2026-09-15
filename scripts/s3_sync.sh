@@ -96,6 +96,39 @@ cmd_restore() {
     done
 }
 
+# --- restore-out: S3 latest/out/ -> local data/out/ -------------------------
+# For a read-only caller (e.g. report.yml) that needs a data/out/ export it
+# does not itself produce. data/out/ is never part of `restore` -- it is
+# purely an archive destination -- so a report reading `latest_export()`
+# would otherwise find it empty on a fresh runner even though the morning's
+# collection workflow already produced and archived exactly what it needs to
+# `latest/out/<dataset>.csv` (cmd_archive's "drop a copy in latest/ for
+# convenience" step).
+#
+# The local filename is re-stamped with today's date so the repo's
+# `dd-mm-yyyy-<name>.csv` convention -- and therefore `latest_export()`'s
+# filename-date parsing -- still applies. That date is bookkeeping, not a
+# freshness claim: latest_export() only uses it to pick the newest among
+# multiple local candidates, and a fresh runner will only ever have one.
+# Real staleness is judged elsewhere, by each feed's own last_run.json /
+# manifest.json / .meta.json, which restore correctly via `restore` already.
+#
+# A dataset with nothing yet at latest/out/ (e.g. before any export has ever
+# run) is skipped rather than aborting the rest -- same "one dead feed must
+# not wedge the run" discipline as everywhere else in this pipeline.
+cmd_restore_out() {
+    local datasets=("$@")
+    [ "${#datasets[@]}" -gt 0 ] || return 0
+
+    mkdir -p "$DATA/out"
+    local today; today="$(date +%d-%m-%Y)"
+    for name in "${datasets[@]}"; do
+        say "restore latest/out/$name.csv -> data/out/$today-$name.csv"
+        s3 s3 cp "s3://$BUCKET/latest/out/$name.csv" "$DATA/out/$today-$name.csv" \
+            --only-show-errors || say "  (no latest/out/$name.csv yet -- skipping)"
+    done
+}
+
 # --- archive: local -> S3 archive/ (append-only, never deletes) ------------
 cmd_archive() {
     # Output CSVs land as data/out/dd-mm-yyyy-<name>.csv. Re-key them to
@@ -137,9 +170,20 @@ cmd_archive() {
 # otherwise race: the second to finish would push its older copy over the
 # first's fresh one. Each workflow therefore pushes only what it owns, and
 # restores the rest read-only.
+#
+# Unlike cmd_restore, an empty/absent argument here means "own nothing", not
+# "own everything" -- restore has no --delete, so defaulting to everything is
+# a safe manual-reseed convenience; push-state's --delete makes the same
+# default a footgun; a read-only caller (e.g. report.yml) that passes "" must
+# not have its (possibly partial) local data/ mirrored over real state.
 cmd_push_state() {
-    local own=("${STATE_SUBTREES[@]}")
+    local own=()
     if [ -n "${1:-}" ]; then read -r -a own <<< "$1"; fi
+
+    # "${own[@]}" on a genuinely empty array raises "unbound variable" under
+    # set -u on bash < 4.4 (e.g. macOS's default /bin/bash 3.2) -- guard on
+    # length rather than relying on a version-dependent expansion.
+    [ "${#own[@]}" -gt 0 ] || return 0
 
     for sub in "${own[@]}"; do
         [ -d "$DATA/$sub" ] || continue
@@ -147,6 +191,28 @@ cmd_push_state() {
         # shellcheck disable=SC2046  # word splitting is the point here
         s3 s3 sync "$DATA/$sub" "s3://$BUCKET/state/$sub" $(sync_excludes "$sub") --delete --only-show-errors
     done
+}
+
+# --- sync-reports: local reports/ <-> S3 reports/ (exact mirror) -----------
+# reports/ lives outside data/ entirely (espn_ff/cli.py's cmd_report writes
+# to <repo root>/reports/<season>/week-NN/), so neither cmd_archive nor
+# cmd_push_state ever sees it. It is git-tracked rather than data/-state, and
+# that is what makes a --delete sync safe here despite the general rule
+# against --delete over anything but a subtree the caller fully owns:
+# actions/checkout restores the complete historical tree from git before the
+# workflow runs, and espn_ff report only ever adds to it, so the local copy
+# is always the complete, authoritative set at sync time -- a true mirror,
+# not a partial one. Deliberately a separate command from cmd_archive, whose
+# whole documented contract is "synced WITHOUT --delete"; mixing the two
+# semantics into one function would quietly break that invariant for every
+# other caller of cmd_archive.
+cmd_sync_reports() {
+    if [ ! -d "$ROOT/reports" ]; then
+        say "no reports/ -- nothing to sync"
+        return 0
+    fi
+    say "sync reports/ -> s3://$BUCKET/reports (exact mirror)"
+    s3 s3 sync "$ROOT/reports" "s3://$BUCKET/reports" --delete --only-show-errors
 }
 
 # --- receipt: record what this run actually did ---------------------------
@@ -198,9 +264,11 @@ PY
 }
 
 case "${1:-}" in
-    restore)    shift; cmd_restore "${1:-}" ;;
-    archive)    shift; cmd_archive ;;
-    push-state) shift; cmd_push_state "${1:-}" ;;
-    receipt)    shift; cmd_receipt "$@" ;;
-    *) echo "usage: $0 {restore [subtrees]|archive|push-state [owned-subtrees]|receipt <workflow> <run_id> <cmd> <code>}" >&2; exit 64 ;;
+    restore)      shift; cmd_restore "${1:-}" ;;
+    restore-out)  shift; cmd_restore_out "$@" ;;
+    archive)      shift; cmd_archive ;;
+    push-state)   shift; cmd_push_state "${1:-}" ;;
+    sync-reports) shift; cmd_sync_reports ;;
+    receipt)      shift; cmd_receipt "$@" ;;
+    *) echo "usage: $0 {restore [subtrees]|restore-out <dataset>...|archive|push-state [owned-subtrees]|sync-reports|receipt <workflow> <run_id> <cmd> <code>}" >&2; exit 64 ;;
 esac

@@ -26,9 +26,10 @@ when DST ends in November. *(Observed — EventBridge expressions in
 | Day | Time (ET) | Data metric | Data source |
 |---|---|---|---|
 | Monday | 08:11 daily | Daily player status refresh | Sleeper — `sleeper` |
-| Monday | 09:08 | Final scores, closed matchup results, weekend transactions | ESPN — `--refresh` on `matchups.csv` / `transactions.csv` |
+| Monday | 09:08 | Scores through Sunday night — a pre-Monday-night snapshot — and weekend transactions | ESPN — `--refresh` on `matchups.csv` / `transactions.csv` |
+| Monday | 09:23 / 13:23 / 18:23 | Official week-N injury report, including the Monday night game | nflverse — routine 3x/day pull |
 | Monday | 09:38 | Prior week's game results (`daysFrom=3`) | The Odds API — `results` job |
-| Tuesday | 09:08 | Waiver-processing results | ESPN — `--refresh` on `transactions.csv` |
+| Tuesday | 09:08 | Settled matchup results after Monday night, plus waiver-processing results | ESPN — `--refresh` on `matchups.csv` / `transactions.csv` |
 | Tuesday | 09:23 / 13:23 / 18:23 | Stat corrections begin landing | nflverse — `stats_player` feed, routine 3x/day pull |
 | Tuesday | 09:38 | Opening spreads/totals for the coming week | The Odds API — `slate` job |
 | Wednesday | 08:11 daily | Practice participation, day 1 of 3 | Sleeper — `sleeper` |
@@ -45,28 +46,39 @@ when DST ends in November. *(Observed — EventBridge expressions in
 
 ## Monday
 
-**What gets pulled and why.** Sunday's games are over, so this is the
-first day matchup outcomes and season-long stat lines can actually be
-treated as final. Pull ESPN's `matchups.csv` and `transactions.csv` with
-`--refresh` — both views are cached forever once fetched (`data-sources.md`
-notes neither is wired to `ttl_for`), so a live-week `points_live`/`winner`
-value from Sunday will still read `UNDECIDED`/stale until you explicitly
-refresh. Run `sleeper` for the daily status snapshot, and run the Odds API
-`results` job (`daysFrom=3`, cost 2 credits) to record final scores.
+**What gets pulled and why.** Sunday's games are over, but the week is
+*not* settled yet — every 2026 regular-season week has exactly one Monday
+night game *(Observed — `data/raw/nflverse/schedules/games.parquet`, 2026
+REG, `weekday == 'Monday'` returns one row for each of weeks 1–17)*, so
+Monday's ESPN pull is a pre-Monday-night snapshot, not a closed week. Pull
+ESPN's `matchups.csv` and `transactions.csv` with `--refresh` — both
+views are cached forever once fetched (`data-sources.md` notes neither is
+wired to `ttl_for`), so a live-week `points_live`/`winner` value from
+Sunday will still read `UNDECIDED`/stale until you explicitly refresh. Run
+`sleeper` for the daily status snapshot; nflverse's routine 3x/day pull
+also lands the official week-N injury report today, covering the Monday
+night game. Run the Odds API `results` job (`daysFrom=3`, cost 2 credits)
+to record final scores — it cannot include tonight's game (see Known
+caveats).
 
 **Implications of the data.** `points_final` and `winner` only become
-trustworthy once you refresh — reading Monday's matchup data off Sunday's
-cache would silently show `0.0`/`UNDECIDED` for games that already ended.
-nflverse's own stat corrections have *not* landed yet at this point in the
-week (they land Tuesday–Wednesday), so Monday's `stats_player`/snap-share
-numbers for Sunday's games are still provisional.
+trustworthy once you refresh, and even then Monday's refresh only closes
+out Sunday's games — reading Monday's matchup data off Sunday's cache
+would silently show `0.0`/`UNDECIDED` for games that already ended, and
+the two Monday-night teams stay `UNDECIDED`/`points_live` all day by
+design. nflverse's own stat corrections have *not* landed yet at this
+point in the week (they land Tuesday–Wednesday), so Monday's
+`stats_player`/snap-share numbers for Sunday's games are still
+provisional.
 
-**Fantasy strategy implications.** Use Monday's ESPN refresh to close the
-book on the week — confirm final matchup results and see what waiver
-claims already resolved. Don't over-read Monday's raw box-score stats for
-target share or snap share yet; the nflverse `provisional` flag on
-Sunday's games will still be `true`, and the numbers can move before
-Thursday's canonical read.
+**Fantasy strategy implications.** Monday's pull exists to support a
+start/sit call on tonight's game, not to close the book on the week — the
+week settles Tuesday, after Monday night has been played and refreshed.
+Use today's data to see what waiver claims already resolved and to check
+the official injury report for both Monday-night rosters. Don't over-read
+Monday's raw box-score stats for target share or snap share yet; the
+nflverse `provisional` flag on Sunday's games will still be `true`, and
+the numbers can move before Thursday's canonical read.
 
 ## Tuesday
 
@@ -74,17 +86,21 @@ Thursday's canonical read.
 morning specifically because spreads/totals for the coming week open
 "Sunday night for the coming week" per `odds-budget.md`'s market-open
 table — Tuesday is the first convenient, deliberate pull after that
-window opens. Waiver claims processed Monday/Tuesday night should now be
-visible in `transactions.csv` with another `--refresh`. nflverse's
+window opens. Another ESPN `--refresh` on `matchups.csv` now settles the
+week for good, Monday night included, and waiver claims processed
+Monday/Tuesday night should be visible in `transactions.csv`. nflverse's
 `stats_player` corrections begin landing Tuesday–Wednesday as the league
 processes officiating/scoring corrections from the weekend.
 
-**Implications of the data.** Tuesday's opening lines are the earliest,
-least-informed number of the week — before any practice-participation
-signal or Wednesday/Thursday injury news has moved them. Waiver results
-seen Tuesday reflect whatever your league's waiver-processing night
-actually is; check `transactions.csv`'s `execution_type`/`is_pending`
-fields rather than assuming same-day settlement.
+**Implications of the data.** Tuesday is the first day matchup outcomes
+and season-long stat lines can actually be treated as final — this is the
+point the week actually closes, not Monday. Tuesday's opening lines are
+the earliest, least-informed number of the week — before any
+practice-participation signal or Wednesday/Thursday injury news has moved
+them. Waiver results seen Tuesday reflect whatever your league's
+waiver-processing night actually is; check `transactions.csv`'s
+`execution_type`/`is_pending` fields rather than assuming same-day
+settlement.
 
 **Fantasy strategy implications.** Tuesday's freshly opened spreads/totals
 are the baseline for game-script expectations on any waiver pickup you're
@@ -249,3 +265,8 @@ reflect afternoon/night-game scoring.
 - **An empty Odds API response is free but not informative** — before
   Wednesday, an empty props pull means the market isn't open yet, not
   that nothing exists; treat it accordingly rather than as a real signal.
+- **The Odds `results` job cannot see Monday night's game.** It runs
+  Monday 09:38 with `daysFrom=3`, a window that closes before that
+  night's game has been played; that game's result lands in the
+  following week's `results` pull instead. This is an accepted
+  limitation of the job's timing, not a bug.

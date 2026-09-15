@@ -24,6 +24,9 @@ from .odds import jobs as odds_jobs
 from .odds import ledger as odds_ledger
 from .odds import projections as odds_projections
 from .odds.ledger import BudgetExceeded, OddsError
+from .report import monday as report_monday
+
+REPORT_DAYS = {"monday"}
 
 
 def _out_path(name):
@@ -463,6 +466,30 @@ def cmd_credits(client, args):
     return 0
 
 
+def cmd_report(client, args):
+    """Render one of docs/report-weekly-schedule.md's reports from data
+    already on disk. No network beyond what `--week`'s default fallback
+    needs. Only `monday` is implemented; any other day exits cleanly
+    rather than writing an empty file."""
+    if not args.day:
+        print(f"Usage: report --day <day>  where day is one of: {', '.join(sorted(REPORT_DAYS))}", file=sys.stderr)
+        return 1
+    if args.day not in REPORT_DAYS:
+        print(f"report --day {args.day}: not implemented yet -- only {sorted(REPORT_DAYS)} is", file=sys.stderr)
+        return 1
+
+    season = args.season
+    week = args.week or client.current_scoring_period()
+    text = report_monday.build(season, week, team_id=args.team_id)
+
+    out_dir = config.PROJECT_ROOT / "reports" / str(season) / f"week-{week:02d}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{date.today():%Y-%m-%d}-{args.day}-monday-night-call.md"
+    path.write_text(text)
+    print(f"  wrote {path}")
+    return 0
+
+
 # Exit codes. Unattended runs are alerted on from these alone, so the two
 # predictable, actionable failures get their own rather than sharing 1 with
 # every transient outage.
@@ -483,6 +510,7 @@ COMMANDS = {
     "odds": cmd_odds,
     "projections": cmd_projections,
     "credits": cmd_credits,
+    "report": cmd_report,
 }
 
 
@@ -539,6 +567,9 @@ def main(argv=None):
     )
     ap.add_argument(
         "--events", help="odds props/pre_lock: comma-separated event ids to restrict the pull to",
+    )
+    ap.add_argument(
+        "--day", help=f"report command: which day's report to render, one of {sorted(REPORT_DAYS)}",
     )
     args = ap.parse_args(argv)
 

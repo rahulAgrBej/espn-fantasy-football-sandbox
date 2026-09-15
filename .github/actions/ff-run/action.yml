@@ -20,9 +20,18 @@ inputs:
   push-paths:
     description: >
       Space-separated data/ subtrees this workflow OWNS and may mirror back
-      with --delete. Defaults to everything restored. Keep it narrow: two
-      workflows that push the same subtree in the same minute will race, and
-      the later push wins with stale content.
+      with --delete. Empty means own nothing -- for a read-only workflow
+      (e.g. report.yml) that restores state but produces none. Keep it
+      narrow: two workflows that push the same subtree in the same minute
+      will race, and the later push wins with stale content.
+    required: false
+    default: ""
+  restore-out-datasets:
+    description: >
+      Space-separated data/out/ dataset names (e.g. "matchups player-pool")
+      to seed from S3's latest/out/ convenience copy before running -- for a
+      read-only workflow that needs an export it does not itself produce
+      (data/out/ is never covered by state-paths/restore). Defaults to none.
     required: false
     default: ""
   archive:
@@ -88,6 +97,13 @@ runs:
       env:
         S3_BUCKET: ${{ inputs.s3-bucket }}
       run: ./scripts/s3_sync.sh restore "${{ inputs.state-paths }}"
+
+    - name: Restore latest data/out/ exports
+      if: inputs.restore-out-datasets != ''
+      shell: bash
+      env:
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+      run: ./scripts/s3_sync.sh restore-out ${{ inputs.restore-out-datasets }}
 
     - name: Run
       id: run

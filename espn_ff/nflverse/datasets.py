@@ -5,7 +5,7 @@ Each entry names the release tag and filename template, whether the file is
 season-scoped, whether the feed is allowed to go dark, and the columns this
 codebase actually reads. `assert_schema` is a subset check, not an equality
 check: nflverse's real files carry many more columns than we use (games.parquet
-is ~45 columns wide; we read 8), and a subset check means an unrelated
+is ~45 columns wide; we read 11), and a subset check means an unrelated
 upstream addition never breaks ingest. It still fails loudly the moment a
 column we depend on disappears or gets renamed.
 """
@@ -52,7 +52,7 @@ DATASETS = {
         tag="schedules", filename="games.parquet", seasonal=False,
         required=frozenset({
             "game_id", "season", "week", "game_type", "home_team", "away_team",
-            "home_score", "away_score",
+            "home_score", "away_score", "gameday", "weekday", "gametime",
         }),
     ),
     "injuries": Dataset(

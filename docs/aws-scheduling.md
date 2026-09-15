@@ -71,13 +71,13 @@ Everything above is one CloudFormation stack, `infra/scheduler.yaml`.
 
 There is one rule per workflow rather than one rule total because the dispatch
 URL differs per workflow and a target's `PathParameterValues` is static. The
-`espn`, `sleeper` and `health` rules send a constant body; the `nflverse` and
-`odds` rules assemble theirs with an input transformer from fields the schedule
-puts in the event detail.
+`espn`, `sleeper` and `health` rules send a constant body; the `nflverse`,
+`odds` and `report` rules assemble theirs with an input transformer from
+fields the schedule puts in the event detail.
 
 ## The schedules
 
-All fifteen are pinned to `America/New_York`. EventBridge cron takes six fields
+All sixteen are pinned to `America/New_York`. EventBridge cron takes six fields
 — minute, hour, day-of-month, month, day-of-week, year — and requires `?` in
 one of the two day fields.
 
@@ -98,6 +98,7 @@ one of the two day fields.
 | `odds-line-movement` | `cron(8 10 ? * FRI *)` | Fri 10:08 | `job=line_movement`, `dry_run=false` |
 | `odds-pre-lock` | `cron(38 10 ? * SUN *)` | Sun 10:38 | `job=pre_lock`, `dry_run=false` |
 | `odds-results` | `cron(38 9 ? * MON *)` | Mon 09:38 | `job=results`, `dry_run=false` |
+| `report-monday` | `cron(30 10 ? * MON *)` | Mon 10:30 | `day=monday` |
 
 ### DST stops mattering
 
@@ -113,13 +114,16 @@ expressions because the block crosses midnight UTC (`8,38 17-23 * * 0` plus
 `8,38 0-4 * * 1`); in ET it is one continuous evening plus a single midnight
 hour, with identical coverage — 24 fires from Sun 13:08 through Mon 00:38.
 
-### Three gaps that must survive any retiming
+### Four gaps that must survive any retiming
 
 1. **espn `:08` → odds `:38` on Mon/Tue.** The odds jobs read the ESPN cache
    that `espn.yml` owns, so they must go second.
 2. **nflverse `:23` routine → `:53` forced on Thursday.** The forced canonical
    read has to land last to be the one that survives.
-3. **`odds` never auto-retries** — see below.
+3. **espn `:08` and nflverse `:23` → report `:30` on Monday.** The Monday
+   report reads both the ESPN export and nflverse's routine injury pull, so
+   it must go after both.
+4. **`odds` never auto-retries** — see below.
 
 ## Retry policy is deliberately not uniform
 
@@ -261,6 +265,13 @@ auto-disable.
   ordering gaps were verified before deploying, but no full week has run
   through this path. Treat the timings as intent until `logs/runs/` has a few
   weeks to measure against.
+- **`report-monday` has never fired on a real week.** It is also the first
+  schedule whose dispatched workflow (`report.yml`) writes back to the repo
+  rather than only to S3 — a class of failure (a lost git-push race) that
+  the DLQ/alarm here does not and cannot cover, since that alarm only
+  watches dispatch delivery, not what the workflow does once it starts. See
+  `docs/report-weekly-schedule.md`'s known gaps for what the report itself
+  cannot see.
 - **Sunday has never been exercised at all.** The ESPN live-scoring grid, the
   Sunday `health` probe and `odds pre_lock` have never fired once, under either
   scheduler. The first Sunday after cutover should be watched live.

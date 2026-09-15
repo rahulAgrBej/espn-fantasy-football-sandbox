@@ -6,7 +6,7 @@ pulled on each day of the week and why*. This document answers the
 follow-on question: **how that schedule actually runs without a human, and
 where the data goes.**
 
-Five GitHub Actions workflows run the schedule; an S3 bucket holds both the
+Six GitHub Actions workflows run the schedule; an S3 bucket holds both the
 outputs and — the part that is easy to get wrong — the *state* those
 workflows need in order to produce anything meaningful.
 
@@ -41,6 +41,7 @@ Times are ET and hold year-round: the schedules are pinned to
 | `espn.yml` | Sun 13:08 – Mon 00:38, every 30 min | same | no |
 | `odds.yml` | five slots, see below | `odds <job>`, `projections` | **yes** |
 | `health.yml` | 07:04 / 19:04 daily, Sun 12:04 | `probe` | no |
+| `report.yml` | Mon 10:30 | `report --day monday` | no |
 | `tests.yml` | on push / PR (GitHub's own trigger) | `pytest` | no |
 
 `tests.yml` is the only workflow GitHub still triggers by itself; it runs on
@@ -82,8 +83,16 @@ s3://espn-ff-data-2026/
   state/      exact mirror of the stateful data/ subtrees   (synced WITH --delete)
   archive/    append-only history, never deleted            (synced WITHOUT --delete)
   latest/     newest copy of each output dataset
+  reports/    exact mirror of the repo's reports/ tree       (synced WITH --delete)
   logs/runs/  one receipt per workflow run
 ```
+
+`reports/` is a different kind of "exact mirror" than `state/`: it is safe
+to sync with `--delete` not because one workflow owns it in the
+one-writer-per-subtree sense, but because it mirrors a git-tracked
+directory — `actions/checkout` restores the complete history before
+`report.yml` runs, so the local copy is always the full, authoritative set
+by the time it syncs.
 
 **The two prefixes exist because local pruning is not the archive policy.**
 `espn_ff/sleeper/snapshots.py:_prune` keeps only the last
@@ -106,6 +115,23 @@ needs to read but **pushes back only what it owns**:
 | `sleeper.yml` | `sleeper raw raw/sleeper` | `sleeper`, `raw/sleeper` |
 | `nflverse.yml` | `nflverse raw raw/nflverse` | `nflverse`, `raw/nflverse` |
 | `odds.yml` | `odds raw raw/odds` | `odds`, `raw/odds` |
+| `report.yml` | `raw sleeper nflverse raw/nflverse`, plus `latest/out/{matchups,weekly-rosters,player-pool,roster-slots}` | none of `data/` — see below |
+
+`report.yml` is the odd one out twice over: it is the first workflow that
+passes an empty `push-paths` and means it (it restores several subtrees
+read-only and owns none of them — `s3_sync.sh`'s `push-state` treats an
+empty argument as "push nothing," not its old default of "push everything"),
+and it also reads a slice of `data/out/` that `restore` never covers at all.
+`data/out/` is purely an archive destination for every other workflow —
+`report.yml` seeds it from `s3://$BUCKET/latest/out/<dataset>.csv` instead
+(the "newest copy" convenience prefix from the bucket layout below), via a
+new `s3_sync.sh restore-out` subcommand.
+
+`report.yml` also owns state genuinely outside `data/`: it writes to
+`reports/<season>/week-NN/`, which is git-tracked rather than S3-state, and
+mirrors that same tree to a new top-level `s3://$BUCKET/reports/` prefix
+(via a new `sync-reports` subcommand) after committing it. This is the only
+workflow with `contents: write` on this repo.
 
 `data/raw` is shared, which is the subtlety worth knowing: `config.py` puts
 ESPN's per-season cache at `data/raw/<season>` but gives each vendor layer

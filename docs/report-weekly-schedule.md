@@ -6,20 +6,25 @@ and it answers the question that comes immediately after: **given what
 has landed on disk by a given hour, what should I read today, and what
 decision is due?**
 
-Seven reports, one per day, each scheduled well after the last collection
-slot it depends on. That margin was originally an hour because GitHub cron
-was routinely 5–30 minutes late and occasionally dropped the slot entirely.
-It no longer needs to absorb that: collection is dispatched by EventBridge
-Scheduler at the exact minute (`docs/aws-scheduling.md`), so the margin now
-only has to cover how long a collection run takes, which is minutes. The
-36–52 minutes below are ample, and the reason the times still look offset
-rather than aligned is that they are anchored to the collection slots.
+Eight reports across seven days -- Tuesday carries two -- each scheduled
+well after the last collection slot it depends on. That margin was
+originally an hour because GitHub cron was routinely 5–30 minutes late and
+occasionally dropped the slot entirely. It no longer needs to absorb that:
+collection is dispatched by EventBridge Scheduler at the exact minute
+(`docs/aws-scheduling.md`), so the margin now only has to cover how long a
+collection run takes, which is minutes. The 37–82 minutes below are ample,
+and the reason the times still look offset rather than aligned is that
+they are anchored to the collection slots.
 
-Nothing here has run yet. **No report engine exists in this repository**
-— `espn_ff/cli.py`'s `COMMANDS` dict holds eleven commands, all of them
-collection or derivation, and nothing in the codebase writes a markdown
-file. This document is the specification for that build, not a
-description of it, which is why no claim below is tagged **Observed**.
+**Monday is implemented; the rest of the week is still a specification.**
+`espn_ff/report/` is the report engine, and `python -m espn_ff report
+--day monday` renders the Monday-night call from data already on disk
+*(Observed)*. `espn_ff/cli.py`'s `COMMANDS` dict has no `tuesday`,
+`wednesday`, etc. entries yet -- calling `report --day` with any other
+value exits with a clear "not implemented" rather than an empty file. This
+document is still the specification for the other six reports, not a
+description of them, which is why no claim in those sections below is
+tagged **Observed**.
 
 ## Overview
 
@@ -31,27 +36,35 @@ plus a margin.)*
 
 | Day | Time (ET) | Expression | Report | Waits on | Margin |
 |---|---|---|---|---|---|
-| Monday | 10:30 | `cron(30 10 ? * MON *)` | Week in review | ESPN 09:08, Odds `results` 09:38 | 52 min |
-| Tuesday | 10:30 | `cron(30 10 ? * TUE *)` | Waiver wire and opening market | ESPN 09:08, Odds `slate` 09:38 | 52 min |
+| Monday | 10:30 | `cron(30 10 ? * MON *)` | Monday night call | Sleeper 08:11, ESPN 09:08, nflverse 09:23 | 67 min |
+| Tuesday | 10:00 | `cron(0 10 ? * TUE *)` | Week in review | ESPN 09:08 | 52 min |
+| Tuesday | 11:00 | `cron(0 11 ? * TUE *)` | Waiver wire and opening market | ESPN 09:08, Odds `slate` 09:38 | 82 min |
 | Wednesday | 10:00 | `cron(0 10 ? * WED *)` | Availability watchlist | Sleeper 08:11, nflverse 09:23 | 37 min |
 | Thursday | 11:00 | `cron(0 11 ? * THU *)` | Usage and market | nflverse `--force` 09:53, Odds `props` 10:08 | 52 min |
 | Friday | 11:00 | `cron(0 11 ? * FRI *)` | Lineup lock | Sleeper 08:11, Odds `line_movement` 10:08 | 52 min |
 | Saturday | 10:00 | `cron(0 10 ? * SAT *)` | Contingency check | Sleeper 08:11, nflverse 09:23 | 37 min |
 | Sunday | 11:30 | `cron(30 11 ? * SUN *)` | Pre-lock call | Sleeper 08:11, Odds `pre_lock` 10:38 | 52 min |
 
+Monday's `Waits on` gains nflverse because `NflverseRoutineSchedule` is
+`cron(23 9,13,18 * * ? *)` — **daily**, not the Tue/Wed/Sat the collection
+doc's table implies *(Observed — `infra/scheduler.yaml`)*. Monday 09:23
+therefore delivers the official week-N injury report before the 10:30
+report renders. Monday no longer waits on Odds `results`; that job still
+runs at 09:38 but feeds nothing Monday reads.
+
 Sunday's slot is the one with a hard deadline behind it: 11:30 ET leaves 90
 minutes before 13:00 ET kickoffs, and unlike the old UTC pinning that holds
 in November too rather than drifting to 10:30.
 
 When these are built they belong in `infra/scheduler.yaml` alongside the
-collection schedules, with one rule per report workflow. The 52-minute Monday
-and Tuesday margins are the tightest real constraint, since both wait on an
-odds job that does not auto-retry — a failed odds slot that needs a person
-will not have been re-fired by 10:30.
+collection schedules, with one rule per report workflow. The only
+odds-dependent margin is Tuesday's 11:00 report at 82 minutes; the
+tightest margins are the 37-minute Wednesday and Saturday slots, which
+wait only on feeds that do auto-retry (`docs/aws-scheduling.md`).
 
 ## What every report contains
 
-Three parts, in this order, in all seven.
+Three parts, in this order, in all eight.
 
 **The freshness header.** Each report opens by stating, per feed, the
 artifact's own timestamp and staleness flag: `fetched_at` from
@@ -79,37 +92,77 @@ number.** `docs/data-sources.md` already sets this precedent for the
 deferred category-level diagnostic — render the words rather than a
 figure computed on history that isn't there.
 
-## Monday — week in review
+## Monday — Monday night call
+
+The only report of the week issued while a game is still swappable: a
+player in that night's game is unlocked at 10:30 ET, so this is the last
+chance to bench a hurt starter, start a healthy alternative, or play for
+ceiling versus floor based on the live margin.
+
+**What it shows.** The week's remaining game — the `weekday == 'Monday'`
+rows from nflverse `schedules` for the current `(season, week)`. The live
+margin from `matchups.csv`'s `points_live` for both sides as of the 09:08
+refresh, framed as in-progress, never as a result. Which of our starters
+and which of the opponent's starters are in that game
+(`weekly-rosters.csv`'s `pro_team` against `home_team`/`away_team`), and
+the points needed. Then a three-source availability read on every one of
+those players.
+
+**What to look out for.** Monday's `matchups.csv` is a *pre-Monday-night*
+snapshot: `points_final` reads `0.0` and `winner` reads `UNDECIDED`
+correctly, and reporting either as a result is the error this report
+exists to prevent. `report_status` is `null` both when the injuries feed
+is dark and when a player carries no designation — check whether the
+`(season, week)` slice has any rows at all before reading a null as
+"healthy". Sleeper's `practice_trajectory` for a Monday-night player is
+the *correct* trajectory, not a stale one: that team practised the same
+Wed/Thu/Fri we snapshotted, and the Saturday-published final injury report
+is the last official word before kickoff.
+
+**Decisions due.** **Binding at 20:15 ET.** Bench or start each of our
+Monday-night players, and choose ceiling versus floor from the margin. A
+player whose game already kicked off is locked and cannot be moved, so the
+entire decision surface is the two Monday-night rosters.
+
+**Swap and drop candidates.** Per at-risk Monday-night starter: bench
+players on the same two NFL teams eligible for that slot, then free agents
+on those teams, both ranked by `week_projected`. Drop candidates only
+where a free-agent add needs the room.
+
+## Tuesday — week in review
 
 **What it shows.** Last week's result, closed out: `matchups.csv`'s
 `points_final`, `winner`, and `result`, which only become real numbers
-after the 09:00 ESPN `--refresh`; `teams.csv`'s updated record,
+after the 09:08 ESPN `--refresh`; `teams.csv`'s updated record,
 `points_for`, and `playoff_seed`; and last week's `weekly-rosters.csv`
-split on `started` for a starter-versus-bench points comparison across
-all 15 roster spots.
+split on `started` for a starter-versus-bench points comparison across all
+15 roster spots — Monday night included, so this regret table is complete
+for the first time.
 
 **What to look out for.** If `winner` still reads `UNDECIDED` and
-`points_final` still reads `0.0`, the ESPN refresh did not land — report
-the week as unclosed rather than as a loss. This is not hypothetical:
-these views are cache-forever, never wired to `cache.ttl_for`, so
-reading them off Sunday's cache shows a completed game as undecided.
-Separately, nflverse's `provisional` flag is still `true` on Monday
-because stat corrections land Tuesday and Wednesday, so snap share and
-target share are not readable yet at any confidence.
+`points_final` still reads `0.0` on Tuesday, the refresh genuinely
+failed — report the week as unclosed rather than as a loss. That is a
+different failure mode than seeing the same thing on Monday, where it is
+expected (see above): these views are cache-forever, never wired to
+`cache.ttl_for`, so reading them off Sunday's cache shows a completed game
+as undecided until an explicit `--refresh`. Separately, nflverse's
+`provisional` flag is still `true` on Tuesday because stat corrections
+land Tuesday and Wednesday, so snap share and target share are not
+readable yet at any confidence.
 
-**Decisions due.** None are binding. Monday's job is to seed Tuesday's
-waiver shortlist and to identify any player whose `injury_status` makes
-them IR-eligible — moving one to an IR slot opens a bench spot without
-spending a drop.
+**Decisions due.** None are binding. Tuesday's job is to seed the 11:00
+waiver report's shortlist and to identify any player whose
+`injury_status` makes them IR-eligible — moving one to an IR slot opens a
+bench spot without spending a drop.
 
 **Swap and drop candidates.** Rank the roster by optimal-lineup regret:
-for each player who started, the highest-scoring bench player eligible
-for that slot who outscored them, sorted by the gap. This is a
-retrospective measure and explicitly not a start/sit rule — one week of
-outcome tells you less than Friday's projection will. The drop list is
-bench players with the lowest rest-of-season projection, excluding the
-only backup at QB, TE, K, or D/ST, since dropping a sole backup at a
-one-deep position trades a real bye-week problem for a marginal add.
+for each player who started, the highest-scoring bench player eligible for
+that slot who outscored them, sorted by the gap. This is a retrospective
+measure and explicitly not a start/sit rule — one week of outcome tells
+you less than Friday's projection will. The drop list is bench players
+with the lowest rest-of-season projection, excluding the only backup at
+QB, TE, K, or D/ST, since dropping a sole backup at a one-deep position
+trades a real bye-week problem for a marginal add.
 
 ## Tuesday — waiver wire and opening market
 
@@ -292,21 +345,34 @@ difference between a limitation and a silent error.
 
 ## How these will run
 
-The mechanics belong to `docs/automation.md`; three points specific to
-reports are worth stating here.
+`docs/automation.md` and `docs/aws-scheduling.md` own the general
+mechanics; three points specific to reports are worth stating here.
 
-**Reports read state and own none of it.** A report workflow restores
-every state subtree and pushes none back — an empty `push-paths` — which
-preserves the one-writer-per-subtree rule that makes the `--delete`
-mirror of `state/` safe. Rendered reports are archived, never mirrored
-into `state/`.
+**Monday is dispatched.** `infra/scheduler.yaml`'s `report-monday` schedule
+fires `.github/workflows/report.yml` at Mon 10:30 ET, 67 minutes after
+both Monday's ESPN export and nflverse's routine pull, the two feeds this
+report reads. Gated behind `ReportScheduleState`, default `DISABLED` like
+every other collection schedule.
 
-**Committing to the repository is a new capability.** Every existing
-workflow runs with `contents: read` and persists solely to S3; nothing
-in this repo has ever done a `git commit` from CI. Writing to `reports/`
-requires `contents: write` on a public repository, and that is a
-deliberate trade rather than an implementation detail — it should be
-decided on the record, not discovered in a diff.
+**Reports read state and own none of it, except the reports themselves.**
+`report.yml` restores every state subtree it needs and pushes none of
+`data/` back — an empty `push-paths`, which `scripts/s3_sync.sh`'s
+`push-state` now correctly treats as "own nothing" rather than its old,
+dangerous default of "own everything." `data/out/` exports the report
+reads (`matchups`, `weekly-rosters`, `player-pool`, `roster-slots`) are
+never restored by the ordinary state restore either — they come from
+S3's `latest/out/` convenience copy via a new `restore-out` subcommand,
+since `data/out/` is otherwise purely an archive destination.
+
+**Committing to the repository is resolved: reports live in both places,
+kept as mirrors.** `reports/<season>/week-<NN>/` is git-tracked in this
+repo, and `report.yml` commits its own output there (`contents: write` —
+the one workflow here with it) before mirroring the identical tree to a
+new `s3://$BUCKET/reports/` prefix (a `sync-reports` subcommand, synced
+`--delete`, safe specifically because `actions/checkout` restores the
+full git history first, so the local copy is always complete). Reading a
+report therefore never requires AWS access — it is a normal file in the
+repo — while S3 keeps a durable copy of the same tree independent of git.
 
 **Path convention:**
 `reports/<season>/week-<NN>/<YYYY-MM-DD>-<day>-<slug>.md`. ISO dates,
@@ -319,9 +385,34 @@ must never be written into `data/out/`, where they would be mis-keyed.
 
 ## Known gaps
 
-- **Nothing in this document has been Observed.** No report engine
-  exists; every time, threshold, and behavior here is intent. Treat the
-  schedule as a specification until something has run a real NFL week.
+- **Monday is the only report that has been Observed running.** The other
+  six days are still intent, not description — every time, threshold, and
+  behavior in those sections is a specification until something has run a
+  real NFL week.
+- **`freshness()` never validates a `data/out` export's own content**, only
+  each feed's last-run sidecar (`last_run.json` / `manifest.json` /
+  `.meta.json`). If the morning's ESPN export silently fails to produce a
+  fresh `matchups.csv`, `latest/out/matchups.csv` is whatever a prior
+  successful run wrote, and Monday's report renders off it with no stale
+  flag anywhere in the output — a pre-existing gap this pipeline had before
+  Monday's report started actually running, made consequential now that it
+  does.
+- **Monday renders at 10:30 ET for a 20:15 ET kickoff**, roughly ten hours
+  early, and official inactives drop about 90 minutes before kickoff in no
+  feed this pipeline touches. A second, later Monday slot was considered
+  and deferred.
+- **Whether an unowned player can actually be added on a Monday is a
+  league waiver setting recorded in no artifact here.** The free-agent
+  half of Monday's alternatives may be unactionable, and the report must
+  state that as an assumption rather than imply it.
+- **Which slots ESPN leaves unlocked on a Monday** — specifically
+  bye-week and already-played players — is platform behavior observed
+  nowhere in this repo. Only players on the two Monday-night teams are
+  known-unlocked.
+- **2026 has exactly one Monday game in every regular-season week**, but
+  that is a property of this season's schedule, not a rule. The report
+  handles zero Monday games (week 18) and more than one, but neither case
+  has been Observed against a real slate.
 - **The odds layer has never produced data.** `data/odds/ledger.db`
   holds zero rows in all three of its ledger tables, and no parquet,
   `last_run.json`, or `league_scoring.json` exists yet. Every
@@ -336,9 +427,10 @@ must never be written into `data/out/`, where they would be mis-keyed.
   signal is presently empty. Friday's report is the one this most
   degrades.
 - **The free-agent pool is a derivation, not an artifact.** Nothing on
-  disk distinguishes free agents from rostered players; every waiver
-  section here depends on an anti-join that does not exist in the
-  codebase yet.
+  disk distinguishes free agents from rostered players. The anti-join
+  itself now exists (`espn_ff/report/pool.py`, built for Monday's
+  alternatives section), but Tuesday's waiver report — the section that
+  most depends on it — has not been built yet.
 - **Our league's waiver-processing night is recorded in no artifact.**
   Tuesday's and Wednesday's claim-deadline guidance is therefore
   league-setting dependent and unverified — it should be stated as an
