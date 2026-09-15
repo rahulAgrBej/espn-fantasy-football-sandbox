@@ -29,13 +29,13 @@ def test_archive_raw_partitions_by_event_id(odds_paths):
 def test_append_snapshot_dedupes_on_key_keeping_the_later_capture(odds_paths, tmp_path):
     path = tmp_path / "player_props.parquet"
     first = pd.DataFrame([
-        {"captured_at": "2026-09-18T10:00:00Z", "event_id": "e1", "player_name": "Jayden Reed", "market": "player_receptions", "book": "draftkings", "point": 4.5},
+        {"captured_at": "2026-09-18T10:00:00Z", "event_id": "e1", "player_name": "Jayden Reed", "market": "player_receptions", "book": "draftkings", "outcome_name": "Over", "point": 4.5},
     ])
     store.append_snapshot(first, path, store.PROPS_DEDUPE_KEYS)
 
     second = pd.DataFrame([
-        {"captured_at": "2026-09-18T10:00:00Z", "event_id": "e1", "player_name": "Jayden Reed", "market": "player_receptions", "book": "draftkings", "point": 5.0},
-        {"captured_at": "2026-09-19T10:00:00Z", "event_id": "e1", "player_name": "Jayden Reed", "market": "player_receptions", "book": "draftkings", "point": 5.5},
+        {"captured_at": "2026-09-18T10:00:00Z", "event_id": "e1", "player_name": "Jayden Reed", "market": "player_receptions", "book": "draftkings", "outcome_name": "Over", "point": 5.0},
+        {"captured_at": "2026-09-19T10:00:00Z", "event_id": "e1", "player_name": "Jayden Reed", "market": "player_receptions", "book": "draftkings", "outcome_name": "Over", "point": 5.5},
     ])
     combined = store.append_snapshot(second, path, store.PROPS_DEDUPE_KEYS)
 
@@ -44,15 +44,30 @@ def test_append_snapshot_dedupes_on_key_keeping_the_later_capture(odds_paths, tm
     assert same_key_row["point"] == 5.0  # exact-same-key rewrite: the latest write for that key wins
 
 
+def test_append_snapshot_keeps_both_sides_of_a_two_sided_market(odds_paths, tmp_path):
+    """Regression: outcome_name must be part of the dedupe key. Over and
+    Under (or Yes and No) share every other column within one capture, so
+    omitting outcome_name let one side silently clobber the other --
+    verified against a real team_totals.parquet capture where the totals
+    market's Over rows were entirely lost this way."""
+    path = tmp_path / "player_props.parquet"
+    rows = pd.DataFrame([
+        {"captured_at": "2026-09-18T10:00:00Z", "event_id": "e1", "player_name": "Jayden Reed", "market": "player_receptions", "book": "draftkings", "outcome_name": "Over", "point": 4.5},
+        {"captured_at": "2026-09-18T10:00:00Z", "event_id": "e1", "player_name": "Jayden Reed", "market": "player_receptions", "book": "draftkings", "outcome_name": "Under", "point": 4.5},
+    ])
+    combined = store.append_snapshot(rows, path, store.PROPS_DEDUPE_KEYS)
+    assert set(combined["outcome_name"]) == {"Over", "Under"}
+
+
 def test_append_snapshot_never_shrinks_the_file_on_disk(odds_paths, tmp_path):
     path = tmp_path / "player_props.parquet"
     store.append_snapshot(
-        pd.DataFrame([{"captured_at": "d1", "event_id": "e1", "player_name": "A", "market": "m", "book": "b", "point": 1}]),
+        pd.DataFrame([{"captured_at": "d1", "event_id": "e1", "player_name": "A", "market": "m", "book": "b", "outcome_name": "Over", "point": 1}]),
         path, store.PROPS_DEDUPE_KEYS,
     )
     before = len(pd.read_parquet(path))
 
-    store.append_snapshot(pd.DataFrame(columns=["captured_at", "event_id", "player_name", "market", "book", "point"]), path, store.PROPS_DEDUPE_KEYS)
+    store.append_snapshot(pd.DataFrame(columns=["captured_at", "event_id", "player_name", "market", "book", "outcome_name", "point"]), path, store.PROPS_DEDUPE_KEYS)
     after = len(pd.read_parquet(path))
     assert after >= before
 

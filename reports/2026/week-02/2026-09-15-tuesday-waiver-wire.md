@@ -4,7 +4,7 @@
 - sleeper: 2026-09-14 19:13:41
 - nflverse: 2026-09-15 04:46:47
 - espn: 2026-09-15 16:31:36
-- odds: never (STALE)
+- odds: 2026-09-15 22:25:03
 
 ## Decisions due
 Our waiver rank: 4 of 12.
@@ -46,7 +46,40 @@ _205 other transaction(s) in this window were DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL
 | 12 | Cheek clappers | 12 |  |
 
 ## Opening market
-**insufficient data** -- no team_totals.parquet on disk. `implied_team_total` tempering was not applied to the add candidates below.
+| team | implied_team_total |
+|---|---|
+| ARI | 19.8 |
+| ATL | 20.0 |
+| BAL | 27.8 |
+| BUF | 27.0 |
+| CAR | 23.0 |
+| CHI | 24.8 |
+| CIN | 24.2 |
+| CLE | 18.6 |
+| DAL | 27.2 |
+| DEN | 22.2 |
+| DET | 24.5 |
+| GB | 26.0 |
+| HOU | 24.5 |
+| IND | 20.0 |
+| JAX | 21.5 |
+| KC | 26.5 |
+| LAC | 23.0 |
+| LAR | 24.2 |
+| LV | 18.5 |
+| MIA | 16.0 |
+| MIN | 22.2 |
+| NE | 23.2 |
+| NO | 24.0 |
+| NYG | 24.2 |
+| NYJ | 20.5 |
+| PHI | 23.2 |
+| PIT | 18.2 |
+| SEA | 23.0 |
+| SF | 28.2 |
+| TB | 23.8 |
+| TEN | 16.2 |
+| WSH | 23.2 |
 
 ## Add candidates
 ### D/ST
@@ -55,9 +88,9 @@ _Current starter for context: Seahawks D/ST (7.6 proj)._
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Buccaneers D/ST | D/ST | TB | 8.0 | insufficient data | 12.8 | insufficient data | -- | De'Zhaun Stribling |
-| Bears D/ST | D/ST | CHI | 6.5 | insufficient data | 9.7 | insufficient data | -- | Tre Tucker |
-| 49ers D/ST | D/ST | SF | 6.4 | insufficient data | 7.3 | insufficient data | -- | RJ Harvey |
+| Buccaneers D/ST | D/ST | TB | 8.0 | insufficient data | 12.8 | 23.8 | -- | De'Zhaun Stribling |
+| Bears D/ST | D/ST | CHI | 6.5 | insufficient data | 9.7 | 24.8 | -- | Tre Tucker |
+| 49ers D/ST | D/ST | SF | 6.4 | insufficient data | 7.3 | 28.2 | -- | RJ Harvey |
 
 ### K
 _insufficient data -- no eligible bench player at this slot to set a floor._
@@ -65,18 +98,18 @@ _Current starter for context: Tyler Loop (8.9 proj)._
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Cairo Santos | K | CHI | 9.0 | insufficient data | 33.7 | insufficient data | -- | De'Zhaun Stribling |
-| Nick Folk | K | ATL | 8.8 | insufficient data | 4.6 | insufficient data | -- | Tre Tucker |
-| Chase McLaughlin | K | TB | 8.6 | insufficient data | 16.0 | insufficient data | -- | RJ Harvey |
+| Cairo Santos | K | CHI | 9.0 | insufficient data | 33.7 | 24.8 | -- | De'Zhaun Stribling |
+| Nick Folk | K | ATL | 8.8 | insufficient data | 4.6 | 20.0 | -- | Tre Tucker |
+| Chase McLaughlin | K | TB | 8.6 | insufficient data | 16.0 | 23.8 | -- | RJ Harvey |
 
 ### QB
 _Bench floor: Jordan Love (15.8 proj, source=pool)._
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Carson Wentz | QB | MIN | 16.5 | 0.8 | 0.1 | insufficient data | -- | De'Zhaun Stribling |
-| Bryce Young | QB | CAR | 16.2 | 0.5 | 11.2 | insufficient data | -- | Tre Tucker |
-| Drew Lock | QB | SEA | 15.6 | -0.1 | 0.1 | insufficient data | -- | RJ Harvey |
+| Carson Wentz | QB | MIN | 16.5 | 0.8 | 0.1 | 22.2 | -- | De'Zhaun Stribling |
+| Bryce Young | QB | CAR | 16.2 | 0.5 | 11.2 | 23.0 | -- | Tre Tucker |
+| Drew Lock | QB | SEA | 15.6 | -0.1 | 0.1 | 23.0 | -- | RJ Harvey |
 
 ### TE
 _insufficient data -- no eligible bench player at this slot to set a floor._
@@ -84,18 +117,18 @@ _Current starter for context: Mark Andrews (10.1 proj)._
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Pat Freiermuth | TE | PIT | 8.5 | insufficient data | 14.6 | insufficient data | -- | De'Zhaun Stribling |
-| Dalton Schultz | TE | HOU | 8.3 | insufficient data | 19.8 | insufficient data | -- | Tre Tucker |
-| Kenyon Sadiq | TE | NYJ | 8.1 | insufficient data | 34.8 | insufficient data | -- | RJ Harvey |
+| Pat Freiermuth | TE | PIT | 8.5 | insufficient data | 14.6 | 18.2 | -- | De'Zhaun Stribling |
+| Dalton Schultz | TE | HOU | 8.3 | insufficient data | 19.8 | 24.5 | -- | Tre Tucker |
+| Kenyon Sadiq | TE | NYJ | 8.1 | insufficient data | 34.8 | 20.5 | -- | RJ Harvey |
 
 ### RB
 _Bench floor: RJ Harvey (8.9 proj, source=pool)._
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Kaelon Black | RB | SF | 8.2 | -0.8 | 15.3 | insufficient data | -- | De'Zhaun Stribling |
-| Braelon Allen | RB | NYJ | 8.2 | -0.8 | 12.4 | insufficient data | -- | Tre Tucker |
-| George Holani | RB | SEA | 8.0 | -0.9 | 4.2 | insufficient data | -- | RJ Harvey |
+| Kaelon Black | RB | SF | 8.2 | -0.8 | 15.3 | 28.2 | -- | De'Zhaun Stribling |
+| Braelon Allen | RB | NYJ | 8.2 | -0.8 | 12.4 | 20.5 | -- | Tre Tucker |
+| George Holani | RB | SEA | 8.0 | -0.9 | 4.2 | 23.0 | -- | RJ Harvey |
 
 ### WR
 _Bench floor: De'Zhaun Stribling (0.0 proj, source=pool)._
@@ -103,9 +136,9 @@ _WR and RB/WR share eligible candidates -- this block may repeat the other's row
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Devaughn Vele | WR | NO | 9.4 | 9.4 | 12.8 | insufficient data | -- | De'Zhaun Stribling |
-| Caleb Douglas | WR | MIA | 8.9 | 8.9 | 15.5 | insufficient data | -- | Tre Tucker |
-| Denzel Boston | WR | CLE | 8.9 | 8.9 | 25.2 | insufficient data | -- | RJ Harvey |
+| Devaughn Vele | WR | NO | 9.4 | 9.4 | 12.8 | 24.0 | -- | De'Zhaun Stribling |
+| Caleb Douglas | WR | MIA | 8.9 | 8.9 | 15.5 | 16.0 | -- | Tre Tucker |
+| Denzel Boston | WR | CLE | 8.9 | 8.9 | 25.2 | 18.6 | -- | RJ Harvey |
 
 ### RB/WR
 _Bench floor: De'Zhaun Stribling (0.0 proj, source=pool)._
@@ -113,9 +146,9 @@ _WR and RB/WR share eligible candidates -- this block may repeat the other's row
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Devaughn Vele | WR | NO | 9.4 | 9.4 | 12.8 | insufficient data | -- | De'Zhaun Stribling |
-| Caleb Douglas | WR | MIA | 8.9 | 8.9 | 15.5 | insufficient data | -- | Tre Tucker |
-| Denzel Boston | WR | CLE | 8.9 | 8.9 | 25.2 | insufficient data | -- | RJ Harvey |
+| Devaughn Vele | WR | NO | 9.4 | 9.4 | 12.8 | 24.0 | -- | De'Zhaun Stribling |
+| Caleb Douglas | WR | MIA | 8.9 | 8.9 | 15.5 | 16.0 | -- | Tre Tucker |
+| Denzel Boston | WR | CLE | 8.9 | 8.9 | 25.2 | 18.6 | -- | RJ Harvey |
 
 ## Drop candidates
 5 legal drop(s), ranked weakest ROS projection first -- named per add row above; reused across slot blocks, not simultaneously available.
@@ -136,6 +169,4 @@ _WR and RB/WR share eligible candidates -- this block may repeat the other's row
 - Which scoring period ESPN stamps on a Tuesday-processed claim is Inferred; both week - 1 and week are shown and labelled.
 - Named drops repeat across slot blocks. Each row is roster-legal on its own, but the pairings are alternatives to one another beyond the stated legal-drop count -- they do not combine.
 - Slot blocks share candidates: a WR is eligible at both WR and RB/WR, so the same player can appear in two blocks. Each block is a per-slot answer, not a distinct add.
-- The odds feed is stale as of this report's generation.
-- Opening-market tempering could not be applied to add candidates -- no team_totals.parquet on disk.
 - No WAIVER-type transaction has ever been observed in this league's export.

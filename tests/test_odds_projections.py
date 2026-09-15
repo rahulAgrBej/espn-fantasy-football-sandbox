@@ -61,6 +61,34 @@ def test_consensus_line_devigs_then_medians_probability_markets():
     assert result.iloc[0]["point"] == pytest.approx(sorted([p_dk, p_fd])[0] + (sorted([p_dk, p_fd])[1] - sorted([p_dk, p_fd])[0]) / 2)
 
 
+def _real_shape_spread_rows():
+    """The shape _flatten_featured actually produces: one row per
+    (event, team, book), with `outcome_name` set to that team's own full
+    name -- never "Over"/"Yes". Regression for consensus_line treating
+    spreads like a two-sided Over/Yes market and returning NaN for every
+    team, which real captured data hit 100% of the time."""
+    return pd.DataFrame(
+        [
+            {"event_id": "e1", "team": "MIN", "market": "spreads", "book": "draftkings",
+             "outcome_name": "Minnesota Vikings", "point": -2.5},
+            {"event_id": "e1", "team": "MIN", "market": "spreads", "book": "fanduel",
+             "outcome_name": "Minnesota Vikings", "point": -3.0},
+            {"event_id": "e1", "team": "GB", "market": "spreads", "book": "draftkings",
+             "outcome_name": "Green Bay Packers", "point": 2.5},
+            {"event_id": "e1", "team": "GB", "market": "spreads", "book": "fanduel",
+             "outcome_name": "Green Bay Packers", "point": 3.0},
+        ]
+    )
+
+
+def test_consensus_line_medians_spreads_by_point_not_by_outcome_label():
+    result = projections.consensus_line(_real_shape_spread_rows())
+    assert len(result) == 2
+    by_team = dict(zip(result["team"], result["point"]))
+    assert by_team["MIN"] == pytest.approx(-2.75)
+    assert by_team["GB"] == pytest.approx(2.75)
+
+
 def _spread_total_rows():
     return pd.DataFrame(
         [

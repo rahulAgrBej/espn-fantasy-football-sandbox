@@ -42,13 +42,21 @@ def consensus_line(rows):
     de-vigs each book's own Yes/No pair, then medians the resulting Yes
     probability across books -- written back into `point` so downstream
     code never has to branch on market shape again.
+
+    "spreads" is a third shape, handled separately: `_flatten_featured`
+    already splits it one row per team (`team` is part of `group_cols`),
+    so each group here is already one side of the line -- `outcome_name`
+    is that team's own full name, never "Over"/"Yes", and every row in the
+    group already carries that team's signed point straight from the API.
     """
     group_cols = [c for c in ("event_id", "player_name", "team", "market") if c in rows.columns]
     out_rows = []
     for key, group in rows.groupby(group_cols, dropna=False):
         key = key if isinstance(key, tuple) else (key,)
         row = dict(zip(group_cols, key))
-        if group["point"].notna().any():
+        if row.get("market") == "spreads":
+            row["point"] = group["point"].median()
+        elif group["point"].notna().any():
             over = group[group["outcome_name"].isin(["Over", "Yes"])]
             row["point"] = over["point"].median()
         else:

@@ -19,8 +19,15 @@ import pandas as pd
 
 from .. import config
 
-PROPS_DEDUPE_KEYS = ["captured_at", "event_id", "player_name", "market", "book"]
-TOTALS_DEDUPE_KEYS = ["captured_at", "event_id", "team", "market"]
+# `outcome_name` is load-bearing on both: a two-sided market (Over/Under,
+# Yes/No) puts both sides in the same (event_id, .../market, book) tuple at
+# the same captured_at, and consensus_line's cross-book median needs both --
+# omitting outcome_name here let one side silently clobber the other on
+# every real capture (verified against a live team_totals.parquet: the
+# totals market's team=None left Over and Under identical on every column
+# but outcome_name, and only the last-written side survived).
+PROPS_DEDUPE_KEYS = ["captured_at", "event_id", "player_name", "market", "book", "outcome_name"]
+TOTALS_DEDUPE_KEYS = ["captured_at", "event_id", "team", "market", "book", "outcome_name"]
 
 
 def raw_path(billing_period, job_run_id, endpoint, event_id, ts):
