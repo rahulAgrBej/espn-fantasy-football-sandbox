@@ -1,9 +1,9 @@
 # Week 1 in review -- 2026
 
 ## Freshness
-- sleeper: 2026-09-14 19:13:41
-- nflverse: 2026-09-15 04:46:47
-- espn: 2026-09-15 16:31:36
+- sleeper: 2026-09-15 04:14:28
+- nflverse: 2026-09-15 17:24:07
+- espn: 2026-09-15 18:10:04
 
 ## Decisions due
 None binding today. This report seeds the shortlist for the 11:00 waiver-wire report.
@@ -12,10 +12,23 @@ Possibly IR-eligible, depending on this league's setting (assumption, unconfirme
 - De'Zhaun Stribling (WR) -- DOUBTFUL
 
 ## Result
-**unclosed -- insufficient data** -- all 6 matchups still read UNDECIDED -- the ESPN refresh has not landed
+Won. Us 151.7 -- Daddy Dan Campbell 143.6 (margin 8.1, ours minus theirs)
 
 ## Standings
-**insufficient data** -- every team still reads the pre-season snapshot (0-0, 0.0 points_for)
+| seed | team | record | points for |
+|---|---|---|---|
+| 1 | Farmer Jack | 1-0-0 | 163.7 |
+| 2 | Caleb Williams' Baby Mamas | 1-0-0 | 151.7 |
+| 3 | Foreign Expansion | 1-0-0 | 127.7 |
+| 4 | Jaxon Smith-Kachigga | 1-0-0 | 122.6 |
+| 5 | Costco Blitz Krieg | 1-0-0 | 105.7 |
+| 6 | Roster? I hardly know her | 1-0-0 | 91.3 |
+| 7 | Daddy Dan Campbell | 0-1-0 | 143.6 |
+| 8 | Rashee Rice Krispies | 0-1-0 | 111.2 |
+| 9 | Rocco | 0-1-0 | 103.9 |
+| 10 | eMekaladon | 0-1-0 | 85.0 |
+| 11 | BYE WEEK | 0-1-0 | 76.4 |
+| 12 | Cheek clappers | 0-1-0 | 63.0 |
 
 ## Optimal-lineup regret
 **10.2 points left on the table** (optimal 161.9 vs actual 151.7).
