@@ -1,0 +1,130 @@
+name: odds
+
+# The only metered feed in this pipeline. Unlike every ESPN/Sleeper/nflverse
+# command, re-running one of these spends real credits even when nothing
+# about the market changed -- 500 per billing period, no historical
+# endpoint, no way to buy a number back. See docs/odds-budget.md.
+#
+# All five jobs live in one workflow so they share a single concurrency
+# group. The credit ledger is SQLite and its BEGIN IMMEDIATE atomicity only
+# holds within one filesystem; two runners each with their own restored copy
+# would both pass the guard. Serializing here is what makes the
+# restore -> guard -> push cycle safe.
+#
+# The Monday and Tuesday slots sit 30 minutes after espn.yml's, which run on
+# the hour: these jobs read the ESPN cache (for the current week and roster)
+# but espn.yml owns it, so they go second and never push it back.
+on:
+  schedule:
+    - cron: "30 13 * * 2"   # Tue 09:30 ET -- slate (opening spreads/totals)
+    - cron: "0 14 * * 4"    # Thu 10:00 ET -- props
+    - cron: "0 14 * * 5"    # Fri 10:00 ET -- line_movement
+    - cron: "30 14 * * 0"   # Sun 10:30 EDT / 09:30 EST -- pre_lock (critical)
+    - cron: "30 13 * * 1"   # Mon 09:30 ET -- results
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        type: choice
+        options: [slate, props, line_movement, pre_lock, results]
+        required: true
+      dry_run:
+        description: "Estimate the cost and issue nothing"
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: odds-ledger
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    if: github.repository == 'rahulAgrBej/espn-fantasy-football-sandbox'
+    runs-on: ubuntu-latest
+    environment: gh_env
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the job for this trigger
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "30 13 * * 2") job=slate ;;
+            "0 14 * * 4")  job=props ;;
+            "0 14 * * 5")  job=line_movement ;;
+            "30 14 * * 0") job=pre_lock ;;
+            "30 13 * * 1") job=results ;;
+            *)             job="${{ inputs.job }}" ;;
+          esac
+          echo "job=$job" >> "$GITHUB_OUTPUT"
+          echo "Resolved job: $job"
+
+      # Nothing in the code stops `odds slate` from spending credits in
+      # April. The season runs Sep-Jan; outside it there is no slate to
+      # price and every request would be pure waste.
+      - name: Off-season guard
+        id: season
+        run: |
+          month=$(date -u +%m)
+          case "$month" in
+            09|10|11|12|01) echo "in_season=true"  >> "$GITHUB_OUTPUT" ;;
+            *)              echo "in_season=false" >> "$GITHUB_OUTPUT"
+                            echo "::notice::Off-season (month $month) -- skipping, no credits spent" ;;
+          esac
+
+      # --dry-run walks the same event selection the real job would and
+      # prints the estimate using only the free /events endpoint. It is the
+      # inverse of a bypass flag: it can only decline to spend.
+      - name: Preflight cost estimate
+        if: steps.season.outputs.in_season == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/ff-run
+        with:
+          command: "odds ${{ steps.pick.outputs.job }} --dry-run"
+          archive: "false"
+          push-paths: "odds"
+          aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          s3-bucket: ${{ vars.S3_BUCKET }}
+          espn-s2: ${{ secrets.ESPN_S2 }}
+          swid: ${{ secrets.SWID }}
+          odds-api-key: ${{ secrets.ODDS_API_KEY }}
+          odds-quota-reset-day: ${{ vars.ODDS_QUOTA_RESET_DAY }}
+
+      # projections is free and offline -- it only reads what the job above
+      # captured -- so it runs in the same invocation.
+      - name: Run the metered job
+        if: >-
+          steps.season.outputs.in_season == 'true' &&
+          (github.event_name == 'schedule' || inputs.dry_run != true)
+        uses: ./.github/actions/ff-run
+        with:
+          command: |
+            odds ${{ steps.pick.outputs.job }}
+            projections
+          # data/raw is read-only here -- espn.yml owns it, and on Monday and
+          # Tuesday both workflows are scheduled within the hour.
+          state-paths: "odds raw raw/odds"
+          push-paths: "odds raw/odds"
+          aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          s3-bucket: ${{ vars.S3_BUCKET }}
+          espn-s2: ${{ secrets.ESPN_S2 }}
+          swid: ${{ secrets.SWID }}
+          odds-api-key: ${{ secrets.ODDS_API_KEY }}
+          odds-quota-reset-day: ${{ vars.ODDS_QUOTA_RESET_DAY }}
+
+      - name: Report remaining credits
+        if: always() && steps.season.outputs.in_season == 'true'
+        uses: ./.github/actions/ff-run
+        with:
+          command: "credits"
+          archive: "false"
+          push-paths: "odds"
+          aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          s3-bucket: ${{ vars.S3_BUCKET }}

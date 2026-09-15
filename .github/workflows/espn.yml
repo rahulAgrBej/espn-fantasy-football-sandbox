@@ -1,0 +1,45 @@
+name: espn
+
+# Weekly close-the-book pulls plus Sunday live scoring.
+#
+# --refresh is required on every slot, not optional. cmd_export fetches
+# ["mMatchupScore", "mTeam"] with no ttl, so matchups.csv -- and with it
+# points_live and winner -- is cached forever once written. Without
+# --refresh a Sunday run would keep reporting 0.0 / UNDECIDED for games
+# that already finished. See docs/data-sources.md's ESPN section.
+on:
+  schedule:
+    - cron: "0 13 * * 1"         # Mon 09:00 ET -- final scores, weekend transactions
+    - cron: "0 13 * * 2"         # Tue 09:00 ET -- waiver-processing results
+    - cron: "*/30 17-23 * * 0"   # Sun 13:00-19:30 ET -- live scoring
+    - cron: "*/30 0-4 * * 1"     # Sun 20:00 ET - Mon 00:30 ET -- night games
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+# Sunday slots fire every 30 minutes; a slow run must not overlap the next.
+concurrency:
+  group: espn
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    if: github.repository == 'rahulAgrBej/espn-fantasy-football-sandbox'
+    runs-on: ubuntu-latest
+    environment: gh_env
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ff-run
+        with:
+          command: |
+            pull --refresh
+            export --refresh
+          state-paths: "raw"
+          push-paths: "raw"
+          aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          s3-bucket: ${{ vars.S3_BUCKET }}
+          espn-s2: ${{ secrets.ESPN_S2 }}
+          swid: ${{ secrets.SWID }}

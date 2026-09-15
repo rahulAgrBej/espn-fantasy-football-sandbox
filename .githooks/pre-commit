@@ -10,7 +10,9 @@
 
 set -u
 
-FORBIDDEN='(^|/)\.env($|\.)|\.env$|(^|/)\.envrc$|(^|/)\.Renviron$|(^|/)\.Rprofile$|(^|/)[Cc][Ll][Aa][Uu][Dd][Ee][.-][^/]*\.[Mm][Dd]$|(^|/)\.claude(/|$)|\.pem$|\.key$|(^|/)secrets\.|(^|/)credentials\.'
+# infra/*.json are rendered from the tracked *.json.example templates and
+# carry the real AWS account id; only the placeholder templates are tracked.
+FORBIDDEN='(^|/)\.env($|\.)|\.env$|(^|/)\.envrc$|(^|/)\.Renviron$|(^|/)\.Rprofile$|(^|/)[Cc][Ll][Aa][Uu][Dd][Ee][.-][^/]*\.[Mm][Dd]$|(^|/)\.claude(/|$)|\.pem$|\.key$|(^|/)secrets\.|(^|/)credentials\.|^infra/[^/]*\.json$'
 
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
 [ -z "$staged" ] && exit 0

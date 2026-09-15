@@ -25,6 +25,11 @@ CLAUDE.*.md
 # Data is never committed
 data/
 
+# Rendered IAM/S3 policies carry the real AWS account id and bucket name.
+# Only the <ACCOUNT_ID>/<BUCKET> placeholder templates are tracked.
+infra/*.json
+!infra/*.json.example
+
 # Python
 .venv/
 venv/

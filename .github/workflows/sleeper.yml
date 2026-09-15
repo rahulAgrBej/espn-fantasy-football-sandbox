@@ -1,0 +1,45 @@
+name: sleeper
+
+# Daily player-status snapshot. This is the workflow that matters most for
+# continuity: practice_trajectory (Wed/Thu/Fri) and the depth-chart deltas
+# are reconstructed from OUR OWN daily snapshots, not fetched. A missed day
+# is a permanent hole -- Sleeper publishes no history to backfill from.
+on:
+  schedule:
+    - cron: "0 12 * * *"    # 08:00 ET daily (07:00 ET once DST ends)
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: sleeper
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    # Never inherited by a fork.
+    if: github.repository == 'rahulAgrBej/espn-fantasy-football-sandbox'
+    runs-on: ubuntu-latest
+    environment: gh_env
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/ff-run
+        with:
+          # No --refresh here, ever. It is one global flag with two effects:
+          # it bypasses the ESPN cache AND fetch_players' once-a-day
+          # short-circuit, which would breach Sleeper's documented ask that
+          # /v1/players/nfl be called at most once a day.
+          command: |
+            sleeper
+            status
+          # Reads data/raw for the ESPN player pool and current week, but only
+          # data/sleeper is ours to mirror back.
+          state-paths: "sleeper raw raw/sleeper"
+          push-paths: "sleeper raw/sleeper"
+          aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          s3-bucket: ${{ vars.S3_BUCKET }}
+          espn-s2: ${{ secrets.ESPN_S2 }}
+          swid: ${{ secrets.SWID }}

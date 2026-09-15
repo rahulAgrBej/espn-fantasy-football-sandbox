@@ -1,0 +1,152 @@
+name: Run an espn_ff command
+description: >
+  Restore data/ state from S3, run one espn_ff command, then archive outputs
+  and push state back. Every collection workflow is a thin wrapper around
+  this.
+
+inputs:
+  command:
+    description: >
+      One espn_ff invocation per line, without the interpreter -- e.g.
+      "sleeper\nstatus". Lines run in order and the first failure stops the
+      rest.
+    required: true
+  state-paths:
+    description: >
+      Space-separated data/ subtrees to restore. Defaults to all of them.
+      Narrow it (e.g. "raw") for jobs that only need part of the state.
+    required: false
+    default: ""
+  push-paths:
+    description: >
+      Space-separated data/ subtrees this workflow OWNS and may mirror back
+      with --delete. Defaults to everything restored. Keep it narrow: two
+      workflows that push the same subtree in the same minute will race, and
+      the later push wins with stale content.
+    required: false
+    default: ""
+  archive:
+    description: Whether to archive outputs to the append-only prefix
+    required: false
+    default: "true"
+  aws-role-arn:
+    description: Role to assume via OIDC
+    required: true
+  aws-region:
+    required: true
+  s3-bucket:
+    required: true
+  espn-s2:
+    required: false
+    default: ""
+  swid:
+    required: false
+    default: ""
+  odds-api-key:
+    required: false
+    default: ""
+  odds-quota-reset-day:
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Mask the metered credential
+      shell: bash
+      run: |
+        # The odds client redacts the key from its own URLs and exceptions,
+        # but that does not cover anything else this job might print.
+        if [ -n "${{ inputs.odds-api-key }}" ]; then
+          echo "::add-mask::${{ inputs.odds-api-key }}"
+        fi
+
+    - uses: actions/checkout@v4
+
+    - uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: Install
+      shell: bash
+      run: |
+        # Install from pyproject rather than an ad-hoc package list, so CI
+        # and a local .venv cannot drift apart.
+        uv venv
+        uv pip install -e ".[dev]"
+
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws-role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Restore state from S3
+      shell: bash
+      env:
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+      run: ./scripts/s3_sync.sh restore "${{ inputs.state-paths }}"
+
+    - name: Run
+      id: run
+      shell: bash
+      env:
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+        ESPN_S2: ${{ inputs.espn-s2 }}
+        SWID: ${{ inputs.swid }}
+        ODDS_API_KEY: ${{ inputs.odds-api-key }}
+        ODDS_QUOTA_RESET_DAY: ${{ inputs.odds-quota-reset-day }}
+      run: |
+        # Capture the exit code rather than letting it abort the job: the
+        # persist steps below must run either way, so a partial or
+        # budget-aborted run still lands whatever it captured.
+        set +e
+        ( set -e
+          while IFS= read -r line; do
+            [ -z "${line// }" ] && continue
+            echo "+ python -m espn_ff $line"
+            .venv/bin/python -m espn_ff $line
+          done <<'COMMANDS'
+        ${{ inputs.command }}
+        COMMANDS
+        )
+        code=$?
+        set -e
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+        echo "Command exited $code"
+
+    - name: Archive outputs
+      if: always() && inputs.archive == 'true'
+      shell: bash
+      env:
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+      run: ./scripts/s3_sync.sh archive
+
+    - name: Push state
+      if: always()
+      shell: bash
+      env:
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+      run: ./scripts/s3_sync.sh push-state "${{ inputs.push-paths }}"
+
+    - name: Write run receipt
+      if: always()
+      shell: bash
+      env:
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+      run: |
+        ./scripts/s3_sync.sh receipt \
+          "${{ github.workflow }}" "${{ github.run_id }}" \
+          "${{ inputs.command }}" "${{ steps.run.outputs.code || 1 }}"
+
+    - name: Report outcome
+      if: always()
+      shell: bash
+      run: |
+        code="${{ steps.run.outputs.code || 1 }}"
+        case "$code" in
+          0) echo "::notice::${{ inputs.command }} succeeded" ;;
+          # Exit 2 is the Odds credit guard firing: expected, nothing issued,
+          # and not a failure. See espn_ff/cli.py.
+          2) echo "::warning::${{ inputs.command }} stopped on the credit guard (exit 2) -- nothing was issued" ;;
+          *) echo "::error::${{ inputs.command }} failed (exit $code)"; exit "$code" ;;
+        esac
