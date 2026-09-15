@@ -575,10 +575,13 @@ codebase today.
 **Known freshness gaps:**
 
 - Every artifact above is exactly as fresh as the last time the relevant
-  command ran. That is now usually a scheduled GitHub Actions run rather than a
-  person (`docs/automation.md`), which changes who triggers a pull but not this
-  document's answer for any field — and scheduled runs are themselves
-  best-effort, so a slot can slip or be skipped.
+  command ran. That is now usually a GitHub Actions run dispatched on a
+  schedule rather than a person (`docs/automation.md`), which changes who
+  triggers a pull but not this document's answer for any field. A slot can
+  still fail, but it can no longer fail quietly: the schedules moved to AWS
+  EventBridge precisely because GitHub's own cron dropped slots with no signal,
+  and a dispatch that does not land now raises an alarm
+  (`docs/aws-scheduling.md`).
 - **No cadence here has been re-measured against the automated schedule.** The
   Observed figures below were taken from manual runs; nothing has yet run a full
   NFL week unattended.

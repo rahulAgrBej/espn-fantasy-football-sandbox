@@ -14,11 +14,14 @@ name: health
 # Deliberately touches no S3 and assumes no role: `probe` needs the two
 # cookies and nothing else. A failure here therefore means the cookies, not
 # the infrastructure.
+#
+# The clock lives in AWS, not here. This workflow is where the cost of
+# GitHub's scheduler was actually measured: on 2026-09-15 the 11:00Z slot was
+# delivered at 15:30Z, 4h30m late, which would have put the "before the day's
+# collection" probe well after the day's collection. EventBridge Scheduler now
+# dispatches the three slots (07:04 / 19:04 ET daily, Sun 12:04 ET) at the
+# exact minute. See docs/aws-scheduling.md and infra/scheduler.yaml.
 on:
-  schedule:
-    - cron: "0 11 * * *"    # 07:00 ET daily -- before the day's collection
-    - cron: "0 23 * * *"    # 19:00 ET daily
-    - cron: "0 16 * * 0"    # Sun 12:00 ET -- one hour before kickoff
   workflow_dispatch:
 
 permissions:

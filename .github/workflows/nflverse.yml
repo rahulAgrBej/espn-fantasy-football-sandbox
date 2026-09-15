@@ -4,10 +4,19 @@ name: nflverse
 # slots are just "check again" -- both commands are idempotent and a run
 # against an unchanged timestamp downloads nothing at all (the manifest's
 # ETags turn it into a 304).
+#
+# The clock lives in AWS. EventBridge Scheduler dispatches the routine slots
+# at 09:23 / 13:23 / 18:23 ET with force=false, and the Thursday canonical
+# read at 09:53 ET with force=true. See docs/aws-scheduling.md.
+#
+# The two Thursday slots stay 30 minutes apart. They once shared 13:00, which
+# meant GitHub fired both at the same minute -- one forced, one not -- and the
+# concurrency group serialized them in no guaranteed order, so which run's
+# data survived was a coin flip. Two schedules carrying an explicit `force`
+# input now make that collision structurally impossible, but the ordering
+# still matters: the routine slot runs first so the forced canonical read is
+# deterministically the one that lands.
 on:
-  schedule:
-    - cron: "0 13,17,22 * * *"   # 09:00 / 13:00 / 18:00 ET -- routine
-    - cron: "0 13 * * 4"         # Thursday 09:00 ET -- the canonical read
   workflow_dispatch:
     inputs:
       force:
@@ -34,11 +43,13 @@ jobs:
       # Stat corrections land Tue/Wed, so Thursday is the first pull where
       # `provisional` reliably resolves to false for last week's games.
       # That one slot forces a full re-download; the rest stay cheap.
+      #
+      # The trigger no longer decides this -- the caller does. AWS sends
+      # force=true only on the Thursday 09:53 ET schedule.
       - name: Pick the refresh mode
         id: mode
         run: |
-          if [ "${{ github.event.schedule }}" = "0 13 * * 4" ] \
-             || [ "${{ inputs.force }}" = "true" ]; then
+          if [ "${{ inputs.force }}" = "true" ]; then
             echo "flag=--force" >> "$GITHUB_OUTPUT"
           else
             echo "flag=" >> "$GITHUB_OUTPUT"

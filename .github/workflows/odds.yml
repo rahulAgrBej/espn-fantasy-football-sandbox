@@ -11,16 +11,18 @@ name: odds
 # would both pass the guard. Serializing here is what makes the
 # restore -> guard -> push cycle safe.
 #
-# The Monday and Tuesday slots sit 30 minutes after espn.yml's, which run on
-# the hour: these jobs read the ESPN cache (for the current week and roster)
-# but espn.yml owns it, so they go second and never push it back.
+# The clock lives in AWS. EventBridge Scheduler dispatches all five jobs and
+# names each one explicitly in `job`: Tue 09:38 slate, Thu 10:08 props, Fri
+# 10:08 line_movement, Sun 10:38 pre_lock (critical -- unbackfillable), Mon
+# 09:38 results, all ET. Those schedules alone do not auto-retry: EventBridge
+# delivers at least once, and a duplicate pre_lock would spend real credits.
+# See docs/aws-scheduling.md.
+#
+# The Monday and Tuesday slots sit 30 minutes after espn.yml's: these jobs
+# read the ESPN cache (for the current week and roster) but espn.yml owns
+# it, so they go second and never push it back. That 30-minute gap is the
+# invariant and must be preserved if either side is ever retimed.
 on:
-  schedule:
-    - cron: "30 13 * * 2"   # Tue 09:30 ET -- slate (opening spreads/totals)
-    - cron: "0 14 * * 4"    # Thu 10:00 ET -- props
-    - cron: "0 14 * * 5"    # Fri 10:00 ET -- line_movement
-    - cron: "30 14 * * 0"   # Sun 10:30 EDT / 09:30 EST -- pre_lock (critical)
-    - cron: "30 13 * * 1"   # Mon 09:30 ET -- results
   workflow_dispatch:
     inputs:
       job:
@@ -49,17 +51,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The caller names the job. This used to switch on the literal cron
+      # string of the firing schedule, which coupled two files together: a
+      # cron retimed in on.schedule but not in the case block silently
+      # resolved to nothing. AWS now sends `job` as an explicit input, so
+      # there is no string to keep in sync -- only the guard, which stays
+      # because a dispatch with an empty input must never run as `odds `.
       - name: Resolve the job for this trigger
         id: pick
         run: |
-          case "${{ github.event.schedule }}" in
-            "30 13 * * 2") job=slate ;;
-            "0 14 * * 4")  job=props ;;
-            "0 14 * * 5")  job=line_movement ;;
-            "30 14 * * 0") job=pre_lock ;;
-            "30 13 * * 1") job=results ;;
-            *)             job="${{ inputs.job }}" ;;
-          esac
+          job="${{ inputs.job }}"
+          if [ -z "$job" ]; then
+            echo "::error::No job named on this dispatch -- refusing to run." \
+                 "The caller must send one of: slate props line_movement pre_lock results."
+            exit 1
+          fi
           echo "job=$job" >> "$GITHUB_OUTPUT"
           echo "Resolved job: $job"
 
@@ -97,10 +103,17 @@ jobs:
 
       # projections is free and offline -- it only reads what the job above
       # captured -- so it runs in the same invocation.
+      #
+      # dry_run defaults to TRUE, so this step is opt-in. That default is
+      # right for a human clicking "Run workflow" by hand and dangerous for an
+      # automated caller: a dispatch that omits dry_run skips this step and
+      # reports success having collected nothing. Every AWS schedule therefore
+      # sends dry_run:"false" explicitly (infra/scheduler.yaml, OddsRule), and
+      # the step below makes a skip visible rather than silent.
       - name: Run the metered job
         if: >-
           steps.season.outputs.in_season == 'true' &&
-          (github.event_name == 'schedule' || inputs.dry_run != true)
+          inputs.dry_run != true
         uses: ./.github/actions/ff-run
         with:
           command: |
@@ -117,6 +130,16 @@ jobs:
           swid: ${{ secrets.SWID }}
           odds-api-key: ${{ secrets.ODDS_API_KEY }}
           odds-quota-reset-day: ${{ vars.ODDS_QUOTA_RESET_DAY }}
+
+      # A skipped metered step and a clean run are otherwise indistinguishable
+      # in the run list -- both are green. Say so out loud.
+      - name: Note that nothing was collected
+        if: >-
+          steps.season.outputs.in_season == 'true' &&
+          inputs.dry_run == true
+        run: |
+          echo "::warning::dry_run was true -- estimated only, no odds collected" \
+               "and no credits spent. An automated caller must send dry_run=false."
 
       - name: Report remaining credits
         if: always() && steps.season.outputs.in_season == 'true'

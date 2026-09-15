@@ -6,12 +6,14 @@ and it answers the question that comes immediately after: **given what
 has landed on disk by a given hour, what should I read today, and what
 decision is due?**
 
-Seven reports, one per day. Each is scheduled at least 60 minutes after
-the last collection slot it depends on, which is the whole reason the
-times below look offset rather than aligned — GitHub cron runs are
-routinely 5–30 minutes late and occasionally dropped *(Documented —
-GitHub Actions; see `docs/automation.md`)*, so an hour of slack is what
-keeps a report from rendering yesterday's numbers as today's.
+Seven reports, one per day, each scheduled well after the last collection
+slot it depends on. That margin was originally an hour because GitHub cron
+was routinely 5–30 minutes late and occasionally dropped the slot entirely.
+It no longer needs to absorb that: collection is dispatched by EventBridge
+Scheduler at the exact minute (`docs/aws-scheduling.md`), so the margin now
+only has to cover how long a collection run takes, which is minutes. The
+36–52 minutes below are ample, and the reason the times still look offset
+rather than aligned is that they are anchored to the collection slots.
 
 Nothing here has run yet. **No report engine exists in this repository**
 — `espn_ff/cli.py`'s `COMMANDS` dict holds eleven commands, all of them
@@ -21,25 +23,31 @@ description of it, which is why no claim below is tagged **Observed**.
 
 ## Overview
 
-Times are ET, pinned to their EDT (UTC-4) equivalent, the same
-convention and the same November caveat as the collection schedule.
-*(Inferred — each slot derived from that day's latest collection cron in
-`.github/workflows/`, plus a 60-minute margin.)*
+Times are ET and stay ET, the same convention as the collection schedule —
+these would be EventBridge schedules pinned to `America/New_York`, not GitHub
+crons, so the November caveat that used to apply is gone. *(Inferred — each
+slot derived from that day's latest collection slot in `infra/scheduler.yaml`,
+plus a margin.)*
 
-| Day | Time (ET) | Cron (UTC) | Report | Waits on |
-|---|---|---|---|---|
-| Monday | 10:30 | `30 14 * * 1` | Week in review | ESPN `--refresh` 09:00, Odds `results` 09:30 |
-| Tuesday | 10:30 | `30 14 * * 2` | Waiver wire and opening market | ESPN `--refresh` 09:00, Odds `slate` 09:30 |
-| Wednesday | 10:00 | `0 14 * * 3` | Availability watchlist | Sleeper 08:00, nflverse 09:00 |
-| Thursday | 11:00 | `0 15 * * 4` | Usage and market | nflverse `--force` 09:00, Odds `props` 10:00 |
-| Friday | 11:00 | `0 15 * * 5` | Lineup lock | Sleeper 08:00, Odds `line_movement` 10:00 |
-| Saturday | 10:00 | `0 14 * * 6` | Contingency check | Sleeper 08:00, nflverse 09:00 |
-| Sunday | 11:30 | `30 15 * * 0` | Pre-lock call | Sleeper 08:00, Odds `pre_lock` 10:30 |
+| Day | Time (ET) | Expression | Report | Waits on | Margin |
+|---|---|---|---|---|---|
+| Monday | 10:30 | `cron(30 10 ? * MON *)` | Week in review | ESPN 09:08, Odds `results` 09:38 | 52 min |
+| Tuesday | 10:30 | `cron(30 10 ? * TUE *)` | Waiver wire and opening market | ESPN 09:08, Odds `slate` 09:38 | 52 min |
+| Wednesday | 10:00 | `cron(0 10 ? * WED *)` | Availability watchlist | Sleeper 08:11, nflverse 09:23 | 37 min |
+| Thursday | 11:00 | `cron(0 11 ? * THU *)` | Usage and market | nflverse `--force` 09:53, Odds `props` 10:08 | 52 min |
+| Friday | 11:00 | `cron(0 11 ? * FRI *)` | Lineup lock | Sleeper 08:11, Odds `line_movement` 10:08 | 52 min |
+| Saturday | 10:00 | `cron(0 10 ? * SAT *)` | Contingency check | Sleeper 08:11, nflverse 09:23 | 37 min |
+| Sunday | 11:30 | `cron(30 11 ? * SUN *)` | Pre-lock call | Sleeper 08:11, Odds `pre_lock` 10:38 | 52 min |
 
-Sunday's slot is the one with a hard deadline behind it, so it gets the
-same treatment `docs/automation.md` gives `pre_lock`: 11:30 ET leaves 90
-minutes before 13:00 ET kickoffs, and once DST ends it fires at 10:30 ET
-instead. The margin grows, never shrinks.
+Sunday's slot is the one with a hard deadline behind it: 11:30 ET leaves 90
+minutes before 13:00 ET kickoffs, and unlike the old UTC pinning that holds
+in November too rather than drifting to 10:30.
+
+When these are built they belong in `infra/scheduler.yaml` alongside the
+collection schedules, with one rule per report workflow. The 52-minute Monday
+and Tuesday margins are the tightest real constraint, since both wait on an
+odds job that does not auto-retry — a failed odds slot that needs a person
+will not have been re-fired by 10:30.
 
 ## What every report contains
 

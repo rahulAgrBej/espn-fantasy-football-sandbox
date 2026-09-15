@@ -1,0 +1,810 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# Fires this repo's data-collection workflows on a clock that AWS owns.
+#
+# GitHub's own on.schedule cron proved undeliverable here -- on 2026-09-15 the
+# health 11:00Z slot arrived at 15:30Z, 4h30m late, and five consecutive due
+# slots produced no run at all. GitHub offers no delivery guarantee, no retry,
+# no dead-letter and no signal when a slot is skipped, which is fatal for the
+# three feeds whose data cannot be backfilled (sleeper daily, espn Sunday live
+# scoring, odds pre_lock). This stack moves the clock to EventBridge Scheduler
+# and leaves the compute on GitHub Actions.
+#
+# EventBridge Scheduler cannot call an HTTPS endpoint directly -- it supports
+# only templated AWS targets and universal (AWS SDK) targets. But PutEvents IS
+# a templated target and an event-bus rule CAN target an API destination, so
+# the path below reaches GitHub with no Lambda anywhere:
+#
+#     Schedule -> PutEvents -> ff-dispatch bus -> rule -> API destination
+#              -> POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches
+#
+# One rule per workflow, because the dispatch URL differs per workflow and a
+# target's PathParameterValues is static.
+#
+# See docs/aws-scheduling.md for the full rationale and the rollout order.
+
+Description: >-
+  EventBridge schedules that dispatch this repo's data-collection workflows to
+  GitHub Actions, with a dead-letter queue and alarm so a missed trigger is
+  visible. See docs/aws-scheduling.md.
+
+# ---------------------------------------------------------------------------
+
+Parameters:
+
+  GitHubOwner:
+    Type: String
+    Default: rahulAgrBej
+
+  GitHubRepo:
+    Type: String
+    Default: espn-fantasy-football-sandbox
+
+  GitHubRef:
+    Type: String
+    Default: main
+    Description: >-
+      Branch the dispatched runs check out. workflow_dispatch requires the
+      workflow file to exist with a workflow_dispatch trigger on this ref.
+
+  GitHubToken:
+    Type: String
+    NoEcho: true
+    Description: >-
+      Fine-grained PAT, repository-scoped to this repo, with Actions: read and
+      write and nothing else (notably NOT Contents, so a leak cannot push
+      code). Supply the bare token -- the "Bearer " prefix is added below.
+      EventBridge stores it in Secrets Manager via its service-linked role.
+      Rotate with `aws events update-connection`, NOT by redeploying this
+      stack; see scripts/rotate_dispatch_token.sh.
+
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional. Address notified when a dispatch fails and lands in the DLQ.
+      Leave empty to create the alarm without a notification target.
+
+  # Per-workflow enable switches. The rollout enables these one at a time so
+  # GitHub and AWS never both own a slot: land the on.schedule removal on the
+  # default branch first, then flip the matching parameter here.
+  HealthScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+
+  SleeperScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+
+  NflverseScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+
+  EspnScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+
+  OddsScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+
+Conditions:
+
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+# ---------------------------------------------------------------------------
+
+Resources:
+
+  # --- Transport -----------------------------------------------------------
+
+  DispatchBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: ff-dispatch
+
+  # API-key auth sets a single header. GitHub wants `Authorization: Bearer
+  # <token>`, so the "Bearer " prefix is baked into the value rather than the
+  # name. Authorization is NOT on EventBridge's removed-headers list, so it
+  # survives to the origin; User-Agent is forced to
+  # Amazon/EventBridge/ApiDestinations, which satisfies GitHub's requirement
+  # that every API request carry one.
+  GitHubConnection:
+    Type: AWS::Events::Connection
+    Properties:
+      Name: ff-github-dispatch
+      AuthorizationType: API_KEY
+      AuthParameters:
+        ApiKeyAuthParameters:
+          ApiKeyName: Authorization
+          ApiKeyValue: !Sub "Bearer ${GitHubToken}"
+        InvocationHttpParameters:
+          HeaderParameters:
+            - Key: Accept
+              Value: application/vnd.github+json
+              IsValueSecret: false
+            - Key: X-GitHub-Api-Version
+              Value: "2022-11-28"
+              IsValueSecret: false
+
+  # The `*` is a dynamic path parameter filled per rule with the workflow
+  # filename, so all five workflows share one destination.
+  GitHubDispatchDestination:
+    Type: AWS::Events::ApiDestination
+    Properties:
+      Name: ff-github-workflow-dispatch
+      ConnectionArn: !GetAtt GitHubConnection.Arn
+      HttpMethod: POST
+      InvocationEndpoint: !Sub "https://api.github.com/repos/${GitHubOwner}/${GitHubRepo}/actions/workflows/*/dispatches"
+      InvocationRateLimitPerSecond: 10
+
+  # --- Failure surface -----------------------------------------------------
+  #
+  # This is the part GitHub never had. EventBridge retries 401/407/409/429/5xx
+  # and does NOT retry other 4xx, so an expired or revoked token (403) lands
+  # here on the first attempt rather than failing silently.
+
+  DispatchDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ff-dispatch-dlq
+      MessageRetentionPeriod: 1209600  # 14 days, the maximum
+
+  DispatchDlqPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DispatchDlq
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventBridgeAndScheduler
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+                - scheduler.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt DispatchDlq.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: ff-dispatch-alarms
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  DispatchFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ff-dispatch-failed
+      AlarmDescription: >-
+        A scheduled workflow dispatch failed and was dead-lettered. The slot
+        did NOT run. Check the DLQ for the failed event, then re-fire it by
+        hand once the cause is fixed.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DispatchDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # --- IAM -----------------------------------------------------------------
+  #
+  # Both roles are conditioned on aws:SourceAccount. Without it either role is
+  # assumable on behalf of any AWS account -- the confused-deputy pattern.
+
+  SchedulerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: espn-ff-scheduler-execution
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: put-events-and-dlq
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt DispatchBus.Arn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt DispatchDlq.Arn
+
+  DispatchInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: espn-ff-dispatch-invoke
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: invoke-api-destination
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: events:InvokeApiDestination
+                Resource: !GetAtt GitHubDispatchDestination.Arn
+
+  # --- Rules: one per workflow --------------------------------------------
+  #
+  # espn, sleeper and health take no dispatch inputs, so their body is a
+  # constant. nflverse and odds carry inputs, so their body is assembled by an
+  # input transformer from fields the schedule puts in the event detail.
+
+  HealthRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ff-dispatch-health
+      EventBusName: !Ref DispatchBus
+      EventPattern:
+        source: [ff.scheduler]
+        detail-type: [dispatch.health]
+      Targets:
+        - Id: github
+          Arn: !GetAtt GitHubDispatchDestination.Arn
+          RoleArn: !GetAtt DispatchInvokeRole.Arn
+          Input: !Sub '{"ref":"${GitHubRef}"}'
+          HttpParameters:
+            PathParameterValues: [health.yml]
+          RetryPolicy:
+            MaximumRetryAttempts: 5
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig:
+            Arn: !GetAtt DispatchDlq.Arn
+
+  SleeperRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ff-dispatch-sleeper
+      EventBusName: !Ref DispatchBus
+      EventPattern:
+        source: [ff.scheduler]
+        detail-type: [dispatch.sleeper]
+      Targets:
+        - Id: github
+          Arn: !GetAtt GitHubDispatchDestination.Arn
+          RoleArn: !GetAtt DispatchInvokeRole.Arn
+          Input: !Sub '{"ref":"${GitHubRef}"}'
+          HttpParameters:
+            PathParameterValues: [sleeper.yml]
+          RetryPolicy:
+            MaximumRetryAttempts: 5
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig:
+            Arn: !GetAtt DispatchDlq.Arn
+
+  EspnRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ff-dispatch-espn
+      EventBusName: !Ref DispatchBus
+      EventPattern:
+        source: [ff.scheduler]
+        detail-type: [dispatch.espn]
+      Targets:
+        - Id: github
+          Arn: !GetAtt GitHubDispatchDestination.Arn
+          RoleArn: !GetAtt DispatchInvokeRole.Arn
+          Input: !Sub '{"ref":"${GitHubRef}"}'
+          HttpParameters:
+            PathParameterValues: [espn.yml]
+          RetryPolicy:
+            MaximumRetryAttempts: 5
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig:
+            Arn: !GetAtt DispatchDlq.Arn
+
+  NflverseRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ff-dispatch-nflverse
+      EventBusName: !Ref DispatchBus
+      EventPattern:
+        source: [ff.scheduler]
+        detail-type: [dispatch.nflverse]
+      Targets:
+        - Id: github
+          Arn: !GetAtt GitHubDispatchDestination.Arn
+          RoleArn: !GetAtt DispatchInvokeRole.Arn
+          HttpParameters:
+            PathParameterValues: [nflverse.yml]
+          InputTransformer:
+            InputPathsMap:
+              force: $.detail.force
+            InputTemplate: !Sub '{"ref":"${GitHubRef}","inputs":{"force":"<force>"}}'
+          RetryPolicy:
+            MaximumRetryAttempts: 5
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig:
+            Arn: !GetAtt DispatchDlq.Arn
+
+  # The only rule that does not auto-retry. EventBridge delivers at least
+  # once, so a 5xx returned AFTER GitHub has already created the run would
+  # dispatch a duplicate -- and a duplicate pre_lock can spend another 25
+  # credits against a 500-credit period. A missed odds slot that a person
+  # re-fires by hand is strictly cheaper than a double-spend, so odds trades
+  # automatic retry for the DLQ alarm. Every other workflow is idempotent and
+  # keeps its retries.
+  OddsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ff-dispatch-odds
+      EventBusName: !Ref DispatchBus
+      EventPattern:
+        source: [ff.scheduler]
+        detail-type: [dispatch.odds]
+      Targets:
+        - Id: github
+          Arn: !GetAtt GitHubDispatchDestination.Arn
+          RoleArn: !GetAtt DispatchInvokeRole.Arn
+          HttpParameters:
+            PathParameterValues: [odds.yml]
+          # dry_run MUST be sent explicitly. odds.yml's workflow_dispatch input
+          # defaults to true, and the metered step is gated on it -- omit it
+          # and the job succeeds having collected nothing.
+          InputTransformer:
+            InputPathsMap:
+              job: $.detail.job
+              dry_run: $.detail.dry_run
+            InputTemplate: !Sub '{"ref":"${GitHubRef}","inputs":{"job":"<job>","dry_run":"<dry_run>"}}'
+          RetryPolicy:
+            MaximumRetryAttempts: 0
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig:
+            Arn: !GetAtt DispatchDlq.Arn
+
+  # --- Schedules -----------------------------------------------------------
+  #
+  # Expressed in America/New_York, which is the intent every doc in this repo
+  # already states. Under the old UTC crons every slot silently shifted an
+  # hour when DST ended; a named zone holds 09:08 ET at 09:08 ET year round.
+  #
+  # EventBridge cron takes six fields -- minute hour day-of-month month
+  # day-of-week year -- and requires `?` in one of the two day fields.
+  #
+  # FlexibleTimeWindow is OFF everywhere: firing at the exact minute is the
+  # entire point of the migration.
+  #
+  # Two gaps below are load-bearing and must survive any retiming:
+  #   * espn :08 -> odds :38 on Mon/Tue. The odds jobs read the ESPN cache
+  #     that espn.yml owns, so they must go second.
+  #   * nflverse :23 routine -> :53 forced on Thursday, so the forced
+  #     canonical read lands last.
+
+  ScheduleGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+    Properties:
+      Name: ff-collection
+
+  HealthMorningSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: health-morning
+      GroupName: !Ref ScheduleGroup
+      State: !Ref HealthScheduleState
+      ScheduleExpression: cron(4 7 * * ? *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: 07:04 ET daily -- ahead of the day's collection
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: "{}"
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.health
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  HealthEveningSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: health-evening
+      GroupName: !Ref ScheduleGroup
+      State: !Ref HealthScheduleState
+      ScheduleExpression: cron(4 19 * * ? *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: 19:04 ET daily
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: "{}"
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.health
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  HealthSundaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: health-sunday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref HealthScheduleState
+      ScheduleExpression: cron(4 12 ? * SUN *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Sun 12:04 ET -- one hour before kickoff
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: "{}"
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.health
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  # A missed day here is a permanent hole: practice_trajectory is
+  # reconstructed from our own snapshots and Sleeper publishes no history.
+  SleeperDailySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: sleeper-daily
+      GroupName: !Ref ScheduleGroup
+      State: !Ref SleeperScheduleState
+      ScheduleExpression: cron(11 8 * * ? *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: 08:11 ET daily -- unbackfillable
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: "{}"
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.sleeper
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  EspnMondaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: espn-monday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref EspnScheduleState
+      ScheduleExpression: cron(8 9 ? * MON *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Mon 09:08 ET -- final scores, weekend transactions
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: "{}"
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.espn
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  EspnTuesdaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: espn-tuesday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref EspnScheduleState
+      ScheduleExpression: cron(8 9 ? * TUE *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Tue 09:08 ET -- waiver-processing results
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: "{}"
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.espn
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  # Sun 13:08 through 23:38 ET, every 30 minutes. In UTC this had to be split
+  # across two expressions at midnight; in ET it is one continuous block.
+  EspnSundayLiveSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: espn-sunday-live
+      GroupName: !Ref ScheduleGroup
+      State: !Ref EspnScheduleState
+      ScheduleExpression: cron(8,38 13-23 ? * SUN *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Sun 13:08-23:38 ET -- live scoring, unbackfillable
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: "{}"
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.espn
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  EspnMondayNightSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: espn-monday-night
+      GroupName: !Ref ScheduleGroup
+      State: !Ref EspnScheduleState
+      ScheduleExpression: cron(8,38 0 ? * MON *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Mon 00:08 and 00:38 ET -- tail of Sunday night
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: "{}"
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.espn
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  NflverseRoutineSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nflverse-routine
+      GroupName: !Ref ScheduleGroup
+      State: !Ref NflverseScheduleState
+      ScheduleExpression: cron(23 9,13,18 * * ? *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: 09:23 / 13:23 / 18:23 ET -- cheap ETag re-check
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"force":"false"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.nflverse
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  # Stat corrections land Tue/Wed, so Thursday is the first pull where
+  # `provisional` reliably resolves false for last week's games. 30 minutes
+  # after the routine slot so the forced result is the one that lands.
+  NflverseThursdaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: nflverse-thursday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref NflverseScheduleState
+      ScheduleExpression: cron(53 9 ? * THU *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Thu 09:53 ET -- the canonical forced read
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"force":"true"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.nflverse
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  # The five metered slots. Every one sends dry_run:"false" explicitly --
+  # see the comment on OddsRule. MaximumRetryAttempts is 0 throughout.
+
+  OddsSlateSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: odds-slate
+      GroupName: !Ref ScheduleGroup
+      State: !Ref OddsScheduleState
+      ScheduleExpression: cron(38 9 ? * TUE *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Tue 09:38 ET -- opening spreads and totals
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"job":"slate","dry_run":"false"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.odds
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  OddsPropsSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: odds-props
+      GroupName: !Ref ScheduleGroup
+      State: !Ref OddsScheduleState
+      ScheduleExpression: cron(8 10 ? * THU *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Thu 10:08 ET -- player props
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"job":"props","dry_run":"false"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.odds
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  OddsLineMovementSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: odds-line-movement
+      GroupName: !Ref ScheduleGroup
+      State: !Ref OddsScheduleState
+      ScheduleExpression: cron(8 10 ? * FRI *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Fri 10:08 ET -- line movement
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"job":"line_movement","dry_run":"false"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.odds
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  # The critical one. The Odds API has no historical endpoint, so a snapshot
+  # missed here can never be recovered.
+  OddsPreLockSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: odds-pre-lock
+      GroupName: !Ref ScheduleGroup
+      State: !Ref OddsScheduleState
+      ScheduleExpression: cron(38 10 ? * SUN *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Sun 10:38 ET -- pre-lock snapshot, unbackfillable
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"job":"pre_lock","dry_run":"false"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.odds
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  OddsResultsSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: odds-results
+      GroupName: !Ref ScheduleGroup
+      State: !Ref OddsScheduleState
+      ScheduleExpression: cron(38 9 ? * MON *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Mon 09:38 ET -- settle the week
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"job":"results","dry_run":"false"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.odds
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+# ---------------------------------------------------------------------------
+
+Outputs:
+
+  BusName:
+    Description: Event bus to publish test dispatches to
+    Value: !Ref DispatchBus
+
+  BusArn:
+    Value: !GetAtt DispatchBus.Arn
+
+  ConnectionName:
+    Description: Pass to `aws events update-connection` when rotating the PAT
+    Value: !Ref GitHubConnection
+
+  DlqUrl:
+    Description: Failed dispatches land here; a message means a slot did not run
+    Value: !Ref DispatchDlq
+
+  AlarmTopicArn:
+    Value: !Ref AlarmTopic

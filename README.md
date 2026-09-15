@@ -120,10 +120,13 @@ by the scheduled workflows -- see `docs/automation.md`.
 | `docs/data-sources.md` | Field-level freshness reference for every output CSV, across all four feeds |
 | `docs/odds-budget.md` | The Odds API's credit-budget invariant, cost table, job schedule, and guard runbook |
 | `docs/automation.md` | How the schedule runs unattended: workflows, S3 state/archive split, OIDC, runbook |
-| `.github/workflows/` | The five scheduled collection workflows plus CI |
+| `docs/aws-scheduling.md` | Why the clock lives in AWS, the EventBridge schedules, and how a failed trigger alarms |
+| `.github/workflows/` | The five collection workflows plus CI, all dispatched from AWS |
 | `scripts/s3_sync.sh` | Restore/archive/push the `data/` tree against S3 |
 | `scripts/rotate_espn_cookies.sh` | Rotate the ESPN cookies and validate them in CI |
+| `scripts/rotate_dispatch_token.sh` | Rotate the PAT AWS dispatches with, and prove it end to end |
 | `infra/*.json.example` | IAM trust + S3 policy templates (`<ACCOUNT_ID>` placeholders) |
+| `infra/scheduler.yaml` | CloudFormation stack for the EventBridge schedules, rules, DLQ and alarm |
 
 ## Sleeper player-status layer
 
@@ -349,32 +352,32 @@ gh workflow run odds.yml -f job=props -f dry_run=false   # or run it in CI
 
 ## Weekly collection schedule
 
-Times are ET, pinned to their EDT (UTC-4) equivalent — each slot fires an
-hour earlier in local time once DST ends in November. *(Observed — cron
-schedules in `.github/workflows/`.)* See
-`docs/data-collection-weekly-schedule.md` for what each row means for a
-lineup or waiver decision, and `docs/automation.md` for the workflow/S3
-runbook this schedule runs on.
+Times are ET and stay ET — the schedules are pinned to `America/New_York`, so
+no slot shifts when DST ends. *(Observed — EventBridge expressions in
+`infra/scheduler.yaml`.)* The compute runs on GitHub Actions but the clock is
+AWS EventBridge Scheduler; see `docs/aws-scheduling.md` for why and how.
+`docs/data-collection-weekly-schedule.md` explains what each row means for a
+lineup or waiver decision, and `docs/automation.md` has the workflow/S3 runbook.
 
 | Day | Time (ET) | Data metric | Data source |
 |---|---|---|---|
-| Monday | 08:00 daily | Daily player status refresh | Sleeper — `sleeper` |
-| Monday | 09:00 | Final scores, closed matchup results, weekend transactions | ESPN — `--refresh` on `matchups.csv` / `transactions.csv` |
-| Monday | 09:30 | Prior week's game results (`daysFrom=3`) | The Odds API — `results` job |
-| Tuesday | 09:00 | Waiver-processing results | ESPN — `--refresh` on `transactions.csv` |
-| Tuesday | 09:00 / 13:00 / 18:00 | Stat corrections begin landing | nflverse — `stats_player` feed, routine 3x/day pull |
-| Tuesday | 09:30 | Opening spreads/totals for the coming week | The Odds API — `slate` job |
-| Wednesday | 08:00 daily | Practice participation, day 1 of 3 | Sleeper — `sleeper` |
-| Wednesday | 09:00 / 13:00 / 18:00 | Stat corrections continue landing | nflverse — routine 3x/day pull |
+| Monday | 08:11 daily | Daily player status refresh | Sleeper — `sleeper` |
+| Monday | 09:08 | Final scores, closed matchup results, weekend transactions | ESPN — `--refresh` on `matchups.csv` / `transactions.csv` |
+| Monday | 09:38 | Prior week's game results (`daysFrom=3`) | The Odds API — `results` job |
+| Tuesday | 09:08 | Waiver-processing results | ESPN — `--refresh` on `transactions.csv` |
+| Tuesday | 09:23 / 13:23 / 18:23 | Stat corrections begin landing | nflverse — `stats_player` feed, routine 3x/day pull |
+| Tuesday | 09:38 | Opening spreads/totals for the coming week | The Odds API — `slate` job |
+| Wednesday | 08:11 daily | Practice participation, day 1 of 3 | Sleeper — `sleeper` |
+| Wednesday | 09:23 / 13:23 / 18:23 | Stat corrections continue landing | nflverse — routine 3x/day pull |
 | Wednesday | No scheduled job | Player-props market opens (nothing decision-relevant yet) | The Odds API — market open |
-| Thursday | 08:00 daily | Practice participation, day 2 of 3 | Sleeper — `sleeper` |
-| Thursday | 09:00 | First canonical read of the prior week's stats (`provisional` resolves) | nflverse — `--force` refresh |
-| Thursday | 10:00 | Player-props snapshot | The Odds API — `props` job |
-| Friday | 08:00 daily | Practice participation, day 3 of 3 — `practice_trajectory` complete | Sleeper — `sleeper` |
-| Friday | 10:00 | Line movement since Tuesday's open | The Odds API — `line_movement` job |
-| Saturday | 09:00 / 13:00 / 18:00 | Routine background refresh only, no new decision-relevant data | nflverse — routine 3x/day pull |
-| Sunday | 10:30 EDT / 09:30 EST | Featured + undecided-slot prop lines, final line before lock | The Odds API — `pre_lock` job (critical priority) |
-| Sunday | 13:00–19:30, then 20:00–00:30 Mon | Live scoring, live rosters | ESPN — `LIVE_TTL`-gated `--refresh` (weekly-rosters, matchups), every 30 min |
+| Thursday | 08:11 daily | Practice participation, day 2 of 3 | Sleeper — `sleeper` |
+| Thursday | 09:53 | First canonical read of the prior week's stats (`provisional` resolves) | nflverse — `--force` refresh |
+| Thursday | 10:08 | Player-props snapshot | The Odds API — `props` job |
+| Friday | 08:11 daily | Practice participation, day 3 of 3 — `practice_trajectory` complete | Sleeper — `sleeper` |
+| Friday | 10:08 | Line movement since Tuesday's open | The Odds API — `line_movement` job |
+| Saturday | 09:23 / 13:23 / 18:23 | Routine background refresh only, no new decision-relevant data | nflverse — routine 3x/day pull |
+| Sunday | 10:38 | Featured + undecided-slot prop lines, final line before lock | The Odds API — `pre_lock` job (critical priority) |
+| Sunday | 13:08–00:38 Mon | Live scoring, live rosters | ESPN — `LIVE_TTL`-gated `--refresh` (weekly-rosters, matchups), every 30 min |
 
 ## Tests
 

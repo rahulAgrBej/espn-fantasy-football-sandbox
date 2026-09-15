@@ -5,6 +5,17 @@ the real account and repository ids and are gitignored; only the
 `*.json.example` placeholders are tracked (`.githooks/pre-commit` enforces
 this).
 
+Two different things live here, managed two different ways:
+
+| File | What | How it is applied |
+|---|---|---|
+| `trust-policy.json.example`, `s3-policy.json.example`, `s3-lifecycle.json.example` | The OIDC role that GitHub Actions assumes, and the bucket it reaches | `sed` the placeholders, then `aws iam` / `aws s3api` by hand |
+| `scheduler.yaml` | The EventBridge schedules that dispatch the workflows | `aws cloudformation deploy` |
+
+`scheduler.yaml` is tracked as-is rather than as a `.example`: it carries no
+account id, only parameters supplied at deploy time, so the `infra/*.json`
+gitignore rule does not apply to it.
+
 ## The subject claim is not the format the docs show
 
 `trust-policy.json.example` matches a `sub` of:
@@ -58,4 +69,26 @@ aws iam update-assume-role-policy --role-name espn-ff-github-actions \
   --policy-document file://infra/trust-policy.json
 ```
 
-See `docs/automation.md` for the rest of the setup and the runbook.
+## The scheduler stack
+
+`scheduler.yaml` holds everything that fires the workflows: 15 EventBridge
+schedules, the `ff-dispatch` bus, one rule per workflow, the API destination
+and connection that reach GitHub, a dead-letter queue and an alarm. It creates
+its own two IAM roles, so `CAPABILITY_NAMED_IAM` is required.
+
+```bash
+aws cloudformation deploy \
+  --template-file infra/scheduler.yaml \
+  --stack-name ff-scheduler \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides GitHubToken="$GH_DISPATCH_TOKEN" AlarmEmail=you@example.com
+```
+
+Every schedule defaults to `DISABLED`; the `*ScheduleState` parameters enable
+them one workflow at a time. **This stack does not touch the OIDC trust policy
+above** — that pins `sub` on the environment name, not the triggering event, so
+a dispatched run authenticates to S3 exactly as a scheduled one did.
+
+Rotate the dispatch token with `scripts/rotate_dispatch_token.sh`, not by
+redeploying — see `docs/aws-scheduling.md` for why, and for the whole trigger
+path. `docs/automation.md` has the rest of the setup and the runbook.

@@ -10,6 +10,12 @@ Five GitHub Actions workflows run the schedule; an S3 bucket holds both the
 outputs and — the part that is easy to get wrong — the *state* those
 workflows need in order to produce anything meaningful.
 
+The clock is not GitHub's. AWS EventBridge Scheduler dispatches every slot
+through the GitHub REST API, because GitHub's own `on.schedule` proved
+undeliverable here — see `docs/aws-scheduling.md`, which owns the trigger
+path, the schedule table and the dispatch credential. This document picks up
+at the point a run starts.
+
 ## How to read this
 
 Cadence and behavioural claims below are tagged the same three ways as
@@ -23,20 +29,30 @@ Cadence and behavioural claims below are tagged the same three ways as
 
 ## Overview
 
-| Workflow | Schedule (UTC cron) | Local time | Runs | Metered |
-|---|---|---|---|---|
-| `sleeper.yml` | `0 12 * * *` | 08:00 ET daily | `sleeper`, `status` | no |
-| `nflverse.yml` | `0 13,17,22 * * *` | 09/13/18 ET daily | `nflverse`, `features` | no |
-| `nflverse.yml` | `0 13 * * 4` | Thu 09:00 ET | `nflverse --force`, `features` | no |
-| `espn.yml` | `0 13 * * 1`, `0 13 * * 2` | Mon/Tue 09:00 ET | `pull --refresh`, `export --refresh` | no |
-| `espn.yml` | `*/30 17-23 * * 0`, `*/30 0-4 * * 1` | Sun 13:00 ET – Mon 00:30 ET | same, every 30 min | no |
-| `odds.yml` | five slots, see below | Tue/Thu/Fri/Sun/Mon | `odds <job>`, `projections` | **yes** |
-| `health.yml` | `0 11 * * *`, `0 23 * * *`, `0 16 * * 0` | 07:00/19:00 ET, Sun 12:00 ET | `probe` | no |
-| `tests.yml` | on push / PR | — | `pytest` | no |
+Times are ET and hold year-round: the schedules are pinned to
+`America/New_York`, so they no longer shift an hour when DST ends.
+
+| Workflow | Dispatched at (ET) | Runs | Metered |
+|---|---|---|---|
+| `sleeper.yml` | 08:11 daily | `sleeper`, `status` | no |
+| `nflverse.yml` | 09:23 / 13:23 / 18:23 daily | `nflverse`, `features` | no |
+| `nflverse.yml` | Thu 09:53 | `nflverse --force`, `features` | no |
+| `espn.yml` | Mon 09:08, Tue 09:08 | `pull --refresh`, `export --refresh` | no |
+| `espn.yml` | Sun 13:08 – Mon 00:38, every 30 min | same | no |
+| `odds.yml` | five slots, see below | `odds <job>`, `projections` | **yes** |
+| `health.yml` | 07:04 / 19:04 daily, Sun 12:04 | `probe` | no |
+| `tests.yml` | on push / PR (GitHub's own trigger) | `pytest` | no |
+
+`tests.yml` is the only workflow GitHub still triggers by itself; it runs on
+`push` and `pull_request`, which are events rather than a clock. Every other
+row is an EventBridge schedule — `docs/aws-scheduling.md` has the cron
+expressions, the inputs each one sends, and the two 30-minute ordering gaps
+(espn→odds on Mon/Tue, nflverse routine→forced on Thursday) that must survive
+any retiming.
 
 The `odds.yml` slots map one-to-one onto the five-job schedule in
-`docs/odds-budget.md`: `slate` (Tue 09:30 ET), `props` (Thu 10:00),
-`line_movement` (Fri 10:00), `pre_lock` (Sun 10:30), `results` (Mon 09:30).
+`docs/odds-budget.md`: `slate` (Tue 09:38 ET), `props` (Thu 10:08),
+`line_movement` (Fri 10:08), `pre_lock` (Sun 10:38), `results` (Mon 09:38).
 That document owns the credit invariant, the cost table, and the run
 budgets; this one does not restate them.
 
@@ -216,7 +232,7 @@ says which budget was hit, and either way **nothing was issued** for
 whatever the job did not reach.
 
 Do not simply re-run it. Check the run receipt at
-`logs/runs/odds/<run_id>.json` (or `data/odds/last_run.json` after a
+`logs/runs/odds/<run_id>/<slug>.json` (or `data/odds/last_run.json` after a
 restore) for that job's `stale` flag and `reason` first — a budget-aborted
 job leaves the prior snapshot in place, and a stale snapshot is
 indistinguishable from a fresh one on disk. `captured_at` and `last_run.json`
@@ -224,12 +240,26 @@ are the truth; the parquet file's mtime is not.
 
 ### A workflow did not run at its scheduled time
 
-GitHub cron is best-effort: runs are routinely 5–30 minutes late and are
-occasionally dropped entirely under load *(Documented — GitHub Actions)*.
-Every workflow has `workflow_dispatch`; fire it by hand.
+Check the dead-letter queue first — that is what it is for. A message in
+`ff-dispatch-dlq` means AWS could not deliver the dispatch, so the slot never
+started, and the `ff-dispatch-failed` alarm should already have said so. The
+commands are in `docs/aws-scheduling.md`.
 
-`pre_lock` is pinned at 14:30 UTC deliberately for this reason — 10:30 EDT,
-09:30 EST — so even a delayed run lands well before 13:00 ET kickoffs.
+An empty DLQ means the dispatch succeeded and the problem is downstream, on
+GitHub's side. Every workflow keeps `workflow_dispatch`, so fire it by hand:
+
+```bash
+gh workflow run sleeper.yml
+gh workflow run odds.yml -f job=pre_lock -f dry_run=false
+```
+
+Note the explicit `dry_run=false` for odds. That input defaults to **true**,
+which is right for a human clicking "Run workflow" and wrong for a re-fire:
+omit it and the job reports success having collected nothing. It emits a
+`::warning::` when that happens rather than passing silently.
+
+`pre_lock` sits at 10:38 ET, well before 13:00 ET kickoffs, so there is room
+to notice a failure and re-fire before the lines lock.
 
 ### The bucket state looks wrong
 
@@ -245,16 +275,17 @@ spend credits for a value that already exists.
   window between expiry and discovery to at most ~12 hours; it cannot
   prevent it, and a cookie that dies mid-Sunday still costs that afternoon's
   live scoring.
-- **Scheduled workflows are disabled after 60 days of repository
-  inactivity** and silently re-enabled by any push *(Documented — GitHub)*.
-  That window lands squarely in the offseason; check before Week 1.
 - **No cadence in this document has been Observed yet.** Every schedule
   here is as-configured, not as-measured — nothing has run on a real NFL
   week at the time of writing. Treat the timings as intent until a few
   weeks of `logs/runs/` exist to measure against.
 - **Sunday's ESPN cadence is a guess bounded by an unknown.** ESPN
-  publishes no rate limits, so `*/30` is chosen to be conservative rather
-  than because any limit is known. If 429s appear, halve the frequency.
+  publishes no rate limits, so every 30 minutes is chosen to be conservative
+  rather than because any limit is known. If 429s appear, halve the frequency.
+- **A dispatched run that then fails is not alarmed.** The DLQ alarm covers
+  delivery, not execution. Nothing currently reads the run receipts under
+  `logs/runs/`, so a workflow that starts and errors is only visible in
+  GitHub's own run list.
 - **The odds ledger is only serialized within GitHub.** The `odds-ledger`
   concurrency group prevents two CI runs from racing, but a manual local
   run during a scheduled one can still interleave. The blast radius is

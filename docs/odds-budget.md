@@ -45,17 +45,25 @@ either way.
 
 ## The five-job schedule
 
-| Job (`odds <job>`) | Cron slot (ET) | Run budget | Priority | Typical cost |
+| Job (`odds <job>`) | Slot (ET) | Run budget | Priority | Typical cost |
 |---|---|---|---|---|
-| `slate` | Tue 09:30 | 4 | normal | 2 (spreads+totals, all games) |
-| `props` | Thu 10:00 | 40 | normal | ~10–20 (6–10 decision-relevant events, 3–4 markets each) |
-| `line_movement` | Fri 10:00 | 4 | normal | 2 |
-| `pre_lock` | Sun 10:30 | 25 | **critical** | ~5–15 (featured + undecided-slot props only) |
-| `results` | Mon 09:30 | 4 | normal | 2 (`daysFrom=3`) |
+| `slate` | Tue 09:38 | 4 | normal | 2 (spreads+totals, all games) |
+| `props` | Thu 10:08 | 40 | normal | ~10–20 (6–10 decision-relevant events, 3–4 markets each) |
+| `line_movement` | Fri 10:08 | 4 | normal | 2 |
+| `pre_lock` | Sun 10:38 | 25 | **critical** | ~5–15 (featured + undecided-slot props only) |
+| `results` | Mon 09:38 | 4 | normal | 2 (`daysFrom=3`) |
 
 Steady state: roughly 50–67 credits/week, ~250–335 per billing period out
 of 500 — the remainder is headroom for playoff weeks and ad-hoc research.
-These five slots run in `.github/workflows/odds.yml` (see
+
+Each slot is dispatched by its own EventBridge schedule, which names the job
+explicitly and sends `dry_run=false` (`docs/aws-scheduling.md`). Those five are
+the only schedules in the repo that do **not** retry on failure: delivery is
+at-least-once, and a duplicate `pre_lock` would spend up to another 25 credits
+that cannot be bought back, so a failed odds slot alarms and waits for a person
+rather than retrying itself.
+
+All five run in `.github/workflows/odds.yml` (see
 `docs/automation.md`), kept in one workflow so they share a single
 `odds-ledger` concurrency group — the ledger's `BEGIN IMMEDIATE` atomicity
 only holds within one filesystem, so two runners each restoring their own

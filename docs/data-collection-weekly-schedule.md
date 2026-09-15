@@ -7,39 +7,41 @@ job schedule). Those two documents answer *how stale can a field be* and
 running this pipeline has day to day: **what should I pull today, and why
 does it matter for this week's lineup and waiver decisions?**
 
-**This schedule now runs in GitHub Actions** — see `docs/automation.md`
-for the workflow set, the S3 state/archive split, and the runbook. Each
-day below still reads as guidance rather than as a job definition: the
-point of this document is *why* a given day's data matters for a lineup or
-waiver decision, which is what you need whether the pull was automated or
-you ran it by hand. Every workflow also accepts `workflow_dispatch`, so any
-command here can still be fired deliberately.
+**This schedule runs in GitHub Actions, on a clock AWS owns** — see
+`docs/automation.md` for the workflow set, the S3 state/archive split and the
+runbook, and `docs/aws-scheduling.md` for the EventBridge schedules that fire
+them. Each day below still reads as guidance rather than as a job definition:
+the point of this document is *why* a given day's data matters for a lineup or
+waiver decision, which is what you need whether the pull was automated or you
+ran it by hand. Every workflow also accepts `workflow_dispatch`, so any command
+here can still be fired deliberately.
 
 ## Overview
 
-Times are ET, pinned to their EDT (UTC-4) equivalent — see "Known caveats"
-below for what that means once DST ends in November. *(Observed — cron
-schedules in `.github/workflows/`.)*
+Times are ET and stay ET. The schedules are pinned to the `America/New_York`
+zone rather than to a UTC offset, so every slot below holds its wall-clock time
+when DST ends in November. *(Observed — EventBridge expressions in
+`infra/scheduler.yaml`, evaluated across the 2026-11-01 boundary.)*
 
 | Day | Time (ET) | Data metric | Data source |
 |---|---|---|---|
-| Monday | 08:00 daily | Daily player status refresh | Sleeper — `sleeper` |
-| Monday | 09:00 | Final scores, closed matchup results, weekend transactions | ESPN — `--refresh` on `matchups.csv` / `transactions.csv` |
-| Monday | 09:30 | Prior week's game results (`daysFrom=3`) | The Odds API — `results` job |
-| Tuesday | 09:00 | Waiver-processing results | ESPN — `--refresh` on `transactions.csv` |
-| Tuesday | 09:00 / 13:00 / 18:00 | Stat corrections begin landing | nflverse — `stats_player` feed, routine 3x/day pull |
-| Tuesday | 09:30 | Opening spreads/totals for the coming week | The Odds API — `slate` job |
-| Wednesday | 08:00 daily | Practice participation, day 1 of 3 | Sleeper — `sleeper` |
-| Wednesday | 09:00 / 13:00 / 18:00 | Stat corrections continue landing | nflverse — routine 3x/day pull |
+| Monday | 08:11 daily | Daily player status refresh | Sleeper — `sleeper` |
+| Monday | 09:08 | Final scores, closed matchup results, weekend transactions | ESPN — `--refresh` on `matchups.csv` / `transactions.csv` |
+| Monday | 09:38 | Prior week's game results (`daysFrom=3`) | The Odds API — `results` job |
+| Tuesday | 09:08 | Waiver-processing results | ESPN — `--refresh` on `transactions.csv` |
+| Tuesday | 09:23 / 13:23 / 18:23 | Stat corrections begin landing | nflverse — `stats_player` feed, routine 3x/day pull |
+| Tuesday | 09:38 | Opening spreads/totals for the coming week | The Odds API — `slate` job |
+| Wednesday | 08:11 daily | Practice participation, day 1 of 3 | Sleeper — `sleeper` |
+| Wednesday | 09:23 / 13:23 / 18:23 | Stat corrections continue landing | nflverse — routine 3x/day pull |
 | Wednesday | No scheduled job | Player-props market opens (nothing decision-relevant yet) | The Odds API — market open |
-| Thursday | 08:00 daily | Practice participation, day 2 of 3 | Sleeper — `sleeper` |
-| Thursday | 09:00 | First canonical read of the prior week's stats (`provisional` resolves) | nflverse — `--force` refresh |
-| Thursday | 10:00 | Player-props snapshot | The Odds API — `props` job |
-| Friday | 08:00 daily | Practice participation, day 3 of 3 — `practice_trajectory` complete | Sleeper — `sleeper` |
-| Friday | 10:00 | Line movement since Tuesday's open | The Odds API — `line_movement` job |
-| Saturday | 09:00 / 13:00 / 18:00 | Routine background refresh only, no new decision-relevant data | nflverse — routine 3x/day pull |
-| Sunday | 10:30 EDT / 09:30 EST | Featured + undecided-slot prop lines, final line before lock | The Odds API — `pre_lock` job (critical priority) |
-| Sunday | 13:00–19:30, then 20:00–00:30 Mon | Live scoring, live rosters | ESPN — `LIVE_TTL`-gated `--refresh` (weekly-rosters, matchups), every 30 min |
+| Thursday | 08:11 daily | Practice participation, day 2 of 3 | Sleeper — `sleeper` |
+| Thursday | 09:53 | First canonical read of the prior week's stats (`provisional` resolves) | nflverse — `--force` refresh |
+| Thursday | 10:08 | Player-props snapshot | The Odds API — `props` job |
+| Friday | 08:11 daily | Practice participation, day 3 of 3 — `practice_trajectory` complete | Sleeper — `sleeper` |
+| Friday | 10:08 | Line movement since Tuesday's open | The Odds API — `line_movement` job |
+| Saturday | 09:23 / 13:23 / 18:23 | Routine background refresh only, no new decision-relevant data | nflverse — routine 3x/day pull |
+| Sunday | 10:38 | Featured + undecided-slot prop lines, final line before lock | The Odds API — `pre_lock` job (critical priority) |
+| Sunday | 13:08–00:38 Mon | Live scoring, live rosters | ESPN — `LIVE_TTL`-gated `--refresh` (weekly-rosters, matchups), every 30 min |
 
 ## Monday
 
@@ -222,14 +224,18 @@ reflect afternoon/night-game scoring.
 
 ## Known caveats
 
-- **The scheduler is best-effort, and its clock is UTC.** GitHub cron
-  runs are routinely 5–30 minutes late and are occasionally dropped
-  entirely *(Documented — GitHub Actions)*, so treat every time above as
-  approximate. Slots are pinned to their EDT equivalents, which means each
-  one fires an hour earlier in local time once DST ends in November —
-  deliberate for Sunday's `pre_lock`, which stays well clear of 13:00 ET
-  kickoffs either way. A missed slot is re-runnable by hand for every feed
-  except Sunday live scoring, which cannot be backfilled.
+- **A slot can still be missed, but no longer silently.** The clock moved off
+  GitHub precisely because its cron dropped slots without saying so — one
+  `health` slot arrived 4h30m late and five consecutive slots never fired at
+  all *(Observed — 2026-09-15)*. EventBridge fires at the exact minute and
+  dead-letters what it cannot deliver, which raises an alarm, so treat the
+  times above as real rather than approximate. A missed slot is re-runnable by
+  hand for every feed except Sunday live scoring, which cannot be backfilled.
+  See `docs/aws-scheduling.md`.
+- **Odds slots do not retry automatically, by design.** Delivery is
+  at-least-once, and a duplicate `pre_lock` would spend credits that cannot be
+  bought back, so the five metered slots trade automatic retry for the alarm.
+  If one fails, it needs a person.
 - **A budget-aborted Odds job leaves a stale snapshot in place**, with no
   visible difference on disk from a fresh one — always check
   `captured_at` and `last_run.json`'s `stale` field, never the parquet

@@ -4,9 +4,13 @@ name: sleeper
 # continuity: practice_trajectory (Wed/Thu/Fri) and the depth-chart deltas
 # are reconstructed from OUR OWN daily snapshots, not fetched. A missed day
 # is a permanent hole -- Sleeper publishes no history to backfill from.
+#
+# Because a missed day cannot be recovered, this is the workflow with the most
+# to lose from a dropped trigger -- which is what GitHub's scheduler did here.
+# The 08:11 ET slot is now dispatched by EventBridge Scheduler, pinned to
+# America/New_York so it holds 08:11 ET across the DST boundary rather than
+# sliding to 07:11. See docs/aws-scheduling.md and infra/scheduler.yaml.
 on:
-  schedule:
-    - cron: "0 12 * * *"    # 08:00 ET daily (07:00 ET once DST ends)
   workflow_dispatch:
 
 permissions:
