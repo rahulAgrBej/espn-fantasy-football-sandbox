@@ -435,11 +435,8 @@ Resources:
   # FlexibleTimeWindow is OFF everywhere: firing at the exact minute is the
   # entire point of the migration.
   #
-  # Two gaps below are load-bearing and must survive any retiming:
-  #   * espn :08 -> odds :38 on Mon/Tue. The odds jobs read the ESPN cache
-  #     that espn.yml owns, so they must go second.
-  #   * nflverse :23 routine -> :53 forced on Thursday, so the forced
-  #     canonical read lands last.
+  # See docs/aws-scheduling.md's "Four gaps that must survive any retiming"
+  # for the load-bearing orderings among the schedules below.
 
   ScheduleGroup:
     Type: AWS::Scheduler::ScheduleGroup
@@ -863,6 +860,36 @@ Resources:
         Arn: !GetAtt DispatchBus.Arn
         RoleArn: !GetAtt SchedulerExecutionRole.Arn
         Input: '{"day":"tuesday"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.report
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  # 82 minutes after odds-slate's 09:38 ET slot and 112 after espn-tuesday's
+  # 09:08 -- both feeds this report reads, and odds is the tighter margin.
+  # Preserve the gap if either side is ever retimed. It is also the first
+  # report whose input is metered: a missed or budget-aborted slate leaves
+  # the opening-market section reading "insufficient data" while this run
+  # still exits 0, so the gap is the only thing protecting it.
+  ReportTuesdayWaiversSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: report-tuesday-waivers
+      GroupName: !Ref ScheduleGroup
+      State: !Ref ReportScheduleState
+      ScheduleExpression: cron(0 11 ? * TUE *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Tue 11:00 ET -- waiver wire and opening market
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"day":"tuesday-waivers"}'
         EventBridgeParameters:
           Source: ff.scheduler
           DetailType: dispatch.report
