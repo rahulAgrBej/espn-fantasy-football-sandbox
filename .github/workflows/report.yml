@@ -2,7 +2,7 @@ name: report
 
 # Renders one of docs/report-weekly-schedule.md's reports from data already
 # on disk and commits the result to reports/, mirroring it to S3 as well.
-# Only `monday` is implemented (espn_ff/cli.py's REPORT_DAYS) -- the
+# `monday` and `tuesday` are implemented (espn_ff/cli.py's REPORTS) -- the
 # workflow forwards whatever `day` AWS sends and lets cmd_report's own "not
 # implemented" guard handle the rest, so a future report day needs no new
 # workflow file, just a wider `options:` list below plus a new schedule.
@@ -20,7 +20,7 @@ on:
       day:
         description: "Which day's report to render"
         type: choice
-        options: [monday]
+        options: [monday, tuesday]
         required: true
 
 permissions:
@@ -49,20 +49,22 @@ jobs:
           day="${{ inputs.day }}"
           if [ -z "$day" ]; then
             echo "::error::No day named on this dispatch -- refusing to run." \
-                 "The caller must send one of: monday"
+                 "The caller must send one of: monday, tuesday"
             exit 1
           fi
           echo "day=$day" >> "$GITHUB_OUTPUT"
           echo "Resolved day: $day"
 
-      # data/out/ is never covered by state-paths -- Monday's report reads
-      # matchups/weekly-rosters/player-pool/roster-slots exports that only
-      # exist in S3 under latest/out/, seeded here via restore-out-datasets.
+      # data/out/ is never covered by state-paths -- Monday's and Tuesday's
+      # reports read matchups/weekly-rosters/player-pool/roster-slots/teams
+      # exports that only exist in S3 under latest/out/, seeded here via
+      # restore-out-datasets. `teams` is Tuesday-only (its standings
+      # section), but restoring it unconditionally is harmless for Monday.
       - uses: ./.github/actions/ff-run
         with:
           command: "report --day ${{ steps.pick.outputs.day }}"
           state-paths: "raw sleeper nflverse raw/nflverse"
-          restore-out-datasets: "matchups weekly-rosters player-pool roster-slots"
+          restore-out-datasets: "matchups weekly-rosters player-pool roster-slots teams"
           push-paths: ""
           aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}

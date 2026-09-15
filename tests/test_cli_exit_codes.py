@@ -71,3 +71,20 @@ def test_every_exit_code_is_distinct():
 def test_success_is_zero(monkeypatch):
     monkeypatch.setitem(cli.COMMANDS, "credits", lambda client, args: cli.EXIT_OK)
     assert cli.main(["credits"]) == cli.EXIT_OK
+
+
+def test_report_day_tuesday_dispatches_to_the_tuesday_builder(monkeypatch, tmp_path):
+    """report --day tuesday used to hit cmd_report's "not implemented yet"
+    guard, since REPORT_DAYS only ever held "monday". Pins that REPORTS
+    now routes tuesday to report_tuesday.build rather than falling
+    through to that error path."""
+    stub = lambda season, week, team_id=None: "stub tuesday report\n"
+    monkeypatch.setitem(cli.REPORTS, "tuesday", (stub, "week-in-review"))
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+
+    code = cli.main(["report", "--day", "tuesday", "--week", "2"])
+
+    assert code == cli.EXIT_OK
+    written = list(tmp_path.rglob("*-tuesday-week-in-review.md"))
+    assert len(written) == 1
+    assert written[0].read_text() == "stub tuesday report\n"

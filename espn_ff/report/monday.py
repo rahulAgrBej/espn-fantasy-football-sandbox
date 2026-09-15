@@ -15,6 +15,7 @@ import pandas as pd
 from .. import config
 from . import availability, pool, schedule
 from .loaders import freshness, latest_export
+from .render import freshness_lines
 
 INSUFFICIENT_DATA = "insufficient data"
 
@@ -168,27 +169,12 @@ def find_alternatives(starter, bench_df, free_agents_df, pool_df, allowed_slots,
     }
 
 
-def _fmt_ts(ts):
-    if ts is None:
-        return "never"
-    return pd.Timestamp(ts, unit="s").strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _freshness_lines(fresh):
-    lines = []
-    for name in ("sleeper", "nflverse", "espn"):
-        ts, stale = fresh[name]
-        flag = " (STALE)" if stale else ""
-        lines.append(f"- {name}: {_fmt_ts(ts)}{flag}")
-    return lines
-
-
 def render(season, week, team_id, monday_games, margin, at_risk, avail_df, alternatives_by_player, footer_notes):
     lines = []
     lines.append(f"# Monday night call -- {season} week {week}")
     lines.append("")
     lines.append("## Freshness")
-    lines.extend(_freshness_lines(freshness(season=season)))
+    lines.extend(freshness_lines(freshness(season=season)))
     lines.append("")
 
     lines.append("## Tonight's game")

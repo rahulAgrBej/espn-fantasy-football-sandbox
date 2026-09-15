@@ -25,8 +25,15 @@ from .odds import ledger as odds_ledger
 from .odds import projections as odds_projections
 from .odds.ledger import BudgetExceeded, OddsError
 from .report import monday as report_monday
+from .report import tuesday as report_tuesday
 
-REPORT_DAYS = {"monday"}
+# day -> (build function, output filename slug). cmd_report looks up this
+# table instead of a bare set of implemented days so the "not implemented
+# yet" guard and the output path both derive from the same source.
+REPORTS = {
+    "monday": (report_monday.build, "monday-night-call"),
+    "tuesday": (report_tuesday.build, "week-in-review"),
+}
 
 
 def _out_path(name):
@@ -469,22 +476,23 @@ def cmd_credits(client, args):
 def cmd_report(client, args):
     """Render one of docs/report-weekly-schedule.md's reports from data
     already on disk. No network beyond what `--week`'s default fallback
-    needs. Only `monday` is implemented; any other day exits cleanly
-    rather than writing an empty file."""
+    needs. Any day not yet in REPORTS exits cleanly rather than writing an
+    empty file."""
     if not args.day:
-        print(f"Usage: report --day <day>  where day is one of: {', '.join(sorted(REPORT_DAYS))}", file=sys.stderr)
+        print(f"Usage: report --day <day>  where day is one of: {', '.join(sorted(REPORTS))}", file=sys.stderr)
         return 1
-    if args.day not in REPORT_DAYS:
-        print(f"report --day {args.day}: not implemented yet -- only {sorted(REPORT_DAYS)} is", file=sys.stderr)
+    if args.day not in REPORTS:
+        print(f"report --day {args.day}: not implemented yet -- only {sorted(REPORTS)} is", file=sys.stderr)
         return 1
 
+    build_fn, slug = REPORTS[args.day]
     season = args.season
     week = args.week or client.current_scoring_period()
-    text = report_monday.build(season, week, team_id=args.team_id)
+    text = build_fn(season, week, team_id=args.team_id)
 
     out_dir = config.PROJECT_ROOT / "reports" / str(season) / f"week-{week:02d}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{date.today():%Y-%m-%d}-{args.day}-monday-night-call.md"
+    path = out_dir / f"{date.today():%Y-%m-%d}-{args.day}-{slug}.md"
     path.write_text(text)
     print(f"  wrote {path}")
     return 0
@@ -569,7 +577,7 @@ def main(argv=None):
         "--events", help="odds props/pre_lock: comma-separated event ids to restrict the pull to",
     )
     ap.add_argument(
-        "--day", help=f"report command: which day's report to render, one of {sorted(REPORT_DAYS)}",
+        "--day", help=f"report command: which day's report to render, one of {sorted(REPORTS)}",
     )
     args = ap.parse_args(argv)
 

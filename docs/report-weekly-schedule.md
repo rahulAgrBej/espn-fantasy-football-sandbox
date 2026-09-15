@@ -16,15 +16,17 @@ collection run takes, which is minutes. The 37–82 minutes below are ample,
 and the reason the times still look offset rather than aligned is that
 they are anchored to the collection slots.
 
-**Monday is implemented; the rest of the week is still a specification.**
-`espn_ff/report/` is the report engine, and `python -m espn_ff report
---day monday` renders the Monday-night call from data already on disk
-*(Observed)*. `espn_ff/cli.py`'s `COMMANDS` dict has no `tuesday`,
-`wednesday`, etc. entries yet -- calling `report --day` with any other
-value exits with a clear "not implemented" rather than an empty file. This
-document is still the specification for the other six reports, not a
-description of them, which is why no claim in those sections below is
-tagged **Observed**.
+**Monday and Tuesday's week-in-review are implemented; the rest of the
+week is still a specification.** `espn_ff/report/` is the report engine.
+`python -m espn_ff report --day monday` renders the Monday-night call from
+data already on disk *(Observed)*, and `python -m espn_ff report --day
+tuesday` renders the week-in-review. `espn_ff/cli.py`'s `REPORTS` dict has
+no `wednesday`, `thursday`, etc. entries yet, nor a second Tuesday entry
+for the 11:00 waiver report -- calling `report --day` with any other value
+exits with a clear "not implemented" rather than an empty file. This
+document is still the specification for the remaining six reports, not a
+description of them, which is why no claim in those sections is tagged
+**Observed**.
 
 ## Overview
 
@@ -145,7 +147,15 @@ failed — report the week as unclosed rather than as a loss. That is a
 different failure mode than seeing the same thing on Monday, where it is
 expected (see above): these views are cache-forever, never wired to
 `cache.ttl_for`, so reading them off Sunday's cache shows a completed game
-as undecided until an explicit `--refresh`. Separately, nflverse's
+as undecided until an explicit `--refresh`. *(Observed — `python -m
+espn_ff report --day tuesday --week 2` on Tue 2026-09-15 rendered week 1's
+Result section as unclosed for exactly this reason: no `--refresh` had run
+since Sunday's cache, so every one of week 1's 6 matchups still read
+`UNDECIDED`/`0.0` a full day after that game slate finished. The regret
+table, which does not depend on closure, rendered correctly in the same
+run: two rows, Chuba Hubbard's 22.2 bench points beating both Rhamondre
+Stevenson's 12.0 at RB/WR and Cam Skattebo's 14.1 at RB, for 161.86
+optimal points against 151.66 actual.)* Separately, nflverse's
 `provisional` flag is still `true` on Tuesday because stat corrections
 land Tuesday and Wednesday, so snap share and target share are not
 readable yet at any confidence.
@@ -385,10 +395,11 @@ must never be written into `data/out/`, where they would be mis-keyed.
 
 ## Known gaps
 
-- **Monday is the only report that has been Observed running.** The other
-  six days are still intent, not description — every time, threshold, and
-  behavior in those sections is a specification until something has run a
-  real NFL week.
+- **Monday and Tuesday's week-in-review are the only reports that have
+  been Observed running.** The other six report slots (five days, plus
+  Tuesday's second, 11:00 waiver report) are still intent, not
+  description — every time, threshold, and behavior in those sections is
+  a specification until something has run a real NFL week.
 - **`freshness()` never validates a `data/out` export's own content**, only
   each feed's last-run sidecar (`last_run.json` / `manifest.json` /
   `.meta.json`). If the morning's ESPN export silently fails to produce a
@@ -449,3 +460,9 @@ must never be written into `data/out/`, where they would be mis-keyed.
   make a report that prints raw event ids uncommittable locally. Worth
   checking against the first real `slate` response before the reports
   render any event id.
+- **Tuesday's regret table falls back to a pure-position slot-eligibility
+  map for any player dropped since the reviewed week** (no
+  `player-pool.csv` row that week), and its rest-of-season projection is
+  derived as `season_projected - season_points` rather than published by
+  any feed *(Inferred)*. Both are named in the report's footer whenever
+  they fire, but neither is a vendor-asserted fact.

@@ -1,0 +1,44 @@
+# Week 1 in review -- 2026
+
+## Freshness
+- sleeper: 2026-09-14 19:13:41
+- nflverse: 2026-09-15 04:46:47
+- espn: 2026-09-15 16:31:36
+
+## Decisions due
+None binding today. This report seeds the shortlist for the 11:00 waiver-wire report.
+
+Possibly IR-eligible, depending on this league's setting (assumption, unconfirmed):
+- De'Zhaun Stribling (WR) -- DOUBTFUL
+
+## Result
+**unclosed -- insufficient data** -- all 6 matchups still read UNDECIDED -- the ESPN refresh has not landed
+
+## Standings
+**insufficient data** -- every team still reads the pre-season snapshot (0-0, 0.0 points_for)
+
+## Optimal-lineup regret
+**10.2 points left on the table** (optimal 161.9 vs actual 151.7).
+
+_Per-slot gaps below are independent counterfactuals and do not add; for the one number that does, see "points left on the table" above._
+
+| slot | started | pts | best bench | pts | gap |
+|---|---|---|---|---|---|
+| RB/WR | Rhamondre Stevenson | 12.0 | Chuba Hubbard | 22.2 | 10.2 |
+| RB | Cam Skattebo | 14.1 | Chuba Hubbard | 22.2 | 8.1 |
+
+## Drop candidates
+| player | position | ROS projection (inferred) |
+|---|---|---|
+| De'Zhaun Stribling | WR | 108.1 |
+| Tre Tucker | WR | 133.9 |
+| RJ Harvey | RB | 141.5 |
+| Chuba Hubbard | RB | 169.4 |
+| DK Metcalf | WR | 187.8 |
+
+## What this report cannot see
+- nflverse's provisional flag is still true on Tuesday -- stat corrections land Tuesday and Wednesday, so these point totals may themselves move.
+- This regret table is retrospective and explicitly not a start/sit rule -- one week of outcome tells you less than Friday's projection will.
+- Per-slot regret gaps are independent counterfactuals and do not add; see "points left on the table" for the one number that does.
+- A 0.0 in points does not distinguish played-and-scored-zero from a bye from inactive.
+- This league's waiver-processing night is recorded in no artifact here, so the IR-eligibility guidance above is stated as an assumption, not a confirmed rule.
