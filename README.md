@@ -58,7 +58,15 @@ git config core.hooksPath .githooks
 ```
 
 It is already enabled here. `git commit --no-verify` still bypasses it -- a
-hook is a guardrail, not a sandbox.
+hook is a guardrail, not a sandbox. It is also per-clone: a fresh clone has
+no hook until that command is re-run.
+
+A third layer covers what the first two structurally cannot. GitHub secret
+scanning with push protection rejects a matching push outright, which is
+the only one of the three that survives `--no-verify` or a clone that never
+configured the hook. CI itself holds no AWS credentials at all -- workflows
+assume a role via OIDC, scoped to this repo and the `gh_env` environment,
+with permissions that stop at a single S3 bucket. See `docs/automation.md`.
 
 ## Commands
 
@@ -91,7 +99,8 @@ Wednesday weekday check -- never the credit budget -- for `odds props`),
 issuing anything), `--events` (odds `props`/`pre_lock`: comma-separated
 event ids to restrict the pull to).
 
-CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`.
+CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`, and are mirrored to S3
+by the scheduled workflows -- see `docs/automation.md`.
 
 ## Layout
 
@@ -110,6 +119,10 @@ CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`.
 | `scripts/nflverse_coverage.py` | nflverse id-resolution and manifest-freshness coverage report |
 | `docs/data-sources.md` | Field-level freshness reference for every output CSV, across all four feeds |
 | `docs/odds-budget.md` | The Odds API's credit-budget invariant, cost table, job schedule, and guard runbook |
+| `docs/automation.md` | How the schedule runs unattended: workflows, S3 state/archive split, OIDC, runbook |
+| `.github/workflows/` | The five scheduled collection workflows plus CI |
+| `scripts/s3_sync.sh` | Restore/archive/push the `data/` tree against S3 |
+| `infra/*.json.example` | IAM trust + S3 policy templates (`<ACCOUNT_ID>` placeholders) |
 
 ## Sleeper player-status layer
 
@@ -299,38 +312,38 @@ against an unchanged `timestamp.json` makes no parquet download at all.
 Thursday's read is the canonical one for the prior week: stat corrections
 land Tuesday/Wednesday, so anything read before Thursday should be treated
 as `provisional = true`, which is exactly the flag `features` sets when a
-week's games aren't all complete yet. Nothing here is wired into cron —
-that's a deliberate choice so a fresh clone never surprises anyone with a
-background job. A commented starting point:
+week's games aren't all complete yet.
 
-```cron
-# nflverse settles through the day; both commands are idempotent.
-0 9,13,18 * * *  cd /path/to/repo && .venv/bin/python -m espn_ff nflverse && .venv/bin/python -m espn_ff features
-# Thursday's read is canonical for the prior week -- stat corrections land Tue/Wed.
-0 9 * * 4        cd /path/to/repo && .venv/bin/python -m espn_ff nflverse --force && .venv/bin/python -m espn_ff features
-```
+This cadence runs in GitHub Actions — `.github/workflows/nflverse.yml`
+pulls at 09/13/18 ET daily and forces a full refresh Thursday morning. See
+`docs/automation.md` for the workflow set, the S3 layout, and the runbook.
+A local clone still runs nothing on its own clock; the workflows are the
+only scheduler, and `workflow_dispatch` fires any of them by hand.
 
 nflverse data is built by [nflverse](https://github.com/nflverse) from
 public NFL data plus [Pro Football Reference](https://www.pro-football-reference.com/)
 snap counts; the id crosswalk falls back to
 [dynastyprocess](https://github.com/dynastyprocess/data)'s `db_playerids.csv`.
-This project stays private for now, per that data's terms.
+That data is not redistributed from this repository — `data/` is
+gitignored and nothing fetched from nflverse or PFR is committed. The
+collected artifacts live in a private S3 bucket, not in git.
 
-The Odds API layer is not on this cadence, and deliberately not on this
-crontab, for the reason stated throughout `docs/odds-budget.md`: **the
+The Odds API layer runs on its own workflow, `.github/workflows/odds.yml`,
+kept separate for the reason stated throughout `docs/odds-budget.md`: **the
 nflverse commands above are idempotent and free to re-run; these are not.**
 Re-running `odds props` spends credits again, even if nothing about the
-market changed. A commented starting point, opted into explicitly and only
-after `ODDS_API_KEY` is set:
+market changed. Its five cron slots map one-to-one onto that document's job
+schedule, and three guards sit in front of them — a single `odds-ledger`
+concurrency group so two runs can never race the credit ledger, an
+off-season check, and a `--dry-run` preflight that prices the job using
+only the free `/events` endpoint before anything is issued.
 
-```cron
-# Metered -- unlike the nflverse crontab above, none of these are free to
-# re-run. Each line matches one row of docs/odds-budget.md's job schedule.
-0 9  * * 2  cd /path/to/repo && .venv/bin/python -m espn_ff odds slate
-0 10 * * 4  cd /path/to/repo && .venv/bin/python -m espn_ff odds props
-0 10 * * 5  cd /path/to/repo && .venv/bin/python -m espn_ff odds line_movement
-30 10 * * 0 cd /path/to/repo && .venv/bin/python -m espn_ff odds pre_lock
-0 9  * * 1  cd /path/to/repo && .venv/bin/python -m espn_ff odds results
+A manual run is still the right tool for anything ad hoc:
+
+```bash
+# Price it first -- issues nothing.
+.venv/bin/python -m espn_ff odds props --dry-run
+gh workflow run odds.yml -f job=props -f dry_run=false   # or run it in CI
 ```
 
 ## Tests

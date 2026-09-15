@@ -1,0 +1,24 @@
+{
+  "Rules": [
+    {
+      "ID": "archive-to-glacier-ir",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "archive/" },
+      "Transitions": [
+        { "Days": 90, "StorageClass": "GLACIER_IR" }
+      ]
+    },
+    {
+      "ID": "expire-noncurrent-state",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "state/" },
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 30 }
+    },
+    {
+      "ID": "abort-incomplete-uploads",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}

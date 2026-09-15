@@ -1,0 +1,61 @@
+name: nflverse
+
+# nflverse rebuilds its release assets several times a day, so the routine
+# slots are just "check again" -- both commands are idempotent and a run
+# against an unchanged timestamp downloads nothing at all (the manifest's
+# ETags turn it into a 304).
+on:
+  schedule:
+    - cron: "0 13,17,22 * * *"   # 09:00 / 13:00 / 18:00 ET -- routine
+    - cron: "0 13 * * 4"         # Thursday 09:00 ET -- the canonical read
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Bypass the timestamp short-circuit (--force)"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: nflverse
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    if: github.repository == 'rahulAgrBej/espn-fantasy-football-sandbox'
+    runs-on: ubuntu-latest
+    environment: gh_env
+    steps:
+      - uses: actions/checkout@v7
+
+      # Stat corrections land Tue/Wed, so Thursday is the first pull where
+      # `provisional` reliably resolves to false for last week's games.
+      # That one slot forces a full re-download; the rest stay cheap.
+      - name: Pick the refresh mode
+        id: mode
+        run: |
+          if [ "${{ github.event.schedule }}" = "0 13 * * 4" ] \
+             || [ "${{ inputs.force }}" = "true" ]; then
+            echo "flag=--force" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: ./.github/actions/ff-run
+        with:
+          command: |
+            nflverse ${{ steps.mode.outputs.flag }}
+            features
+          state-paths: "nflverse raw raw/nflverse"
+          push-paths: "nflverse raw/nflverse"
+          aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          s3-bucket: ${{ vars.S3_BUCKET }}
+          # cmd_nflverse resolves the current week and fetches the roster to
+          # assert every rostered player resolves through the id crosswalk,
+          # so this job needs ESPN credentials despite being an nflverse pull.
+          espn-s2: ${{ secrets.ESPN_S2 }}
+          swid: ${{ secrets.SWID }}

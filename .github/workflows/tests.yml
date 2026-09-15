@@ -1,0 +1,42 @@
+name: tests
+
+# pull_request, never pull_request_target: this repo is public, and
+# pull_request_target would run fork-authored code with access to repo
+# context. This job also deliberately declares no environment, so PR runs
+# stay entirely outside the credentialed path.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          # No lockfile exists, so key the cache on the dependency
+          # declaration -- otherwise it never invalidates.
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install
+        run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install -e ".[dev]"
+
+      # The suite runs entirely off fixtures in tests/fixtures/ -- no network,
+      # no credentials, and zero Odds API credits. The integration and
+      # odds_live markers are opt-in and excluded here.
+      - name: Test
+        run: .venv/bin/pytest -m "not integration and not odds_live" -q

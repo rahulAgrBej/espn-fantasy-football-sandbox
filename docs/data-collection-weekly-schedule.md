@@ -7,11 +7,13 @@ job schedule). Those two documents answer *how stale can a field be* and
 running this pipeline has day to day: **what should I pull today, and why
 does it matter for this week's lineup and waiver decisions?**
 
-**Nothing in this repo is wired to cron.** Every command below is a
-deliberate, manual invocation — this document describes when a human
-should run each one, not a schedule this repo runs on its own (see the
-"Known freshness gaps" section of `data-sources.md` and the commented
-crontab in the README).
+**This schedule now runs in GitHub Actions** — see `docs/automation.md`
+for the workflow set, the S3 state/archive split, and the runbook. Each
+day below still reads as guidance rather than as a job definition: the
+point of this document is *why* a given day's data matters for a lineup or
+waiver decision, which is what you need whether the pull was automated or
+you ran it by hand. Every workflow also accepts `workflow_dispatch`, so any
+command here can still be fired deliberately.
 
 ## Overview
 
@@ -215,10 +217,14 @@ reflect afternoon/night-game scoring.
 
 ## Known caveats
 
-- **No scheduler exists.** Every pull above is a manual, deliberate
-  invocation — nothing in this repo runs on its own clock (see
-  `data-sources.md`'s "Known freshness gaps" and `odds-budget.md`'s note
-  that none of the five jobs are wired to cron).
+- **The scheduler is best-effort, and its clock is UTC.** GitHub cron
+  runs are routinely 5–30 minutes late and are occasionally dropped
+  entirely *(Documented — GitHub Actions)*, so treat every time above as
+  approximate. Slots are pinned to their EDT equivalents, which means each
+  one fires an hour earlier in local time once DST ends in November —
+  deliberate for Sunday's `pre_lock`, which stays well clear of 13:00 ET
+  kickoffs either way. A missed slot is re-runnable by hand for every feed
+  except Sunday live scoring, which cannot be backfilled.
 - **A budget-aborted Odds job leaves a stale snapshot in place**, with no
   visible difference on disk from a fresh one — always check
   `captured_at` and `last_run.json`'s `stale` field, never the parquet

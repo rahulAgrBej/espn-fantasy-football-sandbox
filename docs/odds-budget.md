@@ -55,9 +55,15 @@ either way.
 
 Steady state: roughly 50–67 credits/week, ~250–335 per billing period out
 of 500 — the remainder is headroom for playoff weeks and ad-hoc research.
-None of these are wired to cron (see the README's commented crontab); each
-is a deliberate, explicit CLI invocation, because unlike every
-nflverse/sleeper command, running one of these again is not free.
+These five slots run in `.github/workflows/odds.yml` (see
+`docs/automation.md`), kept in one workflow so they share a single
+`odds-ledger` concurrency group — the ledger's `BEGIN IMMEDIATE` atomicity
+only holds within one filesystem, so two runners each restoring their own
+copy could otherwise both pass the guard. Two further guards sit in front
+of every slot: an off-season check, and a `--dry-run` preflight that prices
+the job using only the free `/events` endpoint. None of that makes a re-run
+free — unlike every nflverse/sleeper command, running one of these again
+spends credits whether or not the market moved.
 
 `props` refuses to run before Wednesday (props open Wed–Thu); `--force`
 overrides that weekday check only, never the budget. `--dry-run` runs the

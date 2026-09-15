@@ -65,8 +65,11 @@ which means `cache.read` skips its staleness check entirely and serves whatever
 is on disk forever, live week or not. In practice: a live matchup's score, an
 in-flight transaction, or a nudge in `percent_owned` will **not** update on its
 own once cached, even mid-week — only `--refresh` (or a first-time fetch) pulls a
-new copy. **There is no scheduler for the ESPN layer**; freshness is exactly
-whatever the last `pull`/`export` wrote, refreshed only when you ask.
+new copy. **Nothing about the ESPN layer expires on its own**; freshness is
+exactly whatever the last `pull`/`export` wrote. `.github/workflows/espn.yml`
+therefore passes `--refresh` on every slot, including the Sunday live-scoring
+runs — a scheduled pull without it would re-read the same cached
+`points_live`/`winner` all afternoon (see `docs/automation.md`).
 
 The one exception is `current_scoring_period()` itself (`espn_ff/client.py`),
 which every `--week`-defaulting command depends on. Its underlying fetch
@@ -431,13 +434,10 @@ miss on a skim:**
 - `is_stale(entry, hours=36)` is checked and printed by `nflverse` when a feed
   hasn't successfully updated in 36+ hours — but it's never enforced; the run
   continues regardless.
-- Nothing here is wired to cron, deliberately, so a fresh clone never surprises
-  anyone with a background job. The README carries a commented starting point
-  as a suggestion, not a schedule this repo runs:
-  ```cron
-  0 9,13,18 * * *  cd /path/to/repo && .venv/bin/python -m espn_ff nflverse && .venv/bin/python -m espn_ff features
-  0 9 * * 4        cd /path/to/repo && .venv/bin/python -m espn_ff nflverse --force && .venv/bin/python -m espn_ff features
-  ```
+- This cadence runs in `.github/workflows/nflverse.yml` — 09/13/18 ET daily,
+  plus a `--force` refresh Thursday morning for the canonical prior-week read.
+  A fresh clone still runs nothing on its own clock; the workflows are the only
+  scheduler. See `docs/automation.md`.
 
 ---
 
@@ -574,8 +574,14 @@ codebase today.
 
 **Known freshness gaps:**
 
-- No scheduler exists anywhere in this repo — every artifact above is exactly as
-  fresh as the last time someone ran the relevant command.
+- Every artifact above is exactly as fresh as the last time the relevant
+  command ran. That is now usually a scheduled GitHub Actions run rather than a
+  person (`docs/automation.md`), which changes who triggers a pull but not this
+  document's answer for any field — and scheduled runs are themselves
+  best-effort, so a slot can slip or be skipped.
+- **No cadence here has been re-measured against the automated schedule.** The
+  Observed figures below were taken from manual runs; nothing has yet run a full
+  NFL week unattended.
 - Only the weekly-roster ESPN fetch (`weekly-rosters.csv` / `team`) actually
   applies `cache.ttl_for`'s live-week short TTL. `teams.csv`, `matchups.csv`,
   `draft.csv`, `transactions.csv`, and `player-pool.csv` are all fetched without

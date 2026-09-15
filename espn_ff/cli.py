@@ -23,7 +23,7 @@ from .nflverse.client import NflverseError
 from .odds import jobs as odds_jobs
 from .odds import ledger as odds_ledger
 from .odds import projections as odds_projections
-from .odds.ledger import OddsError
+from .odds.ledger import BudgetExceeded, OddsError
 
 
 def _out_path(name):
@@ -463,6 +463,12 @@ def cmd_credits(client, args):
     return 0
 
 
+# Exit codes. 0 success, 1 something went wrong and needs a human, 2 the
+# Odds credit guard declined to spend -- expected, and not a failure.
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_BUDGET = 2
+
 COMMANDS = {
     "probe": cmd_probe,
     "team": cmd_team,
@@ -542,9 +548,16 @@ def main(argv=None):
     )
     try:
         return COMMANDS[args.command](client, args)
+    except BudgetExceeded as exc:
+        # Distinct from a failure on purpose. The credit guard firing means
+        # the code worked: it declined to spend and issued nothing. An
+        # unattended runner needs to tell that apart from expired cookies or
+        # a broken endpoint, both of which need a human.
+        print(f"\n{exc}", file=sys.stderr)
+        return EXIT_BUDGET
     except (EspnError, NflverseError, OddsError) as exc:
         print(f"\n{exc}", file=sys.stderr)
-        return 1
+        return EXIT_ERROR
 
 
 if __name__ == "__main__":
