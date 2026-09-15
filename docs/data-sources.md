@@ -68,6 +68,24 @@ own once cached, even mid-week — only `--refresh` (or a first-time fetch) pull
 new copy. **There is no scheduler for the ESPN layer**; freshness is exactly
 whatever the last `pull`/`export` wrote, refreshed only when you ask.
 
+The one exception is `current_scoring_period()` itself (`espn_ff/client.py`),
+which every `--week`-defaulting command depends on. Its underlying fetch
+(`get_platform_settings`, the `chui_default_platformsettings` view) also has no
+`ttl`, but the *value* is no longer read straight off that cache-forever
+payload's `currentScoringPeriod.id`. Instead it resolves "what week is it" by
+comparing `now` against the `scoringPeriods` calendar (`startDate`/`endDate` per
+week, published for the whole season up front) already sitting in that same
+cached payload — a local comparison, no network. The underlying platform-
+settings fetch only refetches when the calendar can no longer answer the
+question: no cached copy yet, `now` falls outside every published window, or a
+week boundary has been crossed since the cache was last written — and even then
+only once per `LIVE_TTL` (300s) window, so a boundary ESPN hasn't honoured yet
+doesn't trigger a refetch on every single call. A failed refetch warns and
+falls back to the stale calendar's answer rather than raising. Targeted re-pull
+for one suspect week is `--refresh-weeks` (e.g. `--refresh-weeks 3` or `1-4`),
+which bypasses the cache for week-scoped fetches only — the league-wide views
+above still need plain `--refresh`.
+
 ### `teams.csv` — `teams.teams_frame` (13 fields)
 
 Written by `export`, refetched only on `--refresh`; standings fields (`wins`,
@@ -563,6 +581,9 @@ codebase today.
   `draft.csv`, `transactions.csv`, and `player-pool.csv` are all fetched without
   a `ttl` argument, so once cached they're served forever — a live matchup score
   or a fresh transaction won't appear until `--refresh` is passed, even mid-week.
+  (`current_scoring_period()` used to have this same cache-forever bug on its
+  own underlying fetch; it's now resolved from the on-disk season calendar
+  instead — see "Freshness mechanism" above.)
 - Historical `depth_charts` snapshots are not retained — `store.load` always
   collapses to the latest `dt`, so there is currently no way to ask "what was
   the depth chart in week 3" after week 4 has landed.

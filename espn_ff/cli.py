@@ -50,6 +50,12 @@ def _weeks(spec, current):
     return [int(w) for w in spec.split(",")]
 
 
+def _refresh_weeks(spec):
+    """--refresh-weeks takes the same spec as --weeks, but with no default:
+    omitted means "refresh nothing", not "refresh everything"."""
+    return set(_weeks(spec, None)) if spec else set()
+
+
 def _seasons(spec, current):
     if not spec:
         return [current]
@@ -81,7 +87,7 @@ def cmd_probe(client, args):
     print("Auth OK.\n")
     print(f"League:   {meta['league_name']}  (id {meta['league_id']}, {meta['season']})")
     print(f"Size:     {meta['size']} teams   public={meta['is_public']}")
-    print(f"Week:     {meta['current_scoring_period']}")
+    print(f"Week:     {client.current_scoring_period()}")
     print(f"\nTop-level keys returned: {sorted(payload.keys())}")
     print(f"\n{len(payload.get('teams') or [])} teams:")
     for team in payload.get("teams") or []:
@@ -486,6 +492,15 @@ def main(argv=None):
     ap.add_argument("--weeks", help="range like 1-18 or list like 1,2,5")
     ap.add_argument("--refresh", action="store_true", help="bypass the cache")
     ap.add_argument(
+        "--refresh-weeks",
+        help="force a re-pull of these scoring periods only, bypassing the cache for "
+        "week-scoped ESPN fetches (mRoster, mMatchupScore when fetched with a week): "
+        "same spec as --weeks, e.g. 3 or 1-4 or 1,3,5. League-wide views with no "
+        "scoringPeriodId (mDraftDetail, mTransactions2, kona_player_info, and "
+        "mMatchupScore fetched standalone) still need plain --refresh. "
+        "Plain --refresh wins when both are given.",
+    )
+    ap.add_argument(
         "--depth-lookback", type=int, default=3,
         help="days back to diff depth_chart_order against (status command)",
     )
@@ -519,7 +534,12 @@ def main(argv=None):
     )
     args = ap.parse_args(argv)
 
-    client = EspnClient(season=args.season, league_id=args.league_id, refresh=args.refresh)
+    client = EspnClient(
+        season=args.season,
+        league_id=args.league_id,
+        refresh=args.refresh,
+        refresh_weeks=_refresh_weeks(args.refresh_weeks),
+    )
     try:
         return COMMANDS[args.command](client, args)
     except (EspnError, NflverseError, OddsError) as exc:

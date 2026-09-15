@@ -77,7 +77,10 @@ hook is a guardrail, not a sandbox.
 ```
 
 Flags: `--season`, `--league-id`, `--team-id`, `--week`, `--weeks 1-18`,
-`--refresh` (bypass cache), `--depth-lookback` (default 3, for `status`),
+`--refresh` (bypass cache), `--refresh-weeks` (force a re-pull of just these
+scoring periods -- same spec as `--weeks` -- bypassing the cache for
+week-scoped ESPN fetches only; plain `--refresh` wins if both are given),
+`--depth-lookback` (default 3, for `status`),
 `--trending-limit` (default 25), `--trending-floor` (default 0),
 `--seasons` (range like `2024-2026` or list like `2024,2026`, for
 `nflverse`/`features`; defaults to the current season), `--force` (bypass
@@ -277,6 +280,16 @@ cached forever and only the live week is re-fetched (5 min TTL). This matters:
 `mRoster` returns the roster *as of* a given `scoringPeriodId`, so a full season
 of weekly rosters is one request per week. Rate limits are undocumented —
 hammering the API during live games is how people get blocked.
+
+The current week itself is resolved the same cache-friendly way: ESPN publishes
+the whole season's week-by-week calendar (`scoringPeriods`, with a start/end
+date per week) in one payload, so "what week is it" is answered by comparing
+`now` against that already-cached calendar rather than trusting a single
+frozen field. It only re-fetches that calendar when the cached copy can no
+longer answer the question — missing, `now` outside every window, or a week
+boundary crossed since the last fetch — and even then at most once every 5
+minutes. To force one specific week's ESPN data to re-pull without bypassing
+the whole cache, use `--refresh-weeks` (e.g. `--refresh-weeks 3`).
 
 ## Refresh cadence
 
