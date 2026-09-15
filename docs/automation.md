@@ -118,12 +118,27 @@ No AWS keys exist anywhere in GitHub. Workflows assume
 trades it for an hour-long session, and nothing long-lived is stored
 *(Documented — GitHub OIDC)*.
 
-The trust policy pins the token's `sub` claim to
-`repo:rahulAgrBej/espn-fantasy-football-sandbox:environment:gh_env` with
-`StringEquals`, not a `repo:…:*` wildcard. Two consequences worth stating
-plainly, because this repo is public:
+The trust policy pins the token's `sub` claim with `StringEquals`, not a
+`repo:…:*` wildcard. The claim is **not** the form most documentation
+shows: this repository is issued *immutable subject claims*, so GitHub
+embeds the numeric owner and repository ids —
 
-- A fork's token carries its own owner in `sub` and is rejected outright.
+```
+repo:<owner>@<owner_id>/<repo>@<repo_id>:environment:gh_env
+```
+
+— rather than `repo:<owner>/<repo>:environment:<name>` *(Observed — read
+off a real token; see `infra/README.md`)*. A policy written in the
+plain-name form matches nothing, and the denial reads as
+`Not authorized to perform sts:AssumeRoleWithWebIdentity`, which looks like
+a missing permission rather than a failed condition. The id-bearing form is
+also the stronger one: names can be renamed, transferred, deleted and
+re-registered; ids cannot.
+
+Two consequences worth stating plainly, because this repo is public:
+
+- A fork's token carries its own owner and repository ids in `sub` and is
+  rejected outright.
 - **Every job that touches S3 must declare `environment: gh_env`.** Without
   it, both the secret lookup and the assume-role call fail. That failure is
   the control working.
