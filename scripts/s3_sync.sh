@@ -153,9 +153,23 @@ cmd_push_state() {
 # Written even when the command failed, so a budget-aborted odds job or an
 # expired-cookie ESPN job leaves a trail. stale flags come from the feeds'
 # own last_run.json files rather than from the exit code.
+#
+# Keyed by command, not just by run id: one workflow run can invoke ff-run
+# several times (odds.yml does a --dry-run preflight, then the metered job,
+# then credits), and a single per-run key meant each receipt overwrote the
+# last -- so the metered job's own trail was lost to the trailing credits
+# call, which is exactly the record worth keeping.
 cmd_receipt() {
     local workflow="${1:?workflow}" run_id="${2:?run_id}" cmd="${3:-}" code="${4:-0}"
     local tmp; tmp="$(mktemp)"
+
+    # Slug the command for the object name: "odds slate --dry-run" ->
+    # "odds-slate-dry-run"; a multi-line command -> "sleeper-status".
+    local slug
+    slug="$(printf '%s' "$cmd" | tr '\n' ' ' \
+            | sed -e 's/--//g' -e 's/[^A-Za-z0-9]\{1,\}/-/g' \
+                  -e 's/^-//' -e 's/-$//' | cut -c1-60)"
+    [ -n "$slug" ] || slug="run"
     ROOT="$ROOT" WORKFLOW="$workflow" RUN_ID="$run_id" CMD="$cmd" CODE="$code" \
     python3 - > "$tmp" <<'PY'
 import json, os, pathlib, time
@@ -178,9 +192,9 @@ print(json.dumps({
     "sleeper_last_run": read("sleeper/last_run.json"),
 }, indent=2, default=str))
 PY
-    s3 s3 cp "$tmp" "s3://$BUCKET/logs/runs/$workflow/$run_id.json" --only-show-errors
+    s3 s3 cp "$tmp" "s3://$BUCKET/logs/runs/$workflow/$run_id/$slug.json" --only-show-errors
     rm -f "$tmp"
-    say "receipt -> logs/runs/$workflow/$run_id.json"
+    say "receipt -> logs/runs/$workflow/$run_id/$slug.json"
 }
 
 case "${1:-}" in
