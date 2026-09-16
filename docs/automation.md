@@ -293,6 +293,50 @@ omit it and the job reports success having collected nothing. It emits a
 `pre_lock` sits at 10:38 ET, well before 13:00 ET kickoffs, so there is room
 to notice a failure and re-fire before the lines lock.
 
+### Dispatching vs. running locally
+
+**Dispatch, don't render locally.** `gh workflow run <name>.yml` is the
+default way to produce any artifact this repo tracks, reports included:
+
+```bash
+gh workflow run espn.yml
+gh workflow run report.yml -f day=tuesday
+```
+
+Every workflow restores its state from S3 and runs ESPN pulls with
+`--refresh` before it does anything else *(Documented —
+`.github/workflows/espn.yml:5-9`)*. A local clone does neither: its `data/`
+tree reflects whatever it last happened to fetch, which goes stale the
+moment a scheduled run lands elsewhere. That staleness is silent —
+`cmd_export` fetches `["mSettings", "mTeam", "mStandings"]` and
+`["mMatchupScore", "mTeam"]` with no TTL (`espn_ff/cli.py:175,180`), so
+`cache.read(path, ttl=None)` (`espn_ff/cache.py:47`) serves whatever was
+cached the first time, forever, with no error and no warning.
+
+A local run is the debugging fallback, never the way a report or export
+gets made.
+
+**If you must run locally, sync first.** Restore state from S3 before any
+`export`, `report`, or `features` run:
+
+```bash
+set -a; . .env; set +a
+./scripts/s3_sync.sh restore "raw sleeper nflverse raw/nflverse odds"
+./scripts/s3_sync.sh restore-out matchups weekly-rosters player-pool \
+    roster-slots teams transactions
+```
+
+`.env` is gitignored and `s3_sync.sh` reads `S3_BUCKET`/`AWS_PROFILE`
+straight from the environment, so it must be exported into the shell —
+unlike `espn_ff/config.py`, which loads `.env` itself, sourcing here is not
+automatic. See `.env.example` for both variables.
+
+Then run `export --refresh` (never a bare `export`) before anything reads
+its output, for the same no-TTL reason above. And never commit an artifact
+produced from unsynced local data over one a workflow already produced —
+if a local render and a bot render disagree, the bot render is the one that
+ran against fresh state.
+
 ### The bucket state looks wrong
 
 Versioning is on. List versions of the object and restore the prior one
@@ -339,4 +383,11 @@ spend credits for a value that already exists.
   this during its own rollout, for an unrelated reason (a dedupe-key bug
   in `espn_ff/odds/store.py`, since fixed) — the run exited 0 and
   committed a report with every `implied_team_total` cell reading
-  "insufficient data," which is far harder to notice than a red run.
+  "insufficient data," which is far harder to notice than a red run. The
+  same shape reappears from the local side rather than a `state-paths`
+  misconfiguration: a local `report` run against a never-refreshed ESPN
+  cache (see "Dispatching vs. running locally" above) rendered week 2's
+  Tuesday reports with a 0-0 standings table and pre-kickoff matchup
+  scores, both silently — the report guards fired correctly on genuinely
+  stale input, and only a human reading the output noticed anything was
+  wrong.

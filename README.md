@@ -102,6 +102,9 @@ event ids to restrict the pull to).
 CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`, and are mirrored to S3
 by the scheduled workflows -- see `docs/automation.md`.
 
+Prefer `gh workflow run` over running these commands locally -- see
+`CLAUDE.md`'s "Running anything that touches `data/`".
+
 ## Layout
 
 | Path | Role |

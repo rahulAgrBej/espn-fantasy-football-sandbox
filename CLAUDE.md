@@ -34,3 +34,17 @@ conventions. Follow these when adding to or editing any doc under `docs/`:
 These conventions describe existing practice in this repo's docs, not
 aspirational rules — check `docs/data-sources.md` and `docs/odds-budget.md`
 for concrete examples before writing a new one.
+
+## Running anything that touches `data/`
+
+**Dispatch, don't render locally.** `gh workflow run <name>.yml` is the
+default way to produce any artifact — reports included. The workflows
+restore state from S3 and run ESPN pulls with `--refresh`; a local clone
+does neither, and its `data/` tree is stale the moment a scheduled run
+lands. A local run is the debugging fallback, never the way a report or
+export gets made.
+
+**If you must run locally, sync first.** Restore state from S3 before
+any `export`, `report`, or `features` run, and never commit an artifact
+produced from unsynced local data. See `docs/automation.md`'s
+"Dispatching vs. running locally" for the commands.
