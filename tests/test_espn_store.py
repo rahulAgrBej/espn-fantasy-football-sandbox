@@ -168,3 +168,28 @@ def test_healthy_export_leaves_the_feed_fresh(tmp_path, monkeypatch):
 
     assert loaders._espn_freshness(season=2026)[1] is False
     assert loaders.espn_export_warning() is None
+
+
+def test_a_csv_sourced_store_merges_with_a_live_fetch(tmp_path):
+    """The CI failure of 2026-09-16: a store seeded from CSV carries
+    proposed_date as strings while a live fetch carries real Timestamps.
+    Concatenating them produced an object column of mixed types and pyarrow
+    refused it with "Expected bytes, got a 'Timestamp' object", failing the
+    whole export."""
+    from_csv = pd.DataFrame([{**_row("t1", "ADD", 1), "proposed_date": "2026-09-15 22:59:26.900"}])
+    from_fetch = pd.DataFrame([{**_row("t2", "ADD", 2), "proposed_date": pd.Timestamp("2026-09-16 07:02:58")}])
+
+    merged = espn_store.merge_transactions(from_csv, from_fetch)
+
+    assert str(merged["proposed_date"].dtype).startswith("datetime64")
+    # The real assertion: it must survive a parquet round-trip.
+    path = tmp_path / "t.parquet"
+    espn_store._atomic_write_parquet(merged, path)
+    assert len(pd.read_parquet(path)) == 2
+
+
+def test_an_unparseable_proposed_date_becomes_nat_rather_than_failing(tmp_path):
+    rows = pd.DataFrame([{**_row("t1", "ADD", 1), "proposed_date": "not a date"}])
+    merged = espn_store.merge_transactions(pd.DataFrame(), rows)
+    assert pd.isna(merged.iloc[0]["proposed_date"])
+    espn_store._atomic_write_parquet(merged, tmp_path / "t.parquet")

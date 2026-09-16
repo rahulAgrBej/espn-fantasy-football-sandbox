@@ -47,6 +47,26 @@ TRANSACTION_KEYS = ["season", "transaction_id", "item_type", "player_id"]
 _FIRST_SEEN = "first_seen_at"
 _LAST_SEEN = "last_seen_at"
 
+# `proposed_date` arrives as a real datetime from a live fetch
+# (transactions_frame runs pd.to_datetime) but as a string when a frame is
+# round-tripped through CSV. Concatenating the two yields an object column of
+# mixed str/Timestamp, which pyarrow refuses with "Expected bytes, got a
+# 'Timestamp' object" -- so both sides are coerced before the union rather
+# than after, when the mixture is no longer separable.
+_DATETIME_COLUMNS = ("proposed_date",)
+
+
+def _normalize(df):
+    """Coerce the columns whose dtype depends on how the frame was loaded, so
+    a CSV-sourced side and a fetch-sourced side can be concatenated."""
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    for col in _DATETIME_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    return df
+
 
 def _atomic_write_parquet(df, path):
     """Same write-partial-then-os.replace shape as odds/store.py. A crash
@@ -88,7 +108,8 @@ def merge_transactions(prior_df, new_df, seen_at=None):
     if new_df is None or new_df.empty:
         return prior_df if prior_df is not None else pd.DataFrame()
 
-    new_df = new_df.copy()
+    prior_df = _normalize(prior_df)
+    new_df = _normalize(new_df)
     new_df[_LAST_SEEN] = seen_at
     if _FIRST_SEEN not in new_df.columns:
         new_df[_FIRST_SEEN] = seen_at
