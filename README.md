@@ -387,10 +387,11 @@ lineup or waiver decision, and `docs/automation.md` has the workflow/S3 runbook.
 | Monday | 08:11 daily | Daily player status refresh | Sleeper — `sleeper` |
 | Monday | 09:08 | Final scores, closed matchup results, weekend transactions | ESPN — `--refresh` on `matchups.csv` / `transactions.csv` |
 | Monday | 09:38 | Prior week's game results (`daysFrom=3`) | The Odds API — `results` job |
-| Tuesday | 09:08 | Waiver-processing results | ESPN — `--refresh` on `transactions.csv` |
+| Tuesday | 09:08 | Pending waiver claims ahead of tonight's processing run | ESPN — `--refresh` on `transactions.csv` |
 | Tuesday | 09:23 / 13:23 / 18:23 | Stat corrections begin landing | nflverse — `stats_player` feed, routine 3x/day pull |
 | Tuesday | 09:38 | Opening spreads/totals for the coming week | The Odds API — `slate` job |
 | Wednesday | 08:11 daily | Practice participation, day 1 of 3 | Sleeper — `sleeper` |
+| Wednesday | 09:08 | Waiver settlements from Tuesday night's processing run | ESPN — `--refresh` on `transactions.csv` |
 | Wednesday | 09:23 / 13:23 / 18:23 | Stat corrections continue landing | nflverse — routine 3x/day pull |
 | Wednesday | No scheduled job | Player-props market opens (nothing decision-relevant yet) | The Odds API — market open |
 | Thursday | 08:11 daily | Practice participation, day 2 of 3 | Sleeper — `sleeper` |

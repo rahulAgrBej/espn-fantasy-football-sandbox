@@ -281,8 +281,9 @@ FOOTER_NOTES = [
     "player carries no designation; those two are indistinguishable in that column.",
     "No drop candidates today. Dropping on one day of practice data discards a player before "
     "the signal that would justify it exists.",
-    "Whether this league's waiver deadline falls tonight is recorded in no artifact here -- "
-    "the deadline note above is an assumption, not a schedule.",
+    "This league's waiver deadline was last night (Documented -- league setting, per the league "
+    "manager), not tonight. This morning's ESPN pull captures transactions.csv in its settled "
+    "state, though this report does not itself render waiver rows -- see Tuesday's waiver report.",
 ]
 
 
@@ -316,8 +317,8 @@ def render(season, week, team_id, watch_rows, signals_df, avail_df, starters, mo
             f"as of this morning's snapshot."
         )
     lines.append(
-        "_Waiver-deadline note: whether this league processes claims tonight is recorded in no "
-        "artifact here. Treat any Wednesday-night deadline as an unconfirmed assumption._"
+        "_Waiver-deadline note: this league's deadline was last night (Tuesday into Wednesday), "
+        "not tonight -- this morning's ESPN pull is the first settled read of last night's run._"
     )
     lines.append("")
 

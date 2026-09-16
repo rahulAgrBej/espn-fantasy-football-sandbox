@@ -43,7 +43,7 @@ plus a margin.)*
 | Monday | 10:30 | `cron(30 10 ? * MON *)` | Monday night call | Sleeper 08:11, ESPN 09:08, nflverse 09:23 | 67 min |
 | Tuesday | 10:00 | `cron(0 10 ? * TUE *)` | Week in review | ESPN 09:08 | 52 min |
 | Tuesday | 11:00 | `cron(0 11 ? * TUE *)` | Waiver wire and opening market | ESPN 09:08, Odds `slate` 09:38 | 82 min |
-| Wednesday | 10:00 | `cron(0 10 ? * WED *)` | Availability watchlist | Sleeper 08:11, nflverse 09:23 | 37 min |
+| Wednesday | 10:00 | `cron(0 10 ? * WED *)` | Availability watchlist | Sleeper 08:11, ESPN 09:08, nflverse 09:23 | 37 min |
 | Thursday | 11:00 | `cron(0 11 ? * THU *)` | Usage and market | nflverse `--force` 09:53, Odds `props` 10:08 | 52 min |
 | Friday | 11:00 | `cron(0 11 ? * FRI *)` | Lineup lock | Sleeper 08:11, Odds `line_movement` 10:08 | 52 min |
 | Saturday | 10:00 | `cron(0 10 ? * SAT *)` | Contingency check | Sleeper 08:11, nflverse 09:23 | 37 min |
@@ -209,7 +209,14 @@ had captured. See the known-gaps entry for the bugs themselves.)*
 **What it shows.** Waiver settlements from the refreshed
 `transactions.csv` — `execution_type`, `is_pending`, and `bid_amount`
 per claim — alongside `teams.csv`'s `waiver_rank`, the free-agent pool,
-and `implied_team_total` for the coming week from the `slate` job.
+and `implied_team_total` for the coming week from the `slate` job. This
+league processes waivers Tuesday night into Wednesday *(Documented —
+league setting, per the league manager)*, roughly twelve hours after this
+report's 09:08 upstream ESPN pull, so the settlements shown here are the
+**prior** week's run — this week's claims still read `is_pending = True`
+at render time. That timing is exactly why the 11:00 slot exists: it lands
+about ten hours before tonight's deadline, which is precisely when
+"**Decisions due.** Submit or adjust waiver claims" below is actionable.
 *(Observed)* Our waiver rank rendered 4 of 12; seven per-slot add-candidate
 blocks (D/ST, K, QB, TE, RB, WR, RB/WR) rendered in that most-constrained-first
 order; 5 legal drops were identified; and the WR and RB/WR blocks repeated
@@ -271,10 +278,12 @@ column, so reading it as this week's depth is wrong. `report_status` is
 `null` both when the injuries feed is unavailable and when a player has
 no designation; those two cases are indistinguishable in that column.
 
-**Decisions due.** None binding, unless our league's waiver deadline is
-Wednesday night — which is not recorded in any artifact this pipeline
-collects, so the report must state the assumption rather than imply it.
-Today's output is a contingency list, not an action.
+**Decisions due.** None binding. This league's waiver deadline is Tuesday
+night, not Wednesday *(Documented — league setting, per the league
+manager)*, so this report is the first **post-settlement** read of the
+week rather than a pre-deadline one — this morning's 09:08 ESPN pull
+captures `transactions.csv` in its settled state, roughly an hour before
+this report renders. Today's output is a contingency list, not an action.
 
 **Swap and drop candidates.** Watchlist only. Starters whose `tier` is
 `OUT`, `HIGH_RISK`, or `COIN_FLIP`, ranked by projected points at risk,
@@ -507,9 +516,13 @@ key-to-function map, and was previously undocumented here.
   feed this pipeline touches. A second, later Monday slot was considered
   and deferred.
 - **Whether an unowned player can actually be added on a Monday is a
-  league waiver setting recorded in no artifact here.** The free-agent
-  half of Monday's alternatives may be unactionable, and the report must
-  state that as an assumption rather than imply it.
+  league waiver setting recorded in no artifact here.** Knowing that
+  waivers process Tuesday night into Wednesday does not resolve this: a
+  player dropped Sunday may still sit on waivers through Monday and into
+  Tuesday night's run, while one who already cleared an earlier claim is
+  addable. The free-agent half of Monday's alternatives may therefore be
+  unactionable, and the report must state that as an assumption rather
+  than imply it.
 - **Which slots ESPN leaves unlocked on a Monday** — specifically
   bye-week and already-played players — is platform behavior observed
   nowhere in this repo. Only players on the two Monday-night teams are
@@ -549,10 +562,18 @@ key-to-function map, and was previously undocumented here.
   itself lives in `espn_ff/report/pool.py`, built for Monday's
   alternatives section and now also the basis for Tuesday's waiver
   report's add candidates.
-- **Our league's waiver-processing night is recorded in no artifact.**
-  Tuesday's and Wednesday's claim-deadline guidance is therefore
-  league-setting dependent and unverified — it should be stated as an
-  assumption in the report, not presented as a schedule.
+- **This league's waiver-processing night (Tuesday into Wednesday) is now
+  documented in prose, but no artifact evidences it.** `waivers.py:43-45`
+  records that 214/214 exported transactions to date are
+  `DRAFT`/`ROSTER-LINEUP`/`FREEAGENT`/`TRADE_PROPOSAL` — zero `WAIVER`-type
+  rows have ever been observed on disk. Separately, which `scoring_period`
+  ESPN stamps on a Tuesday-night claim is still **Inferred**, not Observed:
+  the league week boundary (Tue 03:00 ET → Tue 03:00 ET) implies a
+  Tuesday-night claim falls in the *new* week's window, but that is
+  deduction, not measurement. The first `WAIVER`-type row, or a
+  `FREEAGENT` row observed flipping `is_pending` True → False between a
+  Tuesday and the following Wednesday pull, would be the first on-disk
+  confirmation of both.
 - **Gameday inactives are in no feed.** The last roughly 90 minutes
   before kickoff are invisible to this pipeline.
 - **No report is ever scored against what happened.** Nothing here

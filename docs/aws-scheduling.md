@@ -90,6 +90,7 @@ one of the two day fields.
 | `sleeper-daily` | `cron(11 8 * * ? *)` | 08:11 daily | — |
 | `espn-monday` | `cron(8 9 ? * MON *)` | Mon 09:08 | — |
 | `espn-tuesday` | `cron(8 9 ? * TUE *)` | Tue 09:08 | — |
+| `espn-wednesday` | `cron(8 9 ? * WED *)` | Wed 09:08 | — |
 | `espn-sunday-live` | `cron(8,38 13-23 ? * SUN *)` | Sun 13:08–23:38 | — |
 | `espn-monday-night` | `cron(8,38 0 ? * MON *)` | Mon 00:08, 00:38 | — |
 | `nflverse-routine` | `cron(23 9,13,18 * * ? *)` | 09:23 / 13:23 / 18:23 | `force=false` |
@@ -151,7 +152,13 @@ hour, with identical coverage — 24 fires from Sun 13:08 through Mon 00:38.
    dependency, since the week-in-review never reads nflverse. The second,
    `report-tuesday-waivers` at `:00`(11), additionally waits on odds `slate`
    `:38` — an 82-minute margin, the tightest in the report family and the
-   only one whose upstream feed is metered (see the next gap).
+   only one whose upstream feed is metered (see the next gap). Wednesday
+   carries the same shape as Monday: `espn-wednesday` `:08` and nflverse's
+   routine `:23` both feed `report-wednesday` `:00`(10) — the same ordering
+   argument applies, since `report.yml` reads a cache `espn.yml` owns and
+   so must go second. The binding margin stays nflverse's 37 minutes
+   (`:23` → `:00`(10)) rather than tightening to ESPN's own 52-minute gap,
+   since nflverse is the later of the two slots.
 4. **`odds` never auto-retries** — see below. `report-tuesday-waivers` is the
    first report that reads `odds`' output, which sharpens what that gap
    means downstream: a missed or budget-aborted `slate` doesn't just leave

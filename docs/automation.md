@@ -37,7 +37,7 @@ Times are ET and hold year-round: the schedules are pinned to
 | `sleeper.yml` | 08:11 daily | `sleeper`, `status` | no |
 | `nflverse.yml` | 09:23 / 13:23 / 18:23 daily | `nflverse`, `features` | no |
 | `nflverse.yml` | Thu 09:53 | `nflverse --force`, `features` | no |
-| `espn.yml` | Mon 09:08, Tue 09:08 | `pull --refresh`, `export --refresh` | no |
+| `espn.yml` | Mon 09:08, Tue 09:08, Wed 09:08 | `pull --refresh`, `export --refresh` | no |
 | `espn.yml` | Sun 13:08 – Mon 00:38, every 30 min | same | no |
 | `odds.yml` | five slots, see below | `odds <job>`, `projections` | **yes** |
 | `health.yml` | 07:04 / 19:04 daily, Sun 12:04 | `probe` | no |

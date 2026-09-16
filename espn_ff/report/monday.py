@@ -285,7 +285,11 @@ def render(
 FOOTER_NOTES = [
     "Official inactives drop roughly 90 minutes before kickoff, in no feed this pipeline touches.",
     "Whether an unowned player can be added on a Monday is a league waiver setting recorded "
-    "in no artifact here -- the free-agent half of tonight's alternatives may be unactionable.",
+    "in no artifact here. This league processes waivers Tuesday night into Wednesday (Documented "
+    "-- league setting, per the league manager), but that does not resolve this: a player dropped "
+    "Sunday may still be sitting on waivers through tonight, while one who already cleared an "
+    "earlier claim is addable now -- the free-agent half of tonight's alternatives may still be "
+    "unactionable for the former case.",
     "Which slots ESPN leaves unlocked on a Monday (bye-week and already-played players "
     "specifically) is platform behavior observed nowhere in this repo.",
 ]

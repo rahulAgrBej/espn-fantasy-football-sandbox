@@ -421,8 +421,8 @@ FOOTER_NOTES = [
     "Per-slot regret gaps are independent counterfactuals and do not add; see \"points left on the "
     "table\" for the one number that does.",
     "A 0.0 in points does not distinguish played-and-scored-zero from a bye from inactive.",
-    "This league's waiver-processing night is recorded in no artifact here, so the IR-eligibility "
-    "guidance above is stated as an assumption, not a confirmed rule.",
+    "This league processes waivers Tuesday night into Wednesday (Documented -- league setting, per "
+    "the league manager); the IR-eligibility guidance above is anchored to that rule.",
 ]
 
 

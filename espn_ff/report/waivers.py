@@ -38,8 +38,11 @@ _SETTLEMENT_TYPES = {"WAIVER", "FREEAGENT"}
 
 def settlements(transactions_df, week):
     """Claim/settlement rows in the {week - 1, week} window, each labelled
-    with its *own* scoring_period rather than assuming one -- which period
-    ESPN stamps on a Tuesday-processed claim is Inferred, never Observed,
+    with its *own* scoring_period rather than assuming one. This league
+    processes waivers Tuesday night into Wednesday (Documented -- league
+    setting, per the league manager), so a claim resolved that night falls
+    in the *new* week's Tue 03:00 ET -> Tue 03:00 ET boundary -- but which
+    scoring_period ESPN actually stamps on it is Inferred, never Observed,
     since no WAIVER-type row has ever existed on disk (Observed: 214/214
     exported transactions are DRAFT/ROSTER-LINEUP/FREEAGENT/TRADE_PROPOSAL,
     zero WAIVER). DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL rows are excluded from
@@ -284,8 +287,8 @@ def pair_drops(blocks, drop_list):
 
 
 FOOTER_NOTES = [
-    "This league's waiver-processing night is recorded in no artifact here, so the claim-deadline "
-    "guidance above is an assumption, not a schedule.",
+    "This league processes waivers Tuesday night into Wednesday (Documented -- league setting, per "
+    "the league manager). Claims submitted before tonight's run appear below as pending, not settled.",
     "`percent_owned` has no final state -- it moves continuously vendor-side (Inferred) -- so it is "
     "a rough ownership signal, not a settled one.",
     "`trending_add` is display-only context and never entered any score or sort here.",
@@ -338,8 +341,8 @@ def render(
             "beyond that count, not simultaneously-available moves."
         )
     lines.append(
-        "_Claim-deadline guidance: this league's waiver-processing night is recorded in no artifact "
-        "here, so treat any processing-night assumption as unconfirmed._"
+        "_Claim-deadline guidance: this league processes waivers tonight (Tuesday into Wednesday) -- "
+        "submit or adjust claims before then; results land in tomorrow morning's ESPN pull._"
     )
     lines.append("")
 
