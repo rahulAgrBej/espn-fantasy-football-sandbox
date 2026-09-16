@@ -33,8 +33,20 @@ name: summary
 # data/ state, needs a credential ff-run does not carry, and has to
 # interleave three S3 reads before the Python run. Writing the steps out
 # keeps ff-run unchanged for its five existing callers.
+# `force` exists because a summary does not self-correct: cmd_summarize
+# skips any report that already has a summary object, so a summary generated
+# from a report that was later re-rendered stays wrong forever. Observed
+# 2026-09-16 -- the Wednesday summary was written from a render that pre-dated
+# that morning's ESPN pull and survived the corrected re-render. It is a
+# dispatch-only input: the workflow_run path must never force, or every
+# report.yml completion would re-bill every existing summary.
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-summarize reports that already have a summary"
+        type: boolean
+        default: false
   workflow_run:
     workflows: [report]
     types: [completed]
@@ -122,7 +134,14 @@ jobs:
             echo "::add-mask::$GEMINI_API_KEY"
           fi
           set +e
-          .venv/bin/python -m espn_ff summarize
+          # inputs.force is empty on the workflow_run path, so this is a
+          # plain `summarize` there -- never a forced re-bill.
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "::notice::forcing re-summarization of reports that already have a summary"
+            .venv/bin/python -m espn_ff summarize --force
+          else
+            .venv/bin/python -m espn_ff summarize
+          fi
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
