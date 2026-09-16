@@ -174,13 +174,7 @@ def generate_news(client, prompts, skipped, report, generated_at, roster_export)
 
     for group, system, user, group_df in prompts:
         prompt_parts.append(system + "\n" + user)
-        response = client.generate(
-            system,
-            user,
-            max_output_tokens=NEWS_MAX_OUTPUT_TOKENS,
-            tools=GOOGLE_SEARCH,
-            response_format=news.response_format(),
-        )
+        response = _grounded_call(client, system, user, group, report)
 
         group_players, warnings = news.parse_players(response["text"], group_df, group)
         for warning in warnings:
@@ -188,11 +182,20 @@ def generate_news(client, prompts, skipped, report, generated_at, roster_export)
         players.extend(group_players)
 
         grounding = response.get("grounding")
-        if grounding is None:
+        grounded = grounding is not None
+        if not grounded:
             # The tool was requested and the response carries no grounding
             # metadata, which means no search ran -- so whatever the model
             # returned came from recall, in direct violation of rule 1.
-            # Loud, because the output still looks like news.
+            # Loud, because the output still looks exactly like news.
+            #
+            # Observed 2026-09-16 on a real bench call, which returned
+            # correct-looking items with no citation behind them. Stored
+            # anyway rather than discarded -- the items may well be true and
+            # throwing them away loses real information -- but the envelope
+            # has to *say so*, which is what `grounded` below is for. A
+            # warning that only ever reached a run log would be invisible to
+            # anyone reading the artifact later.
             print(
                 f"  [warning] {report.stem}: the {group} call returned no grounding metadata "
                 "-- the search tool did not fire, so its claims are ungrounded"
@@ -205,6 +208,7 @@ def generate_news(client, prompts, skipped, report, generated_at, roster_export)
 
         groups[group] = {
             "players": len(group_df),
+            "grounded": grounded,
             "search_queries": grounding["search_queries"],
             "sources": grounding["sources"],
             "search_entry_point": grounding["search_entry_point"],
@@ -216,7 +220,10 @@ def generate_news(client, prompts, skipped, report, generated_at, roster_export)
 
     return {
         "model": client.model,
-        "grounded": True,
+        # Measured, never asserted. False when ANY group that ran came back
+        # without grounding metadata, so a reader can tell at the top level
+        # that part of this block is unsourced without walking the groups.
+        "grounded": all(g["grounded"] for g in groups.values() if "skipped" not in g),
         "generated_at": generated_at,
         "roster_week": report.week,
         "roster_export": roster_export,
@@ -226,6 +233,44 @@ def generate_news(client, prompts, skipped, report, generated_at, roster_export)
         "groups": groups,
         "usage": totals,
     }
+
+
+def _grounded_call(client, system, user, group, report):
+    """One group's grounded call, retried once if the search never fired.
+
+    **Observed 2026-09-16: roughly one grounded call in four returns no
+    `groundingMetadata` at all.** The model answers anyway, fluently and
+    plausibly, from recall -- which is precisely what `news.NEWS_HOUSE_RULES`
+    rule 1 exists to forbid, and which nothing downstream can distinguish
+    from a real finding.
+
+    It is nondeterminism, not a request problem: the same prompt grounded 3
+    times out of 3 in one controlled run and 2 of 3 in another, and adding
+    or removing the response schema did not change it. So a single retry is
+    the right lever -- it takes the miss rate from ~1 in 4 to ~1 in 16 for
+    the cost of one extra call on the minority of attempts that need it.
+
+    Deliberately **not** a `client.generate` retry: that layer retries
+    transport failures, and this is a successful 200 whose content is
+    unsourced. Folding the two together would make an ungrounded answer look
+    like an HTTP error in the logs.
+    """
+    for attempt in range(2):
+        response = client.generate(
+            system,
+            user,
+            max_output_tokens=NEWS_MAX_OUTPUT_TOKENS,
+            tools=GOOGLE_SEARCH,
+            response_format=news.response_format(),
+        )
+        if response.get("grounding") is not None:
+            return response
+        if attempt == 0:
+            print(
+                f"  [warning] {report.stem}: the {group} call ran no search -- retrying once "
+                "rather than storing an answer from recall"
+            )
+    return response
 
 
 def resolve_source(reports_dir, fallback_dir, index):

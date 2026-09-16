@@ -750,3 +750,102 @@ def test_no_news_does_not_rewrite_an_envelope_it_has_nothing_to_add_to(tmp_path)
 
     assert result["summarized"] == []
     assert client.calls == []
+
+
+def test_grounded_is_measured_not_asserted(tmp_path, monkeypatch):
+    """Observed 2026-09-16: a real bench call returned correct-looking items
+    with no grounding metadata behind them. The envelope claimed
+    `grounded: true` anyway, because the field was hardcoded -- so the one
+    thing a reader would check to tell sourced news from recall was the one
+    thing that could not be wrong."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    # No IR, so `ir` is skipped and the run makes exactly two calls -- which
+    # is what lets the last assertion be about a skipped group rather than a
+    # third ungrounded one.
+    no_ir = roster_frame()[lambda df: df["lineup_slot"] != "IR"]
+    monkeypatch.setattr(
+        summarize, "latest_export",
+        lambda name: no_ir if name == "weekly-rosters" else pd.DataFrame(),
+    )
+
+    class PartlyUngrounded(StubClient):
+        """Grounds the first call and not the second, the shape actually seen."""
+        def _news(self, user):
+            response = super()._news(user)
+            if len(self.grounded_calls) > 1:
+                response["grounding"] = None
+            return response
+
+    summarize.run(**paths, client=PartlyUngrounded())
+    news = envelope_at(paths)["news"]
+
+    assert news["grounded"] is False, "one ungrounded group must not read as fully grounded"
+    assert news["groups"]["starters"]["grounded"] is True
+    assert news["groups"]["bench"]["grounded"] is False
+    assert news["groups"]["bench"]["sources"] == []
+    # A skipped group has no opinion either way and must not be mistaken for
+    # an ungrounded one when the top-level flag is computed.
+    assert "grounded" not in news["groups"]["ir"]
+    assert "skipped" in news["groups"]["ir"]
+
+
+def test_a_fully_grounded_run_says_so(tmp_path):
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    summarize.run(**paths, client=StubClient())
+    news = envelope_at(paths)["news"]
+
+    assert news["grounded"] is True
+    assert all(g["grounded"] for g in news["groups"].values() if "skipped" not in g)
+
+
+def test_a_call_that_ran_no_search_is_retried_once(tmp_path, capsys):
+    """Observed 2026-09-16: ~1 grounded call in 4 returns no groundingMetadata
+    and answers from recall instead. It is nondeterminism, not a bad request,
+    so one retry takes the miss rate from ~1 in 4 to ~1 in 16."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    class UngroundedOnce(StubClient):
+        """Every group's first attempt runs no search; the retry grounds."""
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.attempts = {}
+        def _news(self, user):
+            response = super()._news(user)
+            seen = self.attempts.get(user, 0)
+            self.attempts[user] = seen + 1
+            if seen == 0:
+                response["grounding"] = None
+            return response
+
+    client = UngroundedOnce()
+    summarize.run(**paths, client=client)
+    news = envelope_at(paths)["news"]
+
+    assert len(client.grounded_calls) == 6, "3 groups x (1 miss + 1 retry)"
+    assert news["grounded"] is True, "the retry grounded, so the envelope should say so"
+    assert "retrying once" in capsys.readouterr().out
+
+
+def test_a_persistently_ungrounded_call_is_stored_and_flagged_not_retried_forever(tmp_path):
+    """Two attempts, then take what is there. The items may well be true and
+    discarding them loses real information -- but the envelope has to say
+    they carry no sources."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    class NeverGrounds(StubClient):
+        def _news(self, user):
+            return {**super()._news(user), "grounding": None}
+
+    client = NeverGrounds()
+    summarize.run(**paths, client=client)
+    news = envelope_at(paths)["news"]
+
+    assert len(client.grounded_calls) == 6, "must not retry more than once per group"
+    assert news["grounded"] is False
+    assert news["search_query_count"] == 0
+    assert len(news["players"]) == 3, "the items are still stored, just unsourced"

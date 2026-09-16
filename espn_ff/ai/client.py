@@ -85,11 +85,26 @@ MAX_OUTPUT_TOKENS = 4000
 GOOGLE_SEARCH = [{"google_search": {}}]
 
 # A grounded call retrieves search results INTO the prompt and reasons over
-# them, so it spends far more thinking than a summary does. Inferred, not
-# Observed -- the same position MAX_OUTPUT_TOKENS was in before it failed in
-# production at 700. The finishReason != STOP refusal below means a bad
-# guess costs a news block rather than storing a truncated one.
-NEWS_MAX_OUTPUT_TOKENS = 8000
+# them, so it spends far more thinking than a summary does.
+#
+# **Observed 2026-09-16**, two real calls against our week-2 roster:
+#
+#   starters (9 players)  thinking 4,161 + answer 1,147 = 5,308
+#   bench    (6 players)  thinking 6,875 + answer   447 = 7,322
+#
+# Note the inversion: the *smaller* group spent 65% more thinking. The bench
+# brief asks "has anything changed for each of these", which is a harder
+# judgment than the starters' "report the latest item", and the answer it
+# produces is shorter. So thinking here does not track player count and
+# cannot be sized from it.
+#
+# 8000 was the first guess and left the bench call at 92% of budget -- one
+# noisier week from refusing the whole block, since a group failure fails
+# the report's news outright. 16000 is ~2.2x the worst Observed total, the
+# same "2x observed" rule MAX_OUTPUT_TOKENS uses. Raising a cap bills
+# nothing on its own: only tokens actually spent are charged, so this is
+# near-free insurance against a MAX_TOKENS refusal.
+NEWS_MAX_OUTPUT_TOKENS = 16000
 
 # Deterministic-leaning on purpose: two runs over the same report should not
 # disagree about what the week's decision is.

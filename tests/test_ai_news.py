@@ -306,7 +306,11 @@ def test_an_unreadable_answer_raises_rather_than_storing_a_partial_block(text):
 def test_the_response_schema_requires_an_id_and_a_found_flag_per_player():
     schema = news.response_format()["text"]
 
-    assert schema["mimeType"] == "application/json"
+    # An ENUM value, not the MIME string. The vendor's own example shows
+    # "application/json" and the API rejects it with a 400 naming
+    # TextResponseFormat.MimeType -- Observed 2026-09-16. Pinned here
+    # because the wrong value is the plausible-looking one.
+    assert schema["mimeType"] == "APPLICATION_JSON"
     item = schema["schema"]["properties"]["players"]["items"]
     assert {"player_id", "found"} <= set(item["required"])
     assert item["properties"]["player_id"]["type"] == "integer"

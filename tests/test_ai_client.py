@@ -334,17 +334,20 @@ def test_the_summary_request_carries_no_tools_and_no_response_format(client):
 
 
 def test_a_grounded_request_carries_the_search_tool_and_the_schema(client):
+    """Built from the real `news.response_format()` rather than a
+    hand-written literal. A fake session accepts any value, so hard-coding
+    one here would let this test keep passing while teaching the shape the
+    live API rejects with a 400 -- the `mimeType` enum trap."""
+    from espn_ff.ai import news
+
     session = _with(client, FakeResponse(payload=grounded_payload()))
 
-    client.generate(
-        "system", "user",
-        tools=[{"google_search": {}}],
-        response_format={"text": {"mimeType": "application/json", "schema": {"type": "object"}}},
-    )
+    client.generate("system", "user", tools=[{"google_search": {}}],
+                    response_format=news.response_format())
 
     body = session.calls[0]["body"]
     assert body["tools"] == [{"google_search": {}}]
-    assert body["generationConfig"]["responseFormat"]["text"]["mimeType"] == "application/json"
+    assert body["generationConfig"]["responseFormat"]["text"]["mimeType"] == "APPLICATION_JSON"
 
 
 def test_grounding_metadata_is_extracted_from_the_response(client):

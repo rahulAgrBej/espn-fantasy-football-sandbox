@@ -48,11 +48,21 @@ single most recent item that a manager would want to know before kickoff --
 an injury designation, a practice report, a usage or depth-chart change, or
 a matchup note. Prefer the most recent; do not stack three items on one
 player while another gets none.""",
+    # The "nothing changed is a fine answer" permission below is load-bearing
+    # and was also, in its first form, the reason this call skipped searching
+    # more often than the others: told that silence was acceptable, the model
+    # would conclude nothing had changed without looking. Hence the explicit
+    # search-first instruction -- `found: false` has to be the *result* of a
+    # search, not a substitute for one.
     "bench": """\
-These players are on the bench. One line each, and only where something has
-actually changed -- an injury, a role change, a promotion, a snap-share
-move. If nothing has changed for a player, that is a legitimate and useful
-answer: set `found` to false and say the search turned up nothing new.""",
+These players are on the bench. Search for each of them first. Then give one
+line each, and only where something has actually changed -- an injury, a
+role change, a promotion, a snap-share move.
+
+If the search turns up nothing new for a player, that is a legitimate and
+useful answer: set `found` to false and say so. But reach it by searching,
+never by assuming a bench player is quiet. "Nothing changed" is a finding;
+"I did not look" is not, and the two are indistinguishable downstream.""",
     "ir": """\
 These players are on injured reserve. Report only their current designation
 and return timeline -- whether they have been activated, opened a practice
@@ -134,6 +144,18 @@ RESPONSE_SCHEMA = {
 }
 
 
+# `mimeType` is a protobuf **enum** (TextResponseFormat.MimeType), not the
+# MIME string the vendor's own example shows. Sending "application/json"
+# there is a 400, Observed 2026-09-16:
+#
+#   Invalid value at 'generation_config.response_format.text.mime_type'
+#   (...v1beta.TextResponseFormat.MimeType), "application/json"
+#
+# Loudly wrong rather than silently ignored, which is the only reason this
+# was cheap to find. `APPLICATION_JSON` is the accepted value.
+JSON_MIME_TYPE = "APPLICATION_JSON"
+
+
 def response_format():
     """The `generationConfig.responseFormat` value for a news call.
 
@@ -143,7 +165,7 @@ def response_format():
     series loses the guarantee with no error. `parse_players` therefore
     validates rather than assumes, and its failure path stays tested.
     """
-    return {"text": {"mimeType": "application/json", "schema": RESPONSE_SCHEMA}}
+    return {"text": {"mimeType": JSON_MIME_TYPE, "schema": RESPONSE_SCHEMA}}
 
 
 class NewsFormatError(ValueError):

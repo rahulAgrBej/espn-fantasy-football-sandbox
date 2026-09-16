@@ -49,9 +49,10 @@ or a bare 32-hex-character key.
 metered against a fixed quota — a summary costs roughly two cents — but its
 **Google Search grounding is**: 5,000 free search queries a month, then $14
 per 1,000, billed per query the model chooses to run rather than per
-request. Projected use is ~600–1,800 a month, so there is still no ledger
-and no guard, but there is now a quota to watch; every envelope records the
-searches it spent. See `docs/ai-summaries.md`. The key travels as an
+request. Measured use is ~10 searches a report, ~340 a month, about 7% of
+the free allowance — so there is still no ledger and no guard, but there is
+now a quota to watch; every envelope records the searches it spent. See
+`docs/ai-summaries.md`. The key travels as an
 `x-goog-api-key` request header and never as a URL query parameter, so there
 is no URL or exception for it to leak through, and the same pre-commit scan
 applies.

@@ -84,27 +84,30 @@ and is **false** of the grounded ones:
 
 The unit is the trap. The vendor bills *"each search query that the model
 decides to execute"* — one call that searches nine players is nine billable
-uses, not one. So the meter is driven by a multiplier we do not control,
-and the projection below is a range rather than a figure:
+uses, not one. So the meter is driven by a multiplier the model picks.
 
-| Queries per player | Per report (~15–17 players) | Per month (~34 reports) | Share of the free 5,000 |
-|---|---|---|---|
-| 1 | ~17 | ~590 | ~12% |
-| 2 | ~34 | ~1,180 | ~24% |
-| 3 | ~51 | ~1,770 | ~35% |
+**Observed 2026-09-16**, five real runs against the 15-player week-2 roster
+(9 starters, 6 bench, IR empty and skipped):
 
-*(Inferred. Every row is arithmetic on an assumed multiplier, not a
-measurement.)*
+| | Searches |
+|---|---|
+| Per report | 7, 10, 11 — call it **~10**, about 0.67 per player |
+| Per month, at ~34 reports | **~340** |
+| Share of the free 5,000 | **~7%** |
 
-Comfortably inside the free allowance in every plausible case. Three
-responses, and deliberately not a fourth:
+Comfortably inside the allowance, and *below* the one-search-per-player
+floor that was assumed before there were numbers. The model reuses results
+across players on the same NFL team and skips players it judges quiet,
+which is what rule 7 asks for. Worth re-checking when the roster changes
+shape — a week with three players on IR adds a third call.
 
-1. **It is measured from the first run.** Every grounded response carries
+Three responses, and deliberately not a fourth:
+
+1. **It is measured every run.** Every grounded response carries
    `groundingMetadata.webSearchQueries`, so every envelope stores
-   `news.search_query_count` and the per-group queries, and every run
-   prints the count per report. One week of real values replaces the table
-   above with an Observed one. Until then it stays Inferred and is labelled
-   as such.
+   `news.search_query_count` and the per-group queries, and every run prints
+   the count per report. That is what turned this table from Inferred into
+   Observed, and it is what will catch a regression.
 2. **The prompt asks for restraint.** `NEWS_HOUSE_RULES` rule 7 asks for one
    search per player and for reusing a result across players on the same NFL
    team. That is a request to a model, not a cap, and it is written down
@@ -112,11 +115,14 @@ responses, and deliberately not a fourth:
 3. **No credit ledger.** `docs/odds-budget.md`'s ledger exists because The
    Odds API's 500-credit period is small enough that one careless run
    exhausts it, and because a spent credit does not come back. 5,000/month
-   against a projected ~600–1,800 is a different situation, and `--limit`
-   already bounds a runaway backfill to three grounded calls per report.
-   Building a second ledger for this would be over-engineering. Revisiting
-   the projection against real numbers after the first week is the
-   deliverable instead — see Known gaps.
+   against an Observed ~340 is a different situation by more than an order
+   of magnitude, and `--limit` already bounds a runaway backfill. Building a
+   second ledger for this would be over-engineering.
+
+Token spend is the smaller half but not nothing: a grounded call spends far
+more **thinking** than a summary does, and unlike the summary it does not
+scale with the player count — see `client.NEWS_MAX_OUTPUT_TOKENS` for the
+Observed figures and why the budget is sized the way it is.
 
 ## The command takes no input, and that is the design
 
@@ -425,6 +431,67 @@ the guarantee with no error — so `parse_players` still validates, still
 tolerates a stray fenced block, and still raises `NewsFormatError` rather
 than storing something partial. That path stays tested.
 
+One vendor detail that costs an afternoon if you trust the documentation:
+`responseFormat.text.mimeType` is a protobuf **enum**, not a MIME string.
+Google's own example shows `"application/json"`; the API rejects it.
+
+```
+Invalid value at 'generation_config.response_format.text.mime_type'
+(...v1beta.TextResponseFormat.MimeType), "application/json"
+```
+
+The accepted value is `APPLICATION_JSON` *(Observed 2026-09-16)*. It fails
+**loudly** with a 400, which is the only reason this was cheap to find — a
+silently-ignored schema would have produced plausible prose with no
+guarantee behind it and nothing to notice. `news.JSON_MIME_TYPE` holds the
+value and a test pins it, because the wrong one is the plausible-looking
+one. The older `responseMimeType` + `responseSchema` pair also works on this
+endpoint, but `responseFormat` is the surface documented to compose with
+tools, so that is the one used.
+
+### The search does not always fire, and that is the real risk
+
+**Observed 2026-09-16: roughly one grounded call in four returns no
+`groundingMetadata` at all.** The model answers anyway — fluently,
+plausibly, and in the right schema — from recall. That is exactly what rule
+1 exists to forbid, and it is invisible from the answer itself.
+
+It is nondeterminism rather than a request problem. The same prompt grounded
+3 times out of 3 in one controlled run and 2 of 3 in another, and adding or
+removing the response schema changed nothing (3/3 with it, 2/3 without) — so
+the Preview combination is not the cause.
+
+Three things handle it, in order:
+
+1. **The prompt asks for the search first.** The misses were not evenly
+   distributed: the **bench** call skipped searching far more often than the
+   starters call, and the cause was in its own brief. Telling the model that
+   "nothing changed" is a legitimate answer — which it is, and which the
+   brief still says — also read as permission to reach that answer without
+   looking. Adding an explicit *search each of them first*, and naming the
+   distinction (`"Nothing changed" is a finding; "I did not look" is not,
+   and the two are indistinguishable downstream`), took that call from
+   roughly half grounded to **4 of 4** *(Observed 2026-09-16)*. Worth
+   remembering when writing the next group brief: any licence to report
+   nothing needs pairing with an instruction to look first.
+2. **One retry.** `summarize._grounded_call` re-issues a call that came back
+   with no grounding, which takes the miss rate from ~1 in 4 to ~1 in 16 for
+   the cost of one extra call on the minority of attempts that need it.
+   Deliberately not folded into `client.generate`'s retry loop: that layer
+   retries *transport* failures, and this is a successful 200 whose content
+   is merely unsourced. Merging them would make an ungrounded answer look
+   like an HTTP error in the logs.
+3. **`news.grounded`, measured and never asserted.** If the retry also comes
+   back unsourced the items are still stored — they may well be true, and
+   discarding them loses real information — but the envelope says so:
+   `groups.<name>.grounded` is false for that call, its `sources` is empty,
+   and the top-level `news.grounded` is false if *any* group that ran was
+   ungrounded. A skipped group has no opinion and does not drag it down.
+
+That field was hardcoded `true` in the first version of this layer, which
+made the single thing a reader would check to tell sourced news from recall
+the one thing that could not be wrong. A live run caught it.
+
 ## The envelope
 
 One object per summarized report, at
@@ -466,7 +533,7 @@ moved.
   // --- the news layer, new in v2. null when it failed; see news_error ---
   "news": {
     "model": "gemini-3.8-flash",
-    "grounded": true,
+    "grounded": true,          // false if ANY group that ran came back unsourced
     "generated_at": "2026-09-16T10:22:04-04:00",
     "roster_week": 2,
     "roster_export": "15-09-2026-weekly-rosters.csv",
@@ -486,11 +553,11 @@ moved.
         "note": "the grounded search returned nothing for this player" }
     ],
     "groups": {
-      "starters": { "players": 9, "search_queries": ["..."],
+      "starters": { "players": 9, "grounded": true, "search_queries": ["..."],
                     "sources": [{ "uri": "...", "title": "..." }],
                     "search_entry_point": "<html>",
                     "usage": { "...": "the five USAGE_FIELDS" } },
-      "bench":    { "players": 6, "search_queries": ["..."], "sources": ["..."],
+      "bench":    { "players": 6, "grounded": true, "search_queries": ["..."], "sources": ["..."],
                     "search_entry_point": "<html>", "usage": { "...": "..." } },
       "ir":       { "skipped": "no players in the ir group for week 2" }
     },
@@ -779,11 +846,19 @@ populated `news_error`, and exit 0.
 
 ## Known gaps
 
-- **The monthly grounded-query projection is Inferred, and nothing enforces
-  the allowance.** The multiplier is chosen by the model, `NEWS_HOUSE_RULES`
-  rule 7 is a request rather than a cap, and there is no ledger. Revisit the
-  table in "Two meters" against real `search_query_count` values after one
-  week of runs — that revisit is the deliverable this layer shipped owing.
+- **Nothing enforces the search allowance.** The Observed ~340/month sits at
+  ~7% of the free 5,000, but the multiplier is the model's to choose,
+  `NEWS_HOUSE_RULES` rule 7 is a request rather than a cap, and there is no
+  ledger. The figures come from one roster in one week; a week with a fuller
+  IR adds a third call, and a model update could change the search
+  appetite entirely. `search_query_count` in every envelope is the thing to
+  watch.
+- **A grounded call can still run no search at all** and answer from recall.
+  The bench brief's search-first wording and the single retry between them
+  make this rare, and `news.grounded` records what actually happened — but
+  nothing *prevents* it, and nothing re-runs a block that ends up unsourced.
+  An ungrounded block is stored, flagged, and never revisited. Whether the
+  remaining rate is low enough to ignore is unmeasured over a full week.
 - **Tier 1 rate limits are third-party figures, not Google-published ones.**
   ~300 RPM / 1M TPM / 1,000 RPD against a peak of ~16 requests per run is
   ample headroom on every row, but Google's own docs publish no table and
@@ -811,14 +886,19 @@ populated `news_error`, and exit 0.
 - **A permanently failing news call retries on every trigger**, bounded only
   by `--limit`, which counts a cheap news backfill the same as a full
   summary.
-- **`NEWS_MAX_OUTPUT_TOKENS = 8000` is Inferred**, not Observed — precisely
-  the position `MAX_OUTPUT_TOKENS` was in before it failed in production at
-  700. A grounded call spends more thinking than a summary does; how much
-  more is unmeasured.
+- **`NEWS_MAX_OUTPUT_TOKENS` is sized from four Observed calls, not from a
+  model.** Thinking does not track player count — the 6-player bench call
+  spent 65% more of it than the 9-player starters call — so there is no rule
+  to size it by, only headroom over what has been seen. 8000 was the first
+  guess and left the worst Observed call at 92% of budget; 16000 is ~2.2x
+  that. A `MAX_TOKENS` refusal costs the whole report's news, since a group
+  failure is all-or-nothing.
 - **Structured-output-with-tools is a Preview feature of the Gemini 3
   series.** It can change or be withdrawn, and a model swap outside that
   series loses the schema guarantee with no error. `NewsFormatError` is the
-  fallback and must stay tested.
+  fallback and must stay tested. The `responseFormat` field shape is also
+  documented wrongly by the vendor (see the `mimeType` enum above), so treat
+  their examples as a starting point and verify against a live 400.
 - **A dropped `workflow_run` event is invisible until the backstop fires.**
   That is a 20-minute window in which nothing knows the summary is late,
   which is the same class of blindness that moved the clock to AWS in the
