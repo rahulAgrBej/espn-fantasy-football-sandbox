@@ -16,17 +16,18 @@ collection run takes, which is minutes. The 37–82 minutes below are ample,
 and the reason the times still look offset rather than aligned is that
 they are anchored to the collection slots.
 
-**Monday, Tuesday's week-in-review, and Tuesday's waiver wire are
-implemented; the rest of the week is still a specification.**
+**Monday, Tuesday's week-in-review, Tuesday's waiver wire, and Wednesday
+are implemented; the rest of the week is still a specification.**
 `espn_ff/report/` is the report engine. `python -m espn_ff report --day
 monday` renders the Monday-night call from data already on disk
 *(Observed)*, `python -m espn_ff report --day tuesday` renders the
-week-in-review, and `python -m espn_ff report --day tuesday-waivers`
-renders the waiver wire and opening market. `espn_ff/cli.py`'s `REPORTS`
-dict has no `wednesday`, `thursday`, etc. entries yet -- calling `report
+week-in-review, `python -m espn_ff report --day tuesday-waivers` renders
+the waiver wire and opening market, and `python -m espn_ff report --day
+wednesday` renders the availability watchlist. `espn_ff/cli.py`'s
+`REPORTS` dict has no `thursday`, etc. entries yet -- calling `report
 --day` with any other value exits with a clear "not implemented" rather
 than an empty file. This document is still the specification for the
-remaining five reports, not a description of them, which is why no claim
+remaining four reports, not a description of them, which is why no claim
 in those sections is tagged **Observed**.
 
 ## Overview
@@ -248,7 +249,15 @@ team total does not move a candidate down the list on its own.
 `tier`, `practice_participation`, and `practice_trajectory` — which
 reads `Wed / — / —` today by construction — plus
 `depth_chart_improved` and `depth_chart_promoted` shown alongside
-`depth_chart_days_used`, and nflverse's `report_status`.
+`depth_chart_days_used`, and nflverse's `report_status`. Two behaviors
+differ from the spec above as originally written, both deliberate: the
+watchlist table is followed by a second table showing ESPN's
+`injury_status`, Sleeper's `tier`, and nflverse's `report_status` for the
+same players unresolved, side by side, so a disagreement between the
+three feeds is visible rather than hidden behind the resolved `tier`
+column; and `pos_rank` is omitted entirely rather than shown with a
+caveat, since `docs/data-sources.md` flags its source as not week-aligned
+and no caveat makes an unusable number usable.
 
 **What to look out for.** A single Wednesday `DNP` is one-third of a
 trajectory, not a call, and `tier` is derived from the current snapshot
@@ -392,7 +401,7 @@ difference between a limitation and a silent error.
 ## How these will run
 
 `docs/automation.md` and `docs/aws-scheduling.md` own the general
-mechanics; three points specific to reports are worth stating here.
+mechanics; four points specific to reports are worth stating here.
 
 **Monday is dispatched.** `infra/scheduler.yaml`'s `report-monday` schedule
 fires `.github/workflows/report.yml` at Mon 10:30 ET, 67 minutes after
@@ -413,7 +422,11 @@ a brand-new workflow family. Both Tuesday runs also share
 `report.yml`'s `report` concurrency group with `cancel-in-progress:
 false`, so a long-running 10:00 job queues the 11:00 dispatch behind it
 rather than racing it to `git push` — the 11:00 checkout is guaranteed to
-already contain the 10:00 commit.
+already contain the 10:00 commit. **Wednesday is dispatched.**
+`infra/scheduler.yaml`'s `report-wednesday` fires `report.yml` at Wed
+10:00 ET, 37 minutes after nflverse's routine pull — the tightest report
+margin of the week. It shares the `ReportScheduleState` flag and
+`report.yml`'s `report` concurrency group with the other three.
 
 **Reports read state and own none of it, except the reports themselves.**
 `report.yml` restores every state subtree it needs and pushes none of
@@ -469,10 +482,18 @@ key-to-function map, and was previously undocumented here.
   filed under week 2, visible in the body's `**Covers**`/`**Week 1**`
   lines now, still not in the path.
 - **Monday, Tuesday's week-in-review, and Tuesday's waiver wire are the
-  only reports that have been Observed running.** The other five report
-  slots are still intent, not description — every time, threshold, and
-  behavior in those sections is a specification until something has run
-  a real NFL week.
+  only reports that have been Observed running.** Wednesday is built but
+  not yet Observed — `report --day wednesday` exists and its tests pass,
+  but no scheduled or dispatched run has produced a real artifact from it.
+  The other four report slots are still intent, not description — every
+  time, threshold, and behavior in those sections is a specification
+  until something has run a real NFL week.
+- **`practice_trajectory` reads `— / — / —` for every row on Wednesday's
+  first run.** This is the standing gap noted throughout
+  `docs/data-sources.md`: the daily slim-snapshot store has not yet
+  accumulated three days of history, so the trajectory column Wednesday's
+  watchlist is built around is empty by construction on day one, not
+  because anything failed.
 - **`freshness()` never validates a `data/out` export's own content**, only
   each feed's last-run sidecar (`last_run.json` / `manifest.json` /
   `.meta.json`). If the morning's ESPN export silently fails to produce a

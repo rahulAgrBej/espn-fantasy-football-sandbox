@@ -44,6 +44,7 @@ Times are ET and hold year-round: the schedules are pinned to
 | `report.yml` | Mon 10:30 | `report --day monday` | no |
 | `report.yml` | Tue 10:00 | `report --day tuesday` | no |
 | `report.yml` | Tue 11:00 | `report --day tuesday-waivers` | no |
+| `report.yml` | Wed 10:00 | `report --day wednesday` | no |
 | `tests.yml` | on push / PR (GitHub's own trigger) | `pytest` | no |
 
 `tests.yml` is the only workflow GitHub still triggers by itself; it runs on

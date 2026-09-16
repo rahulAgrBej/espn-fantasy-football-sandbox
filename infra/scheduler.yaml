@@ -899,6 +899,36 @@ Resources:
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn
 
+  # 37 minutes after nflverse-routine's 09:23 slot and 109 after sleeper's
+  # 08:11 -- both feeds this report reads, and nflverse's is the tighter
+  # margin. It is the tightest report margin of the week; it is acceptable
+  # because both feeds auto-retry (docs/aws-scheduling.md) and because a
+  # late nflverse leaves `tier` reading "insufficient data" at exit 0 rather
+  # than failing the run. Preserve the gap if either side is ever retimed.
+  ReportWednesdaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: report-wednesday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref ReportScheduleState
+      ScheduleExpression: cron(0 10 ? * WED *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Wed 10:00 ET -- availability watchlist
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"day":"wednesday"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.report
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
 # ---------------------------------------------------------------------------
 
 Outputs:

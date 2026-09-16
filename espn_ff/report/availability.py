@@ -58,7 +58,11 @@ def _xwalk():
     return pd.read_csv(config.NFLVERSE_XWALK, dtype={"gsis_id": str})
 
 
-def _sleeper_by_espn_id():
+def sleeper_by_espn_id():
+    """The latest slim snapshot joined to ESPN player ids. Public because
+    report/wednesday.py needs the same join, with the slim row's
+    depth_chart_order/depth_chart_position attached, for its depth-chart
+    delta."""
     id_map, slim = _id_map(), _latest_sleeper_slim()
     if id_map.empty or slim.empty:
         return pd.DataFrame()
@@ -82,7 +86,7 @@ def read(players_df, season, week):
     (ESPN's) columns -- e.g. a weekly-rosters.csv slice. Returns one row
     per input player with every source's raw fields plus a resolved
     `tier`."""
-    sleeper = _sleeper_by_espn_id()
+    sleeper = sleeper_by_espn_id()
     xwalk = _xwalk_by_espn_id()
 
     injuries = nflverse_store.load("injuries", season=season)

@@ -143,7 +143,7 @@ def team_totals(week):
     return {"insufficient": False, "by_team": by_team, "captured_at": captured_at}
 
 
-def _week_projection(player_id, pool_df, roster_row=None):
+def week_projection(player_id, pool_df, roster_row=None):
     """Apples-to-apples projection lookup: `player-pool.csv`'s
     `week_projected` is the primary path and covers rostered players too
     (the pool is not ownership-filtered), so a bench player and a free
@@ -213,7 +213,7 @@ def add_candidates(free_agents_df, rosters_df, week, team_id, pool_df, roster_sl
                 fallback_names.add(bp["player_name"])
             if slot not in bp_slots:
                 continue
-            value, source = _week_projection(bp["player_id"], pool_df, bp)
+            value, source = week_projection(bp["player_id"], pool_df, bp)
             if source == "roster":
                 mixed_source_names.add(bp["player_name"])
             if value is None or pd.isna(value):
@@ -228,12 +228,12 @@ def add_candidates(free_agents_df, rosters_df, week, team_id, pool_df, roster_sl
             starters = week_rosters[(week_rosters["started"]) & (week_rosters["lineup_slot"] == slot)]
             if not starters.empty:
                 srow = starters.iloc[0]
-                value, source = _week_projection(srow["player_id"], pool_df, srow)
+                value, source = week_projection(srow["player_id"], pool_df, srow)
                 starter_context = {"player_name": srow["player_name"], "projection": value, "source": source}
 
         rows = []
         for fa in eligible_fa.itertuples():
-            value, source = _week_projection(fa.player_id, pool_df)
+            value, source = week_projection(fa.player_id, pool_df)
             if value is None or pd.isna(value):
                 nan_names.add(fa.player_name)
                 continue

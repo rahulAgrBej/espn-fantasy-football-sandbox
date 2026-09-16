@@ -27,6 +27,7 @@ from .odds.ledger import BudgetExceeded, OddsError
 from .report import monday as report_monday
 from .report import tuesday as report_tuesday
 from .report import waivers as report_waivers
+from .report import wednesday as report_wednesday
 from .weeks import ET
 
 # day key -> (build function, <day> filename segment, output slug). The key
@@ -39,6 +40,7 @@ REPORTS = {
     "monday": (report_monday.build, "monday", "monday-night-call"),
     "tuesday": (report_tuesday.build, "tuesday", "week-in-review"),
     "tuesday-waivers": (report_waivers.build, "tuesday", "waiver-wire"),
+    "wednesday": (report_wednesday.build, "wednesday", "availability-watchlist"),
 }
 
 

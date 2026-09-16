@@ -101,6 +101,7 @@ one of the two day fields.
 | `report-monday` | `cron(30 10 ? * MON *)` | Mon 10:30 | `day=monday` |
 | `report-tuesday` | `cron(0 10 ? * TUE *)` | Tue 10:00 | `day=tuesday` |
 | `report-tuesday-waivers` | `cron(0 11 ? * TUE *)` | Tue 11:00 | `day=tuesday-waivers` |
+| `report-wednesday` | `cron(0 10 ? * WED *)` | Wed 10:00 | `day=wednesday` |
 
 ### DST stops mattering
 
@@ -276,20 +277,27 @@ auto-disable.
   ordering gaps were verified before deploying, but no full week has run
   through this path. Treat the timings as intent until `logs/runs/` has a few
   weeks to measure against.
-- **`report-monday`, `report-tuesday`, and `report-tuesday-waivers` have
-  never fired on a real week under the scheduler.** `report.yml`'s
-  dispatched workflow writes back to the repo rather than only to S3 — a
-  class of failure (a lost git-push race) that the DLQ/alarm here does not
-  and cannot cover, since that alarm only watches dispatch delivery, not
-  what the workflow does once it starts. See
-  `docs/report-weekly-schedule.md`'s known gaps for what the report itself
-  cannot see. `report-tuesday-waivers` carries one more risk this alarm
-  cannot see either: it is the first scheduled report reading `odds`'
-  output, and a missing or stale `team_totals.parquet` degrades it at exit
-  0 — that output looks identical whether the cause is a budget-aborted
-  `slate`, an `odds` state-path restore that didn't run, or a
-  `restore-out-datasets` list missing `transactions`. Neither the DLQ alarm
-  nor the run receipt distinguishes those causes *(Inferred)*.
+- **`report.yml` itself is Observed working** — it has succeeded on eight
+  `workflow_dispatch` runs (latest `35043502451`, 2026-09-16T01:17Z), and
+  the two committed Tuesday reports under `reports/2026/week-02/` are its
+  output. What remains untested is specifically the path *to* that
+  dispatch: **`report-monday`, `report-tuesday`, `report-tuesday-waivers`,
+  and `report-wednesday` have never fired on a real week under
+  EventBridge Scheduler** — the `ff-dispatch` bus, `ReportRule`, and the
+  `workflow_dispatch` call it makes have not been exercised end to end by
+  the scheduler itself, only by a manual `gh workflow run`/`aws events
+  put-events`. `report.yml`'s dispatched workflow writes back to the repo
+  rather than only to S3 — a class of failure (a lost git-push race) that
+  the DLQ/alarm here does not and cannot cover, since that alarm only
+  watches dispatch delivery, not what the workflow does once it starts.
+  See `docs/report-weekly-schedule.md`'s known gaps for what the report
+  itself cannot see. `report-tuesday-waivers` carries one more risk this
+  alarm cannot see either: it is the first scheduled report reading
+  `odds`' output, and a missing or stale `team_totals.parquet` degrades it
+  at exit 0 — that output looks identical whether the cause is a
+  budget-aborted `slate`, an `odds` state-path restore that didn't run, or
+  a `restore-out-datasets` list missing `transactions`. Neither the DLQ
+  alarm nor the run receipt distinguishes those causes *(Inferred)*.
 - **Sunday has never been exercised at all.** The ESPN live-scoring grid, the
   Sunday `health` probe and `odds pre_lock` have never fired once, under either
   scheduler. The first Sunday after cutover should be watched live.
