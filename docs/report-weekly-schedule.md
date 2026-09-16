@@ -264,7 +264,14 @@ same players unresolved, side by side, so a disagreement between the
 three feeds is visible rather than hidden behind the resolved `tier`
 column; and `pos_rank` is omitted entirely rather than shown with a
 caveat, since `docs/data-sources.md` flags its source as not week-aligned
-and no caveat makes an unusable number usable.
+and no caveat makes an unusable number usable. A third addition, the
+**waiver outcomes** section, reads the same `{week - 1, week}`
+`transactions.csv` window `waivers.settlements()` uses and is
+comprehensive league-wide — not filtered to players this team was
+tracking: what we claimed, what another team claimed (each paired with a
+top-3 same-slot free-agent shortlist), and who is newly available per
+this week's `pool.free_agents` anti-join. Pending rows are excluded and
+counted separately, the same convention Tuesday's waiver report uses.
 
 **What to look out for.** A single Wednesday `DNP` is one-third of a
 trajectory, not a call, and `tier` is derived from the current snapshot
@@ -283,13 +290,17 @@ night, not Wednesday *(Documented — league setting, per the league
 manager)*, so this report is the first **post-settlement** read of the
 week rather than a pre-deadline one — this morning's 09:08 ESPN pull
 captures `transactions.csv` in its settled state, roughly an hour before
-this report renders. Today's output is a contingency list, not an action.
+this report renders. Today's output is a contingency list, not an
+action — that includes the waiver outcomes section: nothing there
+obligates a move today either, it is for visibility only.
 
-**Swap and drop candidates.** Watchlist only. Starters whose `tier` is
+**Swap and drop candidates.** The watchlist, plus the new **waiver
+outcomes** section. The watchlist itself: starters whose `tier` is
 `OUT`, `HIGH_RISK`, or `COIN_FLIP`, ranked by projected points at risk,
-each shown with the best bench replacement eligible for that slot. No
-drop candidates today: dropping on one day of practice data discards a
-player before the signal that would justify it exists.
+each shown with the best bench replacement eligible for that slot. Still
+no drop candidates for our own roster today: dropping on one day of
+practice data discards a player before the signal that would justify it
+exists.
 
 ## Thursday — usage and market
 
@@ -574,6 +585,13 @@ key-to-function map, and was previously undocumented here.
   `FREEAGENT` row observed flipping `is_pending` True → False between a
   Tuesday and the following Wednesday pull, would be the first on-disk
   confirmation of both.
+- **Wednesday's waiver-outcomes section shares that same not-yet-Observed
+  premise** (no `WAIVER`-type row or `is_pending` flip has been Observed
+  yet), and separately, its "newly available" list is a render-time
+  snapshot of `pool.free_agents(week)`, not a guarantee — a listed player
+  can be claimed before the report is read, and this can't be
+  distinguished from "stays unclaimed" beyond the anti-join's current-week
+  state.
 - **Gameday inactives are in no feed.** The last roughly 90 minutes
   before kickoff are invisible to this pipeline.
 - **No report is ever scored against what happened.** Nothing here

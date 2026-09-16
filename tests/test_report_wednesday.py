@@ -33,6 +33,13 @@ def _pool_row(player_id, player_name, position, eligible_slots, week_projected, 
     }
 
 
+_INSUFFICIENT_OUTCOMES = {
+    "insufficient": True, "reason": "no transactions export on disk",
+    "claimed_by_us": [], "claimed_by_others": [], "newly_available": [],
+    "pending_count": 0, "excluded_count": 0, "unresolved_ids": set(),
+}
+
+
 _ROSTER_SLOTS = pd.DataFrame([
     {"slot": "QB", "count": 1}, {"slot": "RB", "count": 2}, {"slot": "WR", "count": 2},
     {"slot": "RB/WR", "count": 1}, {"slot": "TE", "count": 1}, {"slot": "D/ST", "count": 1},
@@ -132,6 +139,7 @@ def test_no_legal_swap_renders_rather_than_dropping_the_row():
     rows, _, _ = wednesday.watchlist(starters, bench, avail, pd.DataFrame(), pool, _ALLOWED)
     assert len(rows) == 1 and rows[0]["replacement"] is None
     text = wednesday.render(2026, 2, 5, rows, pd.DataFrame(), avail, starters, [],
+                            _INSUFFICIENT_OUTCOMES, {},
                             wednesday.FOOTER_NOTES, rendered_at=1_760_000_000)
     assert "no legal swap" in text
 
@@ -174,9 +182,129 @@ def test_renders_with_no_data_at_all(monkeypatch):
     })
     text = wednesday.render(
         2026, 2, 5, [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [],
+        _INSUFFICIENT_OUTCOMES, {},
         wednesday.FOOTER_NOTES, window=None, rendered_at=1_760_000_000,
     )
     assert "# Availability watchlist -- 2026 week 2" in text
     assert "## Watchlist" in text and "## Depth chart moves" in text
+    assert "## Waiver outcomes" in text
     assert "## What this report cannot see" in text
     assert "insufficient data" in text
+
+
+# ---- _alternates ---------------------------------------------------------
+
+def test_alternates_ranks_by_projection_same_slot_only():
+    lost_player = {"player_id": 1, "player_name": "Lost TE", "position": "TE"}
+    pool_df = pd.DataFrame([
+        _pool_row(1, "Lost TE", "TE", "TE, Bench", 8.0),
+        _pool_row(10, "FA TE Hi", "TE", "TE, Bench", 9.0),
+        _pool_row(11, "FA TE Lo", "TE", "TE, Bench", 3.0),
+        _pool_row(12, "FA RB", "RB", "RB, RB/WR, Bench", 15.0),
+    ])
+    free_agents_df = pool_df[pool_df["player_id"].isin([10, 11, 12])].reset_index(drop=True)
+
+    alts, fallback_names, nan_names = wednesday._alternates(lost_player, free_agents_df, pool_df, _ALLOWED)
+
+    assert [a["player_name"] for a in alts] == ["FA TE Hi", "FA TE Lo"]
+    assert fallback_names == set()
+    assert nan_names == set()
+
+
+def test_alternates_empty_when_no_eligible_candidate():
+    lost_player = {"player_id": 1, "player_name": "Lost TE", "position": "TE"}
+    pool_df = pd.DataFrame([
+        _pool_row(1, "Lost TE", "TE", "TE, Bench", 8.0),
+        _pool_row(12, "FA RB", "RB", "RB, RB/WR, Bench", 15.0),
+    ])
+    free_agents_df = pool_df[pool_df["player_id"] == 12].reset_index(drop=True)
+
+    alts, _, _ = wednesday._alternates(lost_player, free_agents_df, pool_df, _ALLOWED)
+    assert alts == []
+
+
+def test_alternates_respects_per_slot():
+    lost_player = {"player_id": 1, "player_name": "Lost TE", "position": "TE"}
+    rows = [_pool_row(1, "Lost TE", "TE", "TE, Bench", 8.0)]
+    rows += [_pool_row(10 + i, f"FA TE {i}", "TE", "TE, Bench", float(i)) for i in range(5)]
+    pool_df = pd.DataFrame(rows)
+    free_agents_df = pool_df[pool_df["player_id"] != 1].reset_index(drop=True)
+
+    alts, _, _ = wednesday._alternates(lost_player, free_agents_df, pool_df, _ALLOWED, per_slot=3)
+    assert len(alts) == 3
+    assert [a["player_name"] for a in alts] == ["FA TE 4", "FA TE 3", "FA TE 2"]
+
+
+def test_alternates_tracks_fallback_and_nan_names():
+    # Ghost TE has no pool row at all -- eligibility falls back to the position map.
+    lost_player = {"player_id": 999, "player_name": "Ghost TE", "position": "TE"}
+    pool_df = pd.DataFrame([
+        _pool_row(10, "FA TE NaN", "TE", "TE, Bench", float("nan")),
+        _pool_row(11, "FA TE Valid", "TE", "TE, Bench", 5.0),
+    ])
+    free_agents_df = pool_df.copy()
+
+    alts, fallback_names, nan_names = wednesday._alternates(lost_player, free_agents_df, pool_df, _ALLOWED)
+
+    assert "Ghost TE" in fallback_names
+    assert "FA TE NaN" in nan_names
+    assert [a["player_name"] for a in alts] == ["FA TE Valid"]
+
+
+# ---- render: waiver outcomes ----------------------------------------------
+
+def _outcomes(claimed_by_us=None, claimed_by_others=None, newly_available=None, pending_count=0):
+    return {
+        "insufficient": False,
+        "claimed_by_us": claimed_by_us or [],
+        "claimed_by_others": claimed_by_others or [],
+        "newly_available": newly_available or [],
+        "pending_count": pending_count, "excluded_count": 0, "unresolved_ids": set(),
+    }
+
+
+def test_render_claimed_by_others_with_alternates_shows_subheading_and_mini_table():
+    outcomes = _outcomes(claimed_by_others=[{
+        "player_id": 5, "player_name": "Rival Add", "position": "RB", "pro_team": "SEA",
+        "acting_team": "Team X", "acting_team_id": 3, "transaction_id": 100,
+        "bid_amount": 0, "scoring_period": 2, "proposed_date": "2026-09-16",
+    }])
+    alternates_by_player = {5: [{"player_name": "Alt Guy", "position": "RB", "pro_team": "DAL", "week_projected": 9.0}]}
+
+    text = wednesday.render(2026, 2, 5, [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [],
+                            outcomes, alternates_by_player, wednesday.FOOTER_NOTES, rendered_at=1_760_000_000)
+
+    assert "#### Rival Add (RB) -- claimed by Team X" in text
+    assert "Alt Guy" in text
+
+
+def test_render_claimed_by_others_with_no_alternates_shows_explicit_message():
+    outcomes = _outcomes(claimed_by_others=[{
+        "player_id": 5, "player_name": "Rival Add", "position": "RB", "pro_team": "SEA",
+        "acting_team": "Team X", "acting_team_id": 3, "transaction_id": 100,
+        "bid_amount": 0, "scoring_period": 2, "proposed_date": "2026-09-16",
+    }])
+
+    text = wednesday.render(2026, 2, 5, [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [],
+                            outcomes, {}, wednesday.FOOTER_NOTES, rendered_at=1_760_000_000)
+
+    assert "No same-slot free-agent alternate found." in text
+
+
+def test_render_claimed_by_us_and_newly_available_tables_render():
+    outcomes = _outcomes(
+        claimed_by_us=[{
+            "player_name": "Our Add", "position": "WR", "pro_team": "KC",
+            "bid_amount": 0, "scoring_period": 2, "proposed_date": "2026-09-16",
+        }],
+        newly_available=[{
+            "player_name": "Dropped Guy", "position": "RB", "pro_team": "NYJ",
+            "dropped_by_team": "Team Y", "scoring_period": 2, "proposed_date": "2026-09-16",
+        }],
+    )
+
+    text = wednesday.render(2026, 2, 5, [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [],
+                            outcomes, {}, wednesday.FOOTER_NOTES, rendered_at=1_760_000_000)
+
+    assert "Our Add" in text
+    assert "Dropped Guy" in text

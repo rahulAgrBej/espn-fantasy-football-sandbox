@@ -87,6 +87,96 @@ def settlements(transactions_df, week):
     }
 
 
+def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id):
+    """Settled (non-pending) FREEAGENT/WAIVER ADD/DROP rows in the same
+    `{week - 1, week}` window `settlements()` uses, split three ways: what
+    we claimed, what another team claimed (so an alternate can be offered),
+    and who is newly available since last week.
+
+    Every row's `player_name`/`position`/`pro_team` is resolved from
+    `pool_df` by `player_id`, never from `transactions_df["player_name"]` --
+    a DROP row's `player_name` reads NaN in this export (the join comes
+    from `weekly-rosters.csv`, which no longer lists a just-dropped
+    player). `acting_team_id` (int) is the only field ever compared against
+    `team_id` -- never `acting_team`, a display string that can legitimately
+    mismatch the numeric id.
+
+    `free_agents_df` is received, not recomputed -- the caller already
+    needs it for the alternates step, so this stays a pure function over
+    fixtures, same contract as `add_candidates`."""
+    empty = {
+        "insufficient": True, "claimed_by_us": [], "claimed_by_others": [], "newly_available": [],
+        "pending_count": 0, "excluded_count": 0, "unresolved_ids": set(),
+    }
+    if transactions_df.empty:
+        return {**empty, "reason": "no transactions export on disk"}
+
+    window = {w for w in (week - 1, week) if w >= 1}
+    windowed = transactions_df[transactions_df["scoring_period"].isin(window)]
+    included = windowed[windowed["type"].isin(_SETTLEMENT_TYPES)]
+    excluded_count = len(windowed) - len(included)
+
+    pending_count = int((included["is_pending"] == True).sum())  # noqa: E712
+    settled = included[included["is_pending"] == False]  # noqa: E712
+
+    pool_by_id = {}
+    if not pool_df.empty:
+        pool_by_id = {r["player_id"]: r for _, r in pool_df.iterrows()}
+
+    unresolved_ids = set()
+
+    def _resolve(player_id):
+        row = pool_by_id.get(player_id)
+        if row is None:
+            unresolved_ids.add(player_id)
+            return {"player_name": f"(unresolved player {player_id})", "position": None, "pro_team": None}
+        return {"player_name": row["player_name"], "position": row["position"], "pro_team": row["pro_team"]}
+
+    adds = settled[settled["item_type"] == "ADD"]
+    claimed_by_us, claimed_by_others = [], []
+    for _, r in adds.iterrows():
+        info = _resolve(r["player_id"])
+        row = {
+            "player_id": r["player_id"], **info,
+            "acting_team": r["acting_team"], "acting_team_id": r["acting_team_id"],
+            "transaction_id": r["transaction_id"], "bid_amount": r["bid_amount"],
+            "scoring_period": r["scoring_period"], "proposed_date": r["proposed_date"],
+        }
+        if r["acting_team_id"] == team_id:
+            claimed_by_us.append(row)
+        else:
+            claimed_by_others.append(row)
+
+    free_agent_ids = set(free_agents_df["player_id"]) if not free_agents_df.empty else set()
+    drops = settled[settled["item_type"] == "DROP"]
+    newly_available, seen_ids = [], set()
+    for _, r in drops.iterrows():
+        player_id = r["player_id"]
+        if player_id not in free_agent_ids or player_id in seen_ids:
+            continue
+        seen_ids.add(player_id)
+        info = _resolve(player_id)
+        newly_available.append({
+            "player_id": player_id, **info,
+            "dropped_by_team": r["acting_team"], "dropped_by_team_id": r["acting_team_id"],
+            "scoring_period": r["scoring_period"], "proposed_date": r["proposed_date"],
+        })
+
+    claimed_by_us.sort(key=lambda r: r["player_name"])
+    claimed_by_others.sort(key=lambda r: r["player_name"])
+    newly_available.sort(key=lambda r: r["player_name"])
+
+    return {
+        "insufficient": False,
+        "claimed_by_us": claimed_by_us,
+        "claimed_by_others": claimed_by_others,
+        "newly_available": newly_available,
+        "pending_count": pending_count,
+        "excluded_count": excluded_count,
+        "unresolved_ids": unresolved_ids,
+    }
+
+
 def waiver_order(teams_df, team_id):
     """`teams.csv` sorted by `waiver_rank` ascending. Deliberately does not
     inherit `tuesday.standings()`'s pre-season 0-0 gate: that gate exists

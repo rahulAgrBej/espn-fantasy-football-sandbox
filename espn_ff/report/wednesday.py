@@ -37,10 +37,10 @@ import pandas as pd
 from .. import config, weeks
 from ..sleeper import signals as sleeper_signals
 from ..sleeper import snapshots as sleeper_snapshots
-from . import availability, monday, tuesday
+from . import availability, monday, pool, tuesday
 from .loaders import freshness, latest_export
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
-from .waivers import week_projection
+from .waivers import waiver_outcomes, week_projection
 
 DEPTH_LOOKBACK_DAYS = 3
 
@@ -185,6 +185,48 @@ def best_replacement(starter, bench, pool_df, allowed_slots, avail_by_id):
     return best, fallback_names, nan_names
 
 
+def _alternates(lost_player, free_agents_df, pool_df, allowed_slots, per_slot=3):
+    """Top-`per_slot` free agents eligible for the same slot(s) as
+    `lost_player` (a `claimed_by_others` row), ranked by `week_projected`.
+    A player claimed elsewhere may lack a clean pool row this week, so
+    slot eligibility goes through `tuesday._eligible_slots`'s
+    position-fallback path, same as `best_replacement`.
+
+    Returns (alternates, fallback_names, nan_names) -- the same 3-tuple
+    shape `watchlist()`/`best_replacement()` use."""
+    fallback_names, nan_names = set(), set()
+    starting_slots = allowed_slots - {"Bench", "IR"}
+
+    lost_slots, lost_fallback = tuesday._eligible_slots(
+        lost_player["player_id"], lost_player.get("position"), pool_df, allowed_slots
+    )
+    lost_slots &= starting_slots
+    if lost_fallback:
+        fallback_names.add(lost_player["player_name"])
+    if not lost_slots or free_agents_df.empty:
+        return [], fallback_names, nan_names
+
+    candidates = []
+    for fa in free_agents_df.itertuples():
+        fa_slots, fa_fallback = tuesday._eligible_slots(fa.player_id, fa.position, pool_df, allowed_slots)
+        fa_slots &= starting_slots
+        if fa_fallback:
+            fallback_names.add(fa.player_name)
+        if not (lost_slots & fa_slots):
+            continue
+        value, _ = week_projection(fa.player_id, pool_df)
+        if value is None or pd.isna(value):
+            nan_names.add(fa.player_name)
+            continue
+        candidates.append({
+            "player_name": fa.player_name, "position": fa.position,
+            "pro_team": fa.pro_team, "week_projected": value,
+        })
+
+    candidates.sort(key=lambda c: c["week_projected"], reverse=True)
+    return candidates[:per_slot], fallback_names, nan_names
+
+
 def watchlist(starters, bench, avail_df, signals_df, pool_df, allowed_slots):
     """At-risk starters ranked by projected points at risk, each paired with
     its best legal bench replacement.
@@ -284,11 +326,15 @@ FOOTER_NOTES = [
     "This league's waiver deadline was last night (Documented -- league setting, per the league "
     "manager), not tonight. This morning's ESPN pull captures transactions.csv in its settled "
     "state, though this report does not itself render waiver rows -- see Tuesday's waiver report.",
+    "\"Newly available\" below is a render-time snapshot of this week's free-agent pool, not a "
+    "guarantee -- a listed player can be claimed before this report is read.",
+    "Waiver outcomes below share the same {week - 1, week} transactions.csv window "
+    "waivers.settlements() uses.",
 ]
 
 
 def render(season, week, team_id, watch_rows, signals_df, avail_df, starters, moves,
-           footer_notes, window=None, rendered_at=None):
+           outcomes, alternates_by_player, footer_notes, window=None, rendered_at=None):
     """Pure over its arguments -- no disk access beyond the freshness header,
     same contract as monday.render/waivers.render, so the whole body is
     exercisable from fixtures."""
@@ -320,6 +366,57 @@ def render(season, week, team_id, watch_rows, signals_df, avail_df, starters, mo
         "_Waiver-deadline note: this league's deadline was last night (Tuesday into Wednesday), "
         "not tonight -- this morning's ESPN pull is the first settled read of last night's run._"
     )
+    lines.append("")
+
+    lines.append("## Waiver outcomes")
+    if outcomes["insufficient"]:
+        lines.append(f"**{INSUFFICIENT_DATA}** -- {outcomes['reason']}")
+    else:
+        lines.append(
+            f"{len(outcomes['claimed_by_us'])} claimed by us, {len(outcomes['claimed_by_others'])} "
+            f"claimed by other teams, {len(outcomes['newly_available'])} newly available."
+        )
+        if outcomes["pending_count"]:
+            lines.append(f"_{outcomes['pending_count']} row(s) in this window are still pending -- excluded above._")
+        if outcomes["excluded_count"]:
+            lines.append(f"_{outcomes['excluded_count']} other transaction(s) in this window were not "
+                          "FREEAGENT/WAIVER ADD/DROP rows and are excluded above._")
+        lines.append("")
+
+        lines.append("### Claimed by us")
+        headers = ["player", "position", "pro_team", "bid", "period", "date"]
+        rows = [
+            [r["player_name"], r["position"], r["pro_team"], r["bid_amount"],
+             r["scoring_period"], r["proposed_date"]]
+            for r in outcomes["claimed_by_us"]
+        ]
+        lines.extend(table(headers, rows))
+        lines.append("")
+
+        lines.append("### Claimed by other teams")
+        if not outcomes["claimed_by_others"]:
+            lines.append("_(none)_")
+        else:
+            for r in outcomes["claimed_by_others"]:
+                lines.append(f"#### {r['player_name']} ({r['position']}) -- claimed by {r['acting_team']}")
+                alts = alternates_by_player.get(r["player_id"], [])
+                if not alts:
+                    lines.append("No same-slot free-agent alternate found.")
+                else:
+                    alt_headers = ["player", "position", "pro_team", "week_projected"]
+                    alt_rows = [[a["player_name"], a["position"], a["pro_team"], num(a["week_projected"])]
+                                for a in alts]
+                    lines.extend(table(alt_headers, alt_rows))
+                lines.append("")
+
+        lines.append("### Newly available")
+        headers = ["player", "position", "pro_team", "dropped by", "period", "date"]
+        rows = [
+            [r["player_name"], r["position"], r["pro_team"], r["dropped_by_team"],
+             r["scoring_period"], r["proposed_date"]]
+            for r in outcomes["newly_available"]
+        ]
+        lines.extend(table(headers, rows))
     lines.append("")
 
     lines.append("## Watchlist")
@@ -403,6 +500,9 @@ def build(season, week, team_id=None):
     roster_slots_df = latest_export("roster-slots")
     allowed_slots = monday.league_slots(roster_slots_df)
 
+    transactions_df = latest_export("transactions")
+    free_agents_df = pool.free_agents(week, pool_df=pool_df, rosters_df=rosters_df)
+
     starters = our_starters(rosters_df, week, team_id)
     week_rosters = (
         rosters_df[(rosters_df["week"] == week) & (rosters_df["team_id"] == team_id)]
@@ -426,6 +526,15 @@ def build(season, week, team_id=None):
     )
     moves = depth_chart_moves(signals_df, roster_names)
 
+    outcomes = waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id)
+    alternates_by_player, alt_fallback_names, alt_nan_names = {}, set(), set()
+    if not outcomes["insufficient"]:
+        for lost in outcomes["claimed_by_others"]:
+            alts, fb, nan = _alternates(lost, free_agents_df, pool_df, allowed_slots)
+            alternates_by_player[lost["player_id"]] = alts
+            alt_fallback_names |= fb
+            alt_nan_names |= nan
+
     footer_notes = list(FOOTER_NOTES)
     for name, (_, stale) in freshness(season=season).items():
         if stale:
@@ -448,6 +557,27 @@ def build(season, week, team_id=None):
         footer_notes.append(
             "Projections read NaN and could not be ranked for: " + ", ".join(sorted(nan_names))
         )
+    if outcomes["insufficient"]:
+        footer_notes.append(f"Waiver outcomes could not be read -- {outcomes['reason']}.")
+    elif outcomes["pending_count"]:
+        footer_notes.append(
+            f"{outcomes['pending_count']} transaction(s) in the waiver-outcomes window are still "
+            "pending and excluded from the outcomes section."
+        )
+    if not outcomes["insufficient"] and outcomes["unresolved_ids"]:
+        footer_notes.append(
+            "No player-pool row to resolve a name for player_id(s): "
+            + ", ".join(str(pid) for pid in sorted(outcomes["unresolved_ids"]))
+        )
+    if alt_fallback_names:
+        footer_notes.append(
+            "Alternate-slot eligibility came from the position fallback (no player-pool row) for: "
+            + ", ".join(sorted(alt_fallback_names))
+        )
+    if alt_nan_names:
+        footer_notes.append(
+            "Alternate projections read NaN and were excluded for: " + ", ".join(sorted(alt_nan_names))
+        )
     divergence_df = tuesday.slot_map_divergence(pool_df, allowed_slots)
     if not divergence_df.empty:
         footer_notes.append(
@@ -456,6 +586,7 @@ def build(season, week, team_id=None):
         )
 
     return render(
-        season, week, team_id, watch_rows, signals_df, avail_df, starters, moves, footer_notes,
+        season, week, team_id, watch_rows, signals_df, avail_df, starters, moves,
+        outcomes, alternates_by_player, footer_notes,
         window=weeks.week_window(season, week), rendered_at=rendered_at,
     )

@@ -16,11 +16,12 @@ from espn_ff.weeks import ET
 
 def _txn_row(scoring_period, type_, item_type, is_pending=False, bid_amount=0,
              player_name="P", acting_team="T1", execution_type="EXECUTE",
-             proposed_date="2026-09-08 12:00:00"):
+             proposed_date="2026-09-08 12:00:00", player_id=1, acting_team_id=1, transaction_id=100):
     return {
         "scoring_period": scoring_period, "type": type_, "item_type": item_type,
         "is_pending": is_pending, "bid_amount": bid_amount, "player_name": player_name,
         "acting_team": acting_team, "execution_type": execution_type, "proposed_date": proposed_date,
+        "player_id": player_id, "acting_team_id": acting_team_id, "transaction_id": transaction_id,
     }
 
 
@@ -103,6 +104,111 @@ def test_non_settlement_types_are_excluded_and_counted():
     result = waivers.settlements(df, week=2)
     assert len(result["rows"]) == 1
     assert result["excluded_count"] == 2
+
+
+# ---- waiver outcomes -------------------------------------------------------
+
+
+def test_waiver_outcomes_empty_transactions_export_renders_insufficient():
+    free_agents_df = pd.DataFrame(columns=["player_id"])
+    result = waivers.waiver_outcomes(pd.DataFrame(), pd.DataFrame(), free_agents_df, week=2, team_id=5)
+    assert result["insufficient"] is True
+
+
+def test_waiver_outcomes_add_attributed_by_acting_team_id_not_the_display_string():
+    # acting_team's display string deliberately does not match team_id 5's real name --
+    # attribution must come from the numeric acting_team_id, never the string.
+    df = pd.DataFrame([
+        _txn_row(2, "FREEAGENT", "ADD", player_id=10, acting_team_id=5, acting_team="Some Other Team Name"),
+    ])
+    pool_df = pd.DataFrame([_pool_row(10, "Our Claim", "RB", "SEA", "RB,RB/WR,Bench,IR", 8.0)])
+    free_agents_df = pd.DataFrame(columns=["player_id"])
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
+    assert [r["player_name"] for r in result["claimed_by_us"]] == ["Our Claim"]
+    assert result["claimed_by_others"] == []
+
+
+def test_waiver_outcomes_add_attributed_to_another_team():
+    df = pd.DataFrame([_txn_row(2, "FREEAGENT", "ADD", player_id=10, acting_team_id=3, acting_team="Rival")])
+    pool_df = pd.DataFrame([_pool_row(10, "Rival Claim", "RB", "SEA", "RB,RB/WR,Bench,IR", 8.0)])
+    free_agents_df = pd.DataFrame(columns=["player_id"])
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
+    assert result["claimed_by_us"] == []
+    assert [r["player_name"] for r in result["claimed_by_others"]] == ["Rival Claim"]
+    assert result["claimed_by_others"][0]["acting_team"] == "Rival"
+
+
+def test_waiver_outcomes_drop_row_nan_player_name_resolved_via_pool_df():
+    df = pd.DataFrame([_txn_row(2, "FREEAGENT", "DROP", player_id=20, acting_team_id=3,
+                                 player_name=float("nan"))])
+    pool_df = pd.DataFrame([_pool_row(20, "Resolved Name", "WR", "DAL", "WR,RB/WR,Bench,IR", 4.0)])
+    free_agents_df = pd.DataFrame([{"player_id": 20}])
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
+    assert [r["player_name"] for r in result["newly_available"]] == ["Resolved Name"]
+
+
+def test_waiver_outcomes_drop_present_in_free_agents_is_newly_available():
+    df = pd.DataFrame([_txn_row(2, "FREEAGENT", "DROP", player_id=20, acting_team_id=3)])
+    pool_df = pd.DataFrame([_pool_row(20, "Dropped Player", "WR", "DAL", "WR,RB/WR,Bench,IR", 4.0)])
+    free_agents_df = pd.DataFrame([{"player_id": 20}])
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
+    assert [r["player_name"] for r in result["newly_available"]] == ["Dropped Player"]
+
+
+def test_waiver_outcomes_drop_absent_from_free_agents_is_excluded_as_reclaimed():
+    df = pd.DataFrame([_txn_row(2, "FREEAGENT", "DROP", player_id=20, acting_team_id=3)])
+    pool_df = pd.DataFrame([_pool_row(20, "Reclaimed Player", "WR", "DAL", "WR,RB/WR,Bench,IR", 4.0)])
+    free_agents_df = pd.DataFrame(columns=["player_id"])  # not in this week's free-agent pool
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
+    assert result["newly_available"] == []
+
+
+def test_waiver_outcomes_pending_row_excluded_and_counted():
+    df = pd.DataFrame([
+        _txn_row(2, "FREEAGENT", "ADD", player_id=10, acting_team_id=5, is_pending=True),
+        _txn_row(2, "FREEAGENT", "ADD", player_id=11, acting_team_id=5, is_pending=False),
+    ])
+    pool_df = pd.DataFrame([
+        _pool_row(10, "Pending Claim", "RB", "SEA", "RB,RB/WR,Bench,IR", 8.0),
+        _pool_row(11, "Settled Claim", "RB", "SEA", "RB,RB/WR,Bench,IR", 8.0),
+    ])
+    free_agents_df = pd.DataFrame(columns=["player_id"])
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
+    assert result["pending_count"] == 1
+    assert [r["player_name"] for r in result["claimed_by_us"]] == ["Settled Claim"]
+
+
+def test_waiver_outcomes_week_one_edge_case_does_not_look_up_week_zero():
+    df = pd.DataFrame([_txn_row(1, "FREEAGENT", "ADD", player_id=10, acting_team_id=5)])
+    pool_df = pd.DataFrame([_pool_row(10, "Week One Claim", "RB", "SEA", "RB,RB/WR,Bench,IR", 8.0)])
+    free_agents_df = pd.DataFrame(columns=["player_id"])
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=1, team_id=5)
+    assert result["insufficient"] is False
+    assert [r["player_name"] for r in result["claimed_by_us"]] == ["Week One Claim"]
+
+
+def test_waiver_outcomes_paired_add_drop_rows_resolved_independently():
+    df = pd.DataFrame([
+        _txn_row(2, "FREEAGENT", "ADD", player_id=30, acting_team_id=5, transaction_id=500),
+        _txn_row(2, "FREEAGENT", "DROP", player_id=31, acting_team_id=5, transaction_id=500),
+    ])
+    pool_df = pd.DataFrame([
+        _pool_row(30, "Added Player", "RB", "SEA", "RB,RB/WR,Bench,IR", 8.0),
+        _pool_row(31, "Dropped Player", "WR", "DAL", "WR,RB/WR,Bench,IR", 4.0),
+    ])
+    free_agents_df = pd.DataFrame([{"player_id": 31}])
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
+    assert [r["player_name"] for r in result["claimed_by_us"]] == ["Added Player"]
+    assert [r["player_name"] for r in result["newly_available"]] == ["Dropped Player"]
+
+
+def test_waiver_outcomes_unresolved_player_id_surfaced_without_crashing():
+    df = pd.DataFrame([_txn_row(2, "FREEAGENT", "ADD", player_id=999, acting_team_id=5)])
+    pool_df = pd.DataFrame(columns=["player_id", "player_name", "position", "pro_team"])
+    free_agents_df = pd.DataFrame(columns=["player_id"])
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
+    assert 999 in result["unresolved_ids"]
+    assert len(result["claimed_by_us"]) == 1
 
 
 # ---- waiver order ---------------------------------------------------------
