@@ -2,7 +2,7 @@
 
 **Covers** Wed 2026-09-16 -- the first of week 2's three practice days
 **Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET
-**Rendered** Wed 2026-09-16 09:33 ET
+**Rendered** Wed 2026-09-16 09:36 ET
 
 ## Freshness
 - sleeper: 2026-09-16 08:11:31 ET
@@ -13,7 +13,7 @@
 ## Decisions due
 **None binding today.** This is a contingency list, not an action: one practice day is one-third of the trajectory Friday's lineup lock will read.
 0 of 9 starters are on the watchlist as of this morning's snapshot.
-_Waiver-deadline note: whether this league processes claims tonight is recorded in no artifact here. Treat any Wednesday-night deadline as an unconfirmed assumption._
+_Waiver-deadline note: this league's deadline was last night (Tuesday into Wednesday), not tonight -- this morning's ESPN pull is the first settled read of last night's run._
 
 ## Watchlist
 No starter is OUT, HIGH_RISK or COIN_FLIP on today's read.
@@ -52,4 +52,4 @@ _None by design._ Dropping on one day of practice data discards a player before 
 - `pos_rank` is deliberately absent. It comes from nflverse `depth_charts`, an append-only log with no week column, so reading it as this week's depth is wrong.
 - `report_status` is null both when the nflverse injuries feed is unavailable and when a player carries no designation; those two are indistinguishable in that column.
 - No drop candidates today. Dropping on one day of practice data discards a player before the signal that would justify it exists.
-- Whether this league's waiver deadline falls tonight is recorded in no artifact here -- the deadline note above is an assumption, not a schedule.
+- This league's waiver deadline was last night (Documented -- league setting, per the league manager), not tonight. This morning's ESPN pull captures transactions.csv in its settled state, though this report does not itself render waiver rows -- see Tuesday's waiver report.
