@@ -165,7 +165,9 @@ def slate_context(espn_client, team_id=None, con=None, clock=None, week=None):
         store.write_last_run("slate_context", credits_spent=0, stale=True, reason=str(exc), ran_at=now.timestamp())
         raise
 
-    base_payload = espn_client.get_league(["mSettings", "mTeam", "mStandings"])
+    base_payload = espn_client.get_league(
+        ["mSettings", "mTeam", "mStandings"], ttl=ttl_for(None, espn_client.current_scoring_period())
+    )
     store.write_league_scoring(espn_settings.scoring_frame(base_payload, espn_client.season).to_dict("records"))
 
     stale, reason = False, None

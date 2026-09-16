@@ -147,7 +147,7 @@ class EspnClient:
         data, _ = self._fetch(self.league_url, views, params, ttl=ttl)
         return data
 
-    def get_player_pool(self, limit=2000, filter_header=None):
+    def get_player_pool(self, limit=2000, filter_header=None, ttl=None):
         """Public player pool. Needs no auth; paging is header-controlled."""
         url = f"{config.BASE}/seasons/{self.season}/segments/0/leaguedefaults/{config.PLAYER_POOL_ID}"
         filter_header = filter_header or {
@@ -156,7 +156,7 @@ class EspnClient:
                 "sortPercOwned": {"sortPriority": 1, "sortAsc": False},
             }
         }
-        data, _ = self._fetch(url, ["kona_player_info"], {}, filter_header=filter_header)
+        data, _ = self._fetch(url, ["kona_player_info"], {}, filter_header=filter_header, ttl=ttl)
         return data
 
     def get_platform_settings(self, ttl=None):

@@ -98,7 +98,7 @@ def _player_names(client, season, weeks):
 
 
 def cmd_probe(client, args):
-    payload = client.get_league(["mSettings", "mTeam"])
+    payload = client.get_league(["mSettings", "mTeam"], ttl=ttl_for(None, client.current_scoring_period()))
     meta = settings.league_meta(payload)
     print("Auth OK.\n")
     print(f"League:   {meta['league_name']}  (id {meta['league_id']}, {meta['season']})")
@@ -150,10 +150,10 @@ def cmd_pull(client, args):
     weeks = _weeks(args.weeks, current)
     print(f"Pulling league {client.league_id} season {client.season}, weeks {weeks[0]}-{weeks[-1]}")
 
-    client.get_league(["mSettings", "mTeam", "mStandings"])
-    client.get_league(["mMatchupScore", "mTeam"])
-    client.get_league(["mDraftDetail", "mTeam"])
-    client.get_league(["mTransactions2", "mTeam"])
+    client.get_league(["mSettings", "mTeam", "mStandings"], ttl=ttl_for(None, current))
+    client.get_league(["mMatchupScore", "mTeam"], ttl=ttl_for(None, current))
+    client.get_league(["mDraftDetail", "mTeam"], ttl=ttl_for(None, current))
+    client.get_league(["mTransactions2", "mTeam"], ttl=ttl_for(None, current))
     for week in weeks:
         client.get_league(
             ["mRoster", "mTeam", "mMatchupScore"],
@@ -161,7 +161,7 @@ def cmd_pull(client, args):
             ttl=ttl_for(week, current),
         )
         print(f"  week {week:>2} cached")
-    client.get_player_pool()
+    client.get_player_pool(ttl=ttl_for(None, current))
     print("Done. Raw JSON under data/raw/.")
     return 0
 
@@ -172,12 +172,12 @@ def cmd_export(client, args):
     weeks = _weeks(args.weeks, current)
     print(f"Exporting season {season}, weeks {weeks[0]}-{weeks[-1]}\n")
 
-    base = client.get_league(["mSettings", "mTeam", "mStandings"])
+    base = client.get_league(["mSettings", "mTeam", "mStandings"], ttl=ttl_for(None, current))
     _write(teams.teams_frame(base), "teams")
     _write(settings.scoring_frame(base, season), "scoring-rules")
     _write(settings.roster_slots_frame(base), "roster-slots")
 
-    sched = client.get_league(["mMatchupScore", "mTeam"])
+    sched = client.get_league(["mMatchupScore", "mTeam"], ttl=ttl_for(None, current))
     _write(matchups.matchups_frame(sched, season), "matchups")
 
     import pandas as pd
@@ -201,12 +201,22 @@ def cmd_export(client, args):
         if not roster_df.empty
         else {}
     )
-    _write(draft.draft_frame(client.get_league(["mDraftDetail", "mTeam"]), season, names), "draft")
     _write(
-        txn.transactions_frame(client.get_league(["mTransactions2", "mTeam"]), season, names),
+        draft.draft_frame(
+            client.get_league(["mDraftDetail", "mTeam"], ttl=ttl_for(None, current)), season, names
+        ),
+        "draft",
+    )
+    _write(
+        txn.transactions_frame(
+            client.get_league(["mTransactions2", "mTeam"], ttl=ttl_for(None, current)), season, names
+        ),
         "transactions",
     )
-    _write(players.players_frame(client.get_player_pool(), season, current), "player-pool")
+    _write(
+        players.players_frame(client.get_player_pool(ttl=ttl_for(None, current)), season, current),
+        "player-pool",
+    )
     return 0
 
 
@@ -235,7 +245,9 @@ def cmd_sleeper(client, args):
     sleeper_snapshots.write_trending(adds, drops)
     print(f"Trending: {len(adds)} adds, {len(drops)} drops")
 
-    espn_players = players.players_frame(client.get_player_pool(), season=client.season)
+    espn_players = players.players_frame(
+        client.get_player_pool(ttl=ttl_for(None, client.current_scoring_period())), season=client.season
+    )
     map_df, unmatched = sleeper_ids.resolve(df, espn_players, existing_map=_read_id_map())
     _write_id_map(map_df)
     if unmatched:

@@ -304,3 +304,93 @@ def test_refresh_weeks_does_not_affect_fetches_without_a_scoring_period(raw_dir)
     result = client.get_league(["mSettings"])
     assert result == {"cached": True}
     assert client.session.calls == []
+
+
+# ---- league-wide views: a real ttl instead of forever ----------------------
+#
+# mSettings/mTeam/mStandings and mMatchupScore/mTeam used to be fetched with
+# no ttl at all in cli.py's cmd_pull/cmd_export, so cache.read's staleness
+# check was skipped entirely and whatever was on disk was served forever --
+# the cause of the week-2 incident (a pre-week-1 standings snapshot and a
+# pre-MNF matchup schedule, both served long past when they stopped being
+# true). ttl_for(None, current) was already correct policy (see
+# test_completed_weeks_never_expire_live_week_does above); these tests pin
+# that it's actually wired into the fetch, not just correct in isolation.
+
+
+def _seed_league(client, views, payload, fetched_at):
+    key = cache.cache_key(client.season, client.league_id, views, {})
+    path = cache.cache_path(client.season, views, key)
+    real_time = time.time
+    time.time = lambda: fetched_at
+    try:
+        cache.write(path, payload, url="https://example.test")
+    finally:
+        time.time = real_time
+    return path
+
+
+def test_league_wide_view_refetches_once_past_live_ttl(raw_dir, monkeypatch):
+    periods = _periods()
+    client = _client(responses=[_FakeResponse(200, {"teams": [], "fresh": True})])
+    now = WEEK1_START_S + 10
+    _seed_platform_settings(
+        client, {"scoringPeriods": periods, "currentScoringPeriod": {"id": 1}}, fetched_at=now
+    )
+    views = ["mSettings", "mTeam", "mStandings"]
+    _seed_league(client, views, {"cached": True}, fetched_at=now)
+    monkeypatch.setattr(time, "time", lambda: now + cache.LIVE_TTL + 1)
+
+    result = client.get_league(views, ttl=cache.ttl_for(None, client.current_scoring_period()))
+
+    assert result.get("fresh") is True
+    assert len(client.session.calls) == 1
+
+
+def test_league_wide_view_still_served_from_cache_within_live_ttl(raw_dir, monkeypatch):
+    periods = _periods()
+    client = _client(responses=[])
+    now = WEEK1_START_S + 10
+    _seed_platform_settings(
+        client, {"scoringPeriods": periods, "currentScoringPeriod": {"id": 1}}, fetched_at=now
+    )
+    views = ["mMatchupScore", "mTeam"]
+    _seed_league(client, views, {"cached": True}, fetched_at=now)
+    monkeypatch.setattr(time, "time", lambda: now + 60)
+
+    result = client.get_league(views, ttl=cache.ttl_for(None, client.current_scoring_period()))
+
+    assert result["cached"] is True
+    assert client.session.calls == []
+
+
+def test_player_pool_ttl_expires_after_live_ttl_not_before(raw_dir, monkeypatch):
+    """get_player_pool had no ttl parameter at all -- same forever-cache
+    bug, for player-pool.csv (percent_owned, the waiver report's
+    free-agent signal)."""
+    periods = _periods()
+    client = _client(
+        responses=[
+            _FakeResponse(200, {"players": [], "cached": True}),
+            _FakeResponse(200, {"players": [], "fresh": True}),
+        ]
+    )
+    now = WEEK1_START_S + 10
+    _seed_platform_settings(
+        client, {"scoringPeriods": periods, "currentScoringPeriod": {"id": 1}}, fetched_at=now
+    )
+
+    monkeypatch.setattr(time, "time", lambda: now)
+    first = client.get_player_pool(ttl=cache.ttl_for(None, client.current_scoring_period()))
+    assert first["cached"] is True
+    assert len(client.session.calls) == 1
+
+    monkeypatch.setattr(time, "time", lambda: now + 60)
+    still_cached = client.get_player_pool(ttl=cache.ttl_for(None, client.current_scoring_period()))
+    assert still_cached["cached"] is True
+    assert len(client.session.calls) == 1
+
+    monkeypatch.setattr(time, "time", lambda: now + cache.LIVE_TTL + 1)
+    refetched = client.get_player_pool(ttl=cache.ttl_for(None, client.current_scoring_period()))
+    assert refetched["fresh"] is True
+    assert len(client.session.calls) == 2
