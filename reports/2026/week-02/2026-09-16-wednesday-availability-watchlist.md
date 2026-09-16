@@ -2,12 +2,12 @@
 
 **Covers** Wed 2026-09-16 -- the first of week 2's three practice days
 **Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET
-**Rendered** Wed 2026-09-16 10:10 ET
+**Rendered** Wed 2026-09-16 10:48 ET
 
 ## Freshness
 - sleeper: 2026-09-16 08:11:31 ET
 - nflverse: 2026-09-16 09:24:08 ET
-- espn: 2026-09-15 14:10:04 ET
+- espn: 2026-09-16 10:43:14 ET
 - odds: 2026-09-15 18:42:00 ET
 
 ## Decisions due
@@ -16,14 +16,21 @@
 _Waiver-deadline note: this league's deadline was last night (Tuesday into Wednesday), not tonight -- this morning's ESPN pull is the first settled read of last night's run._
 
 ## Waiver outcomes
-0 claimed by us, 0 claimed by other teams, 0 newly available.
-_2 other transaction(s) in this window were not FREEAGENT/WAIVER ADD/DROP rows and are excluded above._
+0 claimed by us, 1 claimed by other teams, 0 newly available.
+_2 row(s) in this window are still pending -- excluded above._
+_3 claim(s) in this window failed or were canceled (`FAILED_*`/`CANCELED`) and are excluded above -- a losing claim on a contested player is recorded for every team that attempted it, not just the winner._
+_10 other transaction(s) in this window were DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._
 
 ### Claimed by us
 _(none)_
 
 ### Claimed by other teams
-_(none)_
+#### Devaughn Vele (WR) -- claimed by Rashee Rice Krispies
+| player | position | pro_team | week_projected |
+|---|---|---|---|
+| Adonai Mitchell | WR | NYJ | 9.0 |
+| Denzel Boston | WR | CLE | 9.0 |
+| Caleb Douglas | WR | MIA | 8.9 |
 
 ### Newly available
 _(none)_
@@ -68,3 +75,4 @@ _None by design._ Dropping on one day of practice data discards a player before 
 - This league's waiver deadline was last night (Documented -- league setting, per the league manager), not tonight. This morning's ESPN pull captures transactions.csv in its settled state, though this report does not itself render waiver rows -- see Tuesday's waiver report.
 - "Newly available" below is a render-time snapshot of this week's free-agent pool, not a guarantee -- a listed player can be claimed before this report is read.
 - Waiver outcomes below share the same {week - 1, week} transactions.csv window waivers.settlements() uses.
+- 2 transaction(s) in the waiver-outcomes window are still pending and excluded from the outcomes section.
