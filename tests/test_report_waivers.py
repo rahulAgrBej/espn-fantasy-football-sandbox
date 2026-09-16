@@ -16,12 +16,14 @@ from espn_ff.weeks import ET
 
 def _txn_row(scoring_period, type_, item_type, is_pending=False, bid_amount=0,
              player_name="P", acting_team="T1", execution_type="EXECUTE",
-             proposed_date="2026-09-08 12:00:00", player_id=1, acting_team_id=1, transaction_id=100):
+             proposed_date="2026-09-08 12:00:00", player_id=1, acting_team_id=1, transaction_id=100,
+             status="EXECUTED"):
     return {
         "scoring_period": scoring_period, "type": type_, "item_type": item_type,
         "is_pending": is_pending, "bid_amount": bid_amount, "player_name": player_name,
         "acting_team": acting_team, "execution_type": execution_type, "proposed_date": proposed_date,
         "player_id": player_id, "acting_team_id": acting_team_id, "transaction_id": transaction_id,
+        "status": status,
     }
 
 
@@ -200,6 +202,58 @@ def test_waiver_outcomes_paired_add_drop_rows_resolved_independently():
     result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
     assert [r["player_name"] for r in result["claimed_by_us"]] == ["Added Player"]
     assert [r["player_name"] for r in result["newly_available"]] == ["Dropped Player"]
+
+
+def test_failed_claim_by_us_is_never_reported_as_claimed_by_us():
+    """The 2026-09-16 regression: ESPN records every team's attempt on a
+    contested player -- one EXECUTED for the winner, a FAILED_* for each
+    loser, at the same timestamp. Filtering on type/item_type alone reported
+    a player we LOST as claimed by us, and showed him claimed by two teams
+    at once."""
+    df = pd.DataFrame([
+        _txn_row(2, "WAIVER", "ADD", player_id=10, acting_team_id=8, acting_team="Rival",
+                 status="EXECUTED", transaction_id=200),
+        _txn_row(2, "WAIVER", "ADD", player_id=10, acting_team_id=5, acting_team="Us",
+                 status="FAILED_INVALIDPLAYERSOURCE", transaction_id=201),
+    ])
+    pool_df = pd.DataFrame([_pool_row(10, "Contested Guy", "WR", "NO", "WR,RB/WR,Bench,IR", 9.0)])
+    result = waivers.waiver_outcomes(df, pool_df, pd.DataFrame(columns=["player_id"]), week=2, team_id=5)
+
+    assert result["claimed_by_us"] == []
+    assert [r["player_name"] for r in result["claimed_by_others"]] == ["Contested Guy"]
+    assert result["failed_count"] == 1
+
+
+def test_failed_drop_does_not_make_a_player_newly_available():
+    df = pd.DataFrame([_txn_row(2, "WAIVER", "DROP", player_id=20, acting_team_id=5,
+                                 status="FAILED_INVALIDPLAYERSOURCE")])
+    pool_df = pd.DataFrame([_pool_row(20, "Still Rostered", "WR", "DAL", "WR,Bench,IR", 4.0)])
+    free_agents_df = pd.DataFrame([{"player_id": 20}])
+    result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
+    assert result["newly_available"] == []
+    assert result["failed_count"] == 1
+
+
+@pytest.mark.parametrize("status", ["FAILED_ROSTERLIMIT", "FAILED_INVALIDPLAYERSOURCE", "CANCELED"])
+def test_every_unsuccessful_status_is_counted_never_silently_dropped(status):
+    df = pd.DataFrame([_txn_row(2, "WAIVER", "ADD", player_id=10, acting_team_id=5, status=status)])
+    pool_df = pd.DataFrame([_pool_row(10, "P", "WR", "NO", "WR,Bench,IR", 9.0)])
+    result = waivers.waiver_outcomes(df, pool_df, pd.DataFrame(columns=["player_id"]), week=2, team_id=5)
+    assert result["claimed_by_us"] == [] and result["claimed_by_others"] == []
+    assert result["failed_count"] == 1
+
+
+def test_null_is_pending_and_null_status_are_counted_not_dropped():
+    """The three buckets must be exhaustive -- a row with neither field
+    populated previously fell through `== True` and `== False` alike and
+    vanished from both the pending count and the settled set."""
+    df = pd.DataFrame([_txn_row(2, "WAIVER", "ADD", player_id=10, acting_team_id=5,
+                                 is_pending=None, status=None)])
+    pool_df = pd.DataFrame([_pool_row(10, "Ghost", "WR", "NO", "WR,Bench,IR", 9.0)])
+    result = waivers.waiver_outcomes(df, pool_df, pd.DataFrame(columns=["player_id"]), week=2, team_id=5)
+    assert result["unknown_count"] == 1
+    assert result["pending_count"] == 0 and result["failed_count"] == 0
+    assert result["claimed_by_us"] == []
 
 
 def test_waiver_outcomes_unresolved_player_id_surfaced_without_crashing():

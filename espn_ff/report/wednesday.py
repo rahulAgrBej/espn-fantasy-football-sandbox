@@ -378,9 +378,21 @@ def render(season, week, team_id, watch_rows, signals_df, avail_df, starters, mo
         )
         if outcomes["pending_count"]:
             lines.append(f"_{outcomes['pending_count']} row(s) in this window are still pending -- excluded above._")
+        if outcomes.get("failed_count"):
+            lines.append(
+                f"_{outcomes['failed_count']} claim(s) in this window failed or were canceled "
+                "(`FAILED_*`/`CANCELED`) and are excluded above -- a losing claim on a contested "
+                "player is recorded for every team that attempted it, not just the winner._"
+            )
+        if outcomes.get("unknown_count"):
+            lines.append(
+                f"_{outcomes['unknown_count']} row(s) in this window carry a status this report "
+                f"could not read -- **{INSUFFICIENT_DATA}**, counted here rather than assumed "
+                "settled or failed._"
+            )
         if outcomes["excluded_count"]:
-            lines.append(f"_{outcomes['excluded_count']} other transaction(s) in this window were not "
-                          "FREEAGENT/WAIVER ADD/DROP rows and are excluded above._")
+            lines.append(f"_{outcomes['excluded_count']} other transaction(s) in this window were "
+                          "DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._")
         lines.append("")
 
         lines.append("### Claimed by us")

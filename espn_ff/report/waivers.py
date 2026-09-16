@@ -35,18 +35,35 @@ from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 
 _SETTLEMENT_TYPES = {"WAIVER", "FREEAGENT"}
 
+# `status` is the only field that says whether a claim actually succeeded.
+# Observed 2026-09-16, the first waiver run ever captured on disk: EXECUTED,
+# PENDING, FAILED_INVALIDPLAYERSOURCE, FAILED_ROSTERLIMIT, CANCELED. A losing
+# claim is still a row -- ESPN records every team's attempt on a player, not
+# just the winner's -- so filtering on type/item_type alone reports a lost
+# player as won. Only EXECUTED moved a player.
+_EXECUTED_STATUS = "EXECUTED"
+_PENDING_STATUS = "PENDING"
+_FAILED_PREFIX = "FAILED"
+_CANCELED_STATUS = "CANCELED"
+
 
 def settlements(transactions_df, week):
     """Claim/settlement rows in the {week - 1, week} window, each labelled
     with its *own* scoring_period rather than assuming one. This league
     processes waivers Tuesday night into Wednesday (Documented -- league
     setting, per the league manager), so a claim resolved that night falls
-    in the *new* week's Tue 03:00 ET -> Tue 03:00 ET boundary -- but which
-    scoring_period ESPN actually stamps on it is Inferred, never Observed,
-    since no WAIVER-type row has ever existed on disk (Observed: 214/214
-    exported transactions are DRAFT/ROSTER-LINEUP/FREEAGENT/TRADE_PROPOSAL,
-    zero WAIVER). DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL rows are excluded from
-    the window and the excluded count is reported, not silently dropped.
+    in the *new* week's Tue 03:00 ET -> Tue 03:00 ET boundary.
+
+    Both halves of that are now **Observed** (2026-09-16 pull, this league's
+    first waiver run ever captured): `WAIVER`-type rows do exist, and ESPN
+    stamped the Tuesday-night-processed claims `scoring_period = 2` -- the
+    new week's, as the boundary implied. The prior docstring's "Observed:
+    214/214 ... zero WAIVER" was measured against a period-1 snapshot that
+    the export has since overwritten (see docs known gaps: the transactions
+    export is not cumulative), so it is retired rather than carried.
+
+    DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL rows are excluded from the window and
+    the excluded count is reported, not silently dropped.
 
     `waiver_type_observed` is checked against the *whole* export, not just
     this window -- it is a standing fact about this league, not a
@@ -88,10 +105,18 @@ def settlements(transactions_df, week):
 
 
 def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id):
-    """Settled (non-pending) FREEAGENT/WAIVER ADD/DROP rows in the same
-    `{week - 1, week}` window `settlements()` uses, split three ways: what
-    we claimed, what another team claimed (so an alternate can be offered),
-    and who is newly available since last week.
+    """Successful (`status == EXECUTED`) FREEAGENT/WAIVER ADD/DROP rows in
+    the same `{week - 1, week}` window `settlements()` uses, split three
+    ways: what we claimed, what another team claimed (so an alternate can be
+    offered), and who is newly available since last week.
+
+    `status` is load-bearing, not cosmetic. ESPN records *every* team's
+    attempt on a player, so a contested claim yields several rows for one
+    player -- one EXECUTED for the winner and a FAILED_* for each loser
+    (Observed 2026-09-16: Devaughn Vele carried an EXECUTED add for team 8
+    and a FAILED_INVALIDPLAYERSOURCE add for team 5 at the same timestamp).
+    Filtering on type/item_type alone therefore reports a player we *lost*
+    as claimed by us, and shows one player claimed by two teams at once.
 
     Every row's `player_name`/`position`/`pro_team` is resolved from
     `pool_df` by `player_id`, never from `transactions_df["player_name"]` --
@@ -106,7 +131,8 @@ def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id):
     fixtures, same contract as `add_candidates`."""
     empty = {
         "insufficient": True, "claimed_by_us": [], "claimed_by_others": [], "newly_available": [],
-        "pending_count": 0, "excluded_count": 0, "unresolved_ids": set(),
+        "pending_count": 0, "failed_count": 0, "unknown_count": 0, "excluded_count": 0,
+        "unresolved_ids": set(),
     }
     if transactions_df.empty:
         return {**empty, "reason": "no transactions export on disk"}
@@ -116,8 +142,26 @@ def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id):
     included = windowed[windowed["type"].isin(_SETTLEMENT_TYPES)]
     excluded_count = len(windowed) - len(included)
 
-    pending_count = int((included["is_pending"] == True).sum())  # noqa: E712
-    settled = included[included["is_pending"] == False]  # noqa: E712
+    # Four exhaustive buckets, so no row can vanish between them. A null
+    # status must compare False rather than propagate: `pd.NA == "PENDING"`
+    # is NA, and an NA mask would let the row escape every bucket -- exactly
+    # the silent drop this partition exists to prevent. `unknown` is kept
+    # apart from `failed` because "we could not read this row's outcome" and
+    # "this claim lost" are different facts, and reporting the first as the
+    # second is the misleading-figure case this repo forbids.
+    status = included["status"].astype("string").str.upper().fillna("")
+    pending_mask = ((included["is_pending"] == True) | (status == _PENDING_STATUS))  # noqa: E712
+    pending_mask = pending_mask.fillna(False).astype(bool)
+    executed_mask = ~pending_mask & (status == _EXECUTED_STATUS)
+    failed_mask = ~pending_mask & ~executed_mask & (
+        status.str.startswith(_FAILED_PREFIX) | (status == _CANCELED_STATUS)
+    )
+    unknown_mask = ~pending_mask & ~executed_mask & ~failed_mask
+
+    pending_count = int(pending_mask.sum())
+    failed_count = int(failed_mask.sum())
+    unknown_count = int(unknown_mask.sum())
+    settled = included[executed_mask]
 
     pool_by_id = {}
     if not pool_df.empty:
@@ -172,6 +216,8 @@ def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id):
         "claimed_by_others": claimed_by_others,
         "newly_available": newly_available,
         "pending_count": pending_count,
+        "failed_count": failed_count,
+        "unknown_count": unknown_count,
         "excluded_count": excluded_count,
         "unresolved_ids": unresolved_ids,
     }
