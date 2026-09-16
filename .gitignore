@@ -25,6 +25,13 @@ CLAUDE.*.md
 # Data is never committed
 data/
 
+# Generated summaries are an S3 artifact, not a repo one -- unlike reports/,
+# which is git-tracked. summaries/ holds only what the latest run produced;
+# the bucket holds the history. .cache/ is the read-only pull of both
+# prefixes that `espn_ff summarize` checks against.
+summaries/
+.cache/
+
 # Rendered IAM/S3 policies carry the real AWS account id and bucket name.
 # Only the <ACCOUNT_ID>/<BUCKET> placeholder templates are tracked.
 infra/*.json

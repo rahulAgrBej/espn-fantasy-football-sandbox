@@ -77,7 +77,7 @@ fields the schedule puts in the event detail.
 
 ## The schedules
 
-All eighteen are pinned to `America/New_York`. EventBridge cron takes six fields
+All twenty-two are pinned to `America/New_York`. EventBridge cron takes six fields
 — minute, hour, day-of-month, month, day-of-week, year — and requires `?` in
 one of the two day fields.
 
@@ -102,6 +102,26 @@ one of the two day fields.
 | `report-tuesday` | `cron(0 10 ? * TUE *)` | Tue 10:00 | `day=tuesday` |
 | `report-tuesday-waivers` | `cron(0 11 ? * TUE *)` | Tue 11:00 | `day=tuesday-waivers` |
 | `report-wednesday` | `cron(0 10 ? * WED *)` | Wed 10:00 | `day=wednesday` |
+| `summary-monday` | `cron(50 10 ? * MON *)` | Mon 10:50 | — |
+| `summary-tuesday` | `cron(20 10 ? * TUE *)` | Tue 10:20 | — |
+| `summary-tuesday-waivers` | `cron(20 11 ? * TUE *)` | Tue 11:20 | — |
+| `summary-wednesday` | `cron(20 10 ? * WED *)` | Wed 10:20 | — |
+
+The four `summary-*` rows are unlike every other schedule in this stack:
+they are a **backstop**, not the primary trigger. `summary.yml` normally
+runs off a `workflow_run` event fired by `report.yml` completing, within
+seconds of the report landing in S3, and by the time one of these slots
+arrives there is usually nothing left to do. They exist because a
+GitHub-delivered event is exactly the class of thing this whole stack was
+built to stop depending on (see "Why the clock moved") — an AWS schedule is
+the only part of this system that can notice a report has no summary.
+
+They send no inputs at all, because `espn_ff summarize` takes none: it
+discovers what needs summarizing rather than being told. Four exist rather
+than one so Tuesday's waiver summary lands on Tuesday rather than waiting
+for the next slot to come round. The 20-minute offsets are a margin over a
+*report run*, not over a feed, so they carry none of the ordering
+constraints below. See `docs/ai-summaries.md`.
 
 ### DST stops mattering
 
@@ -149,6 +169,14 @@ against a 500-credit period, and credits do not come back. So the `odds` rule
 and the five `odds` schedules set `MaximumRetryAttempts: 0` and rely on the DLQ
 alarm instead: a missed odds slot that a person re-fires by hand is strictly
 cheaper than a double-spend.
+
+`summary` sits at the far end of the same spectrum and keeps its retries for
+a stronger reason than the others. It is not merely idempotent by
+convention — it is idempotent by construction: the command's entire job is
+to find reports that have no summary, so a duplicate delivery finds none and
+issues no model call at all. The calls it does make are not credit-metered
+either, so even a genuine double-run would cost cents rather than quota
+*(see `docs/ai-summaries.md`)*.
 
 ## How a failed trigger becomes visible
 
@@ -233,6 +261,15 @@ removal on the default branch first, then flip the parameter.** `on.schedule`
 stops applying the moment it is off `main`, so doing it the other way round
 leaves a window where GitHub and AWS both own the slot.
 
+`SummaryScheduleState` is the one switch that arbitrates nothing —
+`summary.yml` never had an `on.schedule` to remove, so there is no window to
+avoid and it can be flipped at any time. Its four slots are a backstop
+behind a `workflow_run` event, and because the job is idempotent a backstop
+that fires against work already done costs nothing. The ordering that *does*
+matter for it is the ordinary one: `summary.yml` must be on the default
+branch before `workflow_run` will fire for it at all *(Documented —
+GitHub)*.
+
 Unlike `infra/*.json`, this template carries no account id and is tracked in
 git — `.gitignore` and `.githooks/pre-commit` block the rendered JSON policies
 but not this.
@@ -273,6 +310,17 @@ auto-disable.
 - **At-least-once delivery is mitigated for `odds`, accepted elsewhere.** A
   fully idempotent design would gate dispatch on the S3 receipts under
   `logs/runs/`, which is more machinery than the risk currently justifies.
+  `summary` is the one workflow that genuinely does not need that gate — it
+  discovers its own work, so a duplicate delivery finds nothing to do.
+- **The `summary-*` slots cover a trigger this stack cannot observe.** They
+  are a backstop behind `summary.yml`'s `workflow_run` event, and that event
+  is delivered by GitHub — the thing this whole migration exists to stop
+  depending on. A dropped event is invisible for up to 20 minutes, and the
+  DLQ alarm cannot see it at all, because nothing was dispatched to fail.
+  What the backstop guarantees is that a summary is at most one slot late,
+  not that anyone learns the fast path stopped working. **None of the four
+  has fired on a real week**, and neither has the `workflow_run` trigger
+  itself.
 - **Nothing has been Observed on a real NFL week.** The DST arithmetic and the
   ordering gaps were verified before deploying, but no full week has run
   through this path. Treat the timings as intent until `logs/runs/` has a few

@@ -98,6 +98,28 @@ def odds_api_key():
     return key
 
 
+def gemini_api_key():
+    """The Gemini API key, or a fix-it error.
+
+    Mirrors odds_api_key's shape but not its stakes: this credential is not
+    credit-metered, so "unset" here costs a summary, not a budget. The error
+    is raised rather than returning "" for the same reason as above -- a
+    caller must be able to tell unset apart from empty instead of sending an
+    unauthenticated request and reading the 401 as an outage.
+    """
+    load_dotenv()
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        # Imported locally: espn_ff.ai.client imports this module, so a
+        # module-level import here would be circular -- same as the odds one.
+        from .ai.client import GeminiError
+
+        raise GeminiError(
+            "GEMINI_API_KEY not set -- add it to .env (see .env.example) or export it in your shell."
+        )
+    return key
+
+
 def odds_quota_reset_day():
     """Day-of-month the metered quota resets, once observed -- see
     espn_ff/odds/ledger.py:effective_quota. None until ODDS_QUOTA_RESET_DAY

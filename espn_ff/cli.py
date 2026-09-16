@@ -5,8 +5,11 @@ import sys
 from datetime import date, datetime
 
 import pandas as pd
+import requests
 
 from . import config, constants, stats
+from .ai import summarize as ai_summarize
+from .ai.client import GeminiError
 from .client import EspnClient, EspnError, PrivateLeagueError
 from .extract import draft, matchups, players, rosters, settings, teams
 from .extract._common import team_name
@@ -519,6 +522,56 @@ def cmd_report(client, args):
     return 0
 
 
+def cmd_summarize(client, args):
+    """Summarise every rendered report that has no summary object yet, from
+    markdown already on disk.
+
+    Takes no report input on purpose. `summary.yml`'s primary trigger is
+    `workflow_run` off report.yml, and a workflow_run event does not carry
+    the triggering run's dispatch inputs -- so rather than plumb the day
+    across, this command does not need it. That makes it idempotent (the
+    event trigger and the AWS backstop can both fire without
+    double-summarizing) and self-healing (a summary missed because the model
+    was down is picked up by the next trigger). `--day`/`--week`/`--force`
+    are debugging and backfill filters, not part of the scheduled path.
+
+    **No ESPN call at all.** It reads two markdown caches plus two data/out/
+    exports and nothing else -- in particular it never recomputes
+    `client.current_scoring_period()`, which would otherwise let a scoring
+    period rolling over between the report run and the summary run put the
+    two on different weeks.
+
+    **Always returns EXIT_OK.** A missing GEMINI_API_KEY, a missing report,
+    a GeminiError or a dead connection all print to stderr and return 0.
+    This is a deliberate departure from this CLI's "1 = transient failure"
+    convention, for this one command only: a summary is additive, so
+    nothing it can fail at is worth failing a run over. See
+    docs/automation.md's exit-code table.
+    """
+    root = config.PROJECT_ROOT
+    try:
+        result = ai_summarize.run(
+            # S3 first, the checkout only as a backup -- see
+            # ai.summarize.resolve_source.
+            reports_dir=args.reports_dir or (root / ".cache" / "s3-reports"),
+            reports_fallback_dir=args.reports_fallback_dir or (root / "reports"),
+            summaries_dir=args.summaries_dir or (root / ".cache" / "s3-summaries"),
+            out_dir=args.summaries_out or (root / "summaries"),
+            day=args.day,
+            week=args.week,
+            limit=args.limit,
+            force=args.force,
+        )
+    except (GeminiError, requests.RequestException) as exc:
+        print(f"\nsummarize: {exc}", file=sys.stderr)
+        print("Nothing was written; the next trigger will pick these up.", file=sys.stderr)
+        return EXIT_OK
+
+    if result["failed"]:
+        print(f"  {len(result['failed'])} report(s) left unsummarized this run", file=sys.stderr)
+    return EXIT_OK
+
+
 # Exit codes. Unattended runs are alerted on from these alone, so the two
 # predictable, actionable failures get their own rather than sharing 1 with
 # every transient outage.
@@ -540,6 +593,7 @@ COMMANDS = {
     "projections": cmd_projections,
     "credits": cmd_credits,
     "report": cmd_report,
+    "summarize": cmd_summarize,
 }
 
 
@@ -584,7 +638,8 @@ def main(argv=None):
     ap.add_argument(
         "--force", action="store_true",
         help="nflverse: bypass the timestamp short-circuit and re-download every asset. "
-        "odds props: bypass the Wednesday weekday check only -- never the credit budget.",
+        "odds props: bypass the Wednesday weekday check only -- never the credit budget. "
+        "summarize: re-summarize reports that already have a summary.",
     )
     ap.add_argument(
         "--min-snap-pct", type=float, default=0.0,
@@ -598,7 +653,36 @@ def main(argv=None):
         "--events", help="odds props/pre_lock: comma-separated event ids to restrict the pull to",
     )
     ap.add_argument(
-        "--day", help=f"report command: which day's report to render, one of {sorted(REPORTS)}",
+        "--day", help=f"report command: which day's report to render, one of {sorted(REPORTS)}. "
+        "summarize: optional filter to reports of that type only.",
+    )
+    ap.add_argument(
+        "--limit", type=int, default=ai_summarize.DEFAULT_LIMIT,
+        help="summarize: most reports to summarize in one run. The cap is logged by name, "
+        "never silent, so a backfill that it bounded is visible in the run output.",
+    )
+    ap.add_argument(
+        "--reports-dir",
+        help="summarize: the authoritative rendered reports -- the S3 mirror (default "
+        ".cache/s3-reports, filled by scripts/s3_sync.sh pull-reports)",
+    )
+    ap.add_argument(
+        "--reports-fallback-dir",
+        help="summarize: backup reports tree, read ONLY when --reports-dir is empty "
+        "(default reports/, the git checkout). Never merged with the S3 mirror, and the "
+        "choice is recorded in every envelope as report.source.",
+    )
+    ap.add_argument(
+        "--summaries-dir",
+        help="summarize: existing summaries to check against, read-only (default "
+        ".cache/s3-summaries, filled by scripts/s3_sync.sh pull-summaries)",
+    )
+    ap.add_argument(
+        "--summaries-out",
+        help="summarize: where new envelopes are written (default summaries/, pushed by "
+        "scripts/s3_sync.sh sync-summaries). Deliberately not --summaries-dir: that tree "
+        "holds the full history and this one holds only what this run produced, which is "
+        "what keeps the push append-only.",
     )
     args = ap.parse_args(argv)
 

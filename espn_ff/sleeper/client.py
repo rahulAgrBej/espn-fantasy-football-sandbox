@@ -3,8 +3,13 @@
 Free, unauthenticated, no per-league scoping -- our league lives on ESPN, this
 only pulls the NFL-wide player pool and trending lists. `espn_ff/client.py`
 no longer holds a monopoly on the network; this is the second of what is now
-four modules that touch it (nflverse's client is the third, the metered
-espn_ff/odds/client.py the fourth and last).
+five modules that touch it (nflverse's client is the third, the metered
+espn_ff/odds/client.py the fourth, and espn_ff/ai/client.py the fifth).
+
+This module's retry idiom -- MAX_ATTEMPTS/BACKOFF_BASE/RETRY_STATUS and the
+`for attempt in range(...)` loop below -- is the shared one; nflverse's and
+the AI client's mirror it, and only the odds client diverges (deliberately,
+because a retry there is a new billed request).
 """
 
 import time

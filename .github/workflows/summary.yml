@@ -1,0 +1,164 @@
+name: summary
+
+# Generates a prose summary of every rendered report that does not have one
+# yet, and stores each as its own JSON envelope under the bucket's
+# summaries/ prefix. The report markdown is never touched -- summaries are a
+# separate artifact with a separate lifecycle, so a dead or unconfigured
+# model can never corrupt or block a report. See docs/ai-summaries.md.
+#
+# Two triggers, both landing in the same input-free, idempotent job:
+#
+#   workflow_run  the primary path. report.yml's LAST step is its S3 mirror,
+#                 so by the time that run completes the markdown is already
+#                 in the bucket. Fires within seconds, costs four lines of
+#                 YAML and no new AWS resources.
+#   dispatch      the backstop. Four EventBridge schedules 20 minutes behind
+#                 each report slot (docs/aws-scheduling.md), for a dropped
+#                 event or a report.yml that never ran at all.
+#
+# The backstop is in character for this repo: docs/aws-scheduling.md records
+# why the clock moved to AWS in the first place -- GitHub cron missed five
+# consecutive slots with nothing outside GitHub knowing one was due. A
+# GitHub-internal event is a different reliability profile from GitHub cron,
+# but not an independently observable one, so the AWS schedule stays as the
+# thing that notices.
+#
+# `espn_ff summarize` takes no report input, which is what lets both paths
+# share one job: workflow_run does not carry the triggering run's dispatch
+# inputs, so the command discovers what needs doing instead of being told.
+# See cmd_summarize's docstring.
+#
+# Deliberately NOT an ff-run wrapper. That action's contract is "restore
+# state -> run -> archive -> push state -> receipt"; this job touches no
+# data/ state, needs a credential ff-run does not carry, and has to
+# interleave three S3 reads before the Python run. Writing the steps out
+# keeps ff-run unchanged for its five existing callers.
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [report]
+    types: [completed]
+
+# No contents: write -- unlike report.yml this job commits nothing. Its only
+# output goes to S3, and summaries/ is gitignored.
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: summary
+  cancel-in-progress: false
+
+jobs:
+  summarize:
+    # workflow_run fires on failure and cancellation too, so the conclusion
+    # is gated here. A dispatch (the backstop, or a manual run) carries no
+    # workflow_run context at all, hence the event_name arm.
+    if: >-
+      github.repository == 'rahulAgrBej/espn-fantasy-football-sandbox' &&
+      (github.event_name != 'workflow_run' ||
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    # Required for BOTH the secret lookup and the assume-role call -- see
+    # docs/automation.md's "Credentials". Without it this job fails at the
+    # first S3 step, and that failure is the control working.
+    environment: gh_env
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          # No lockfile exists, so key the cache on the dependency
+          # declaration -- otherwise it never invalidates.
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # The prompt's league-facts section: our team name and the legal
+      # lineup shape. Both degrade to an explicit "unavailable in this run"
+      # line rather than failing, matching report.yml's restore-out
+      # discipline.
+      - name: Restore the exports the prompt reads
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+        run: ./scripts/s3_sync.sh restore-out teams roster-slots
+
+      # **S3 is the source of truth**, not the checkout above. report.yml
+      # mirrors reports/ there as its last step, the envelope's report.path
+      # keys name bucket objects, and reading the same prefix the summaries
+      # are checked against keeps both sides of the has-a-summary test
+      # consistent.
+      #
+      # The checkout's own reports/ is a *backup*: espn_ff summarize falls
+      # back to it only when this pull turns up empty, never merging the two,
+      # and tags those envelopes source=local while warning loudly. See
+      # espn_ff/ai/summarize.py:resolve_source.
+      - name: Pull the report and summary caches
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+        run: |
+          ./scripts/s3_sync.sh pull-reports
+          ./scripts/s3_sync.sh pull-summaries
+
+      - name: Summarize
+        id: run
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # Masked the way ff-run masks the odds key. The AI client keeps the
+          # credential in a request header and never in a URL, so it cannot
+          # leak through an exception the way a query-parameter key can --
+          # but that does not cover anything else this job might print.
+          if [ -n "$GEMINI_API_KEY" ]; then
+            echo "::add-mask::$GEMINI_API_KEY"
+          fi
+          set +e
+          .venv/bin/python -m espn_ff summarize
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "summarize exited $code"
+
+      # if: always() on both, matching ff-run's own persistence steps: a run
+      # that generated two summaries and then died still lands those two.
+      # Append-only -- see s3_sync.sh's cmd_sync_summaries for why --delete
+      # here would be destructive.
+      - name: Push summaries to S3
+        if: always()
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+        run: ./scripts/s3_sync.sh sync-summaries
+
+      # Leaves the same operational trail under logs/runs/ as every other
+      # workflow here, so this one is not the single job invisible to the
+      # receipts.
+      - name: Write run receipt
+        if: always()
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+        run: |
+          ./scripts/s3_sync.sh receipt \
+            summary "${{ github.run_id }}" summarize "${{ steps.run.outputs.code || 1 }}"
+
+      # `summarize` returns 0 for every failure it knows how to have, so a
+      # non-zero here means something outside the command broke -- and that
+      # IS worth failing on.
+      - name: Report outcome
+        if: always()
+        run: |
+          code="${{ steps.run.outputs.code || 1 }}"
+          if [ "$code" = "0" ]; then
+            echo "::notice::summarize succeeded"
+          else
+            echo "::error::summarize failed unexpectedly (exit $code) -- it is built to exit 0 on every failure it anticipates"
+            exit "$code"
+          fi

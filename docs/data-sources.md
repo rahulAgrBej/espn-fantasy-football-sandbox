@@ -574,6 +574,45 @@ render "insufficient history" rather than a number before then.
 
 ---
 
+## Generated summaries
+
+The one artifact here that is not ingested from a vendor at all — it is
+produced from the reports this repo already renders, by `espn_ff summarize`.
+It has no upstream cadence to report: it exists when a report exists and a
+generation succeeded. `docs/ai-summaries.md` owns the prompt, the triggering
+and the cost; this section covers only the stored fields.
+
+### `summaries/<season>/week-NN/<YYYY-MM-DD>-<day>-<slug>.json` — `ai/summarize.envelope` (14 fields)
+
+S3 only — gitignored locally, and written to the bucket's `summaries/`
+prefix append-only.
+
+| Field | Meaning | Upstream release cadence | Our ingest |
+|---|---|---|---|
+| `schema_version` | `1`. Bumped if the shape below changes incompatibly | — | — |
+| `season` / `week` / `day` | Parsed from the report's path and filename; `day` is a `cli.REPORTS` key, so `tuesday-waivers` not `tuesday` | — | — |
+| `report.path` | The **bucket key** of the report summarized, not the runner cache path it was read from | — | — |
+| `report.source` | `s3` when the report came from the bucket mirror (the source of truth), `local` when the mirror was empty and the run fell back to the git checkout. A `local` value means report.yml's mirror step is not landing — the summary is still valid, the pipeline is not | — | — |
+| `report.title` / `.covers` / `.week_window` / `.rendered` | Parsed verbatim off the 5-line block `render.header_lines` emits — read back from the artifact, never re-derived, so they describe the report on disk even if a later render would differ | — | — |
+| `report.sha256` | Hex digest of the report text. **The freshness field**: it is what tells a later reader whether this summary still describes the report sitting beside it | — | — |
+| `summary_markdown` | The generated prose. Plain markdown, no heading, no tables, capped at `prompt.WORD_CAP` words | — | — |
+| `model` | The model id that produced it | — | — |
+| `generated_at` | ISO-8601 **with an ET offset**, never naive UTC — same trap `render._fmt_ts` exists to avoid | — | Written every successful generation |
+| `prior_reports` | Bucket keys of the up-to-4 same-season, same-type reports supplied as context, oldest-first. Empty for the first report of a season | — | — |
+| `prompt_sha256` | Hex digest of the system instruction plus user message. Tells a reader whether the prompt that produced this summary is still the one in the tree | — | — |
+| `usage` | `promptTokenCount` / `candidatesTokenCount` / `totalTokenCount` as the vendor reported them; zeros when the response carried no `usageMetadata` | — | — |
+
+**There is no staleness flag here, deliberately.** Every other artifact in
+this document carries one because a feed can go dark and leave old data
+looking current. A summary cannot: `report.sha256` and `prompt_sha256` make
+staleness *computable* by the reader rather than asserted by the writer, and
+a summary whose report hash no longer matches is not stale, it is describing
+a different document. That is a stronger statement than a boolean, and it is
+the same "freshness from the artifact, never from mtime" rule this document
+applies everywhere else, pushed one level further.
+
+---
+
 ## Closing notes
 
 **Deferred, intentionally** (worth listing so this reads as a complete audit,

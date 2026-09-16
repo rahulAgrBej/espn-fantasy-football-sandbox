@@ -215,6 +215,53 @@ cmd_sync_reports() {
     s3 s3 sync "$ROOT/reports" "s3://$BUCKET/reports" --delete --only-show-errors
 }
 
+# --- pull-reports / pull-summaries: S3 -> a local read cache --------------
+# For summary.yml, which has to know which reports already have a summary
+# before it can decide what to generate. Both land under .cache/ (gitignored)
+# rather than in the working tree, and neither uses --delete: they are read
+# caches, not mirrors. That matters -- cmd_sync_reports stays the ONLY
+# --delete path over the reports/ prefix, so its header comment above
+# explaining why --delete is safe there remains the whole story.
+#
+# reports/ specifically is NOT read from the local git checkout, even though
+# actions/checkout has one: S3 is where report.yml's own mirror step leaves
+# the authoritative copy, and reading the same prefix that summaries are
+# checked against keeps the two sides of the has-a-summary test consistent.
+cmd_pull_reports() {
+    local dest="${1:-$ROOT/.cache/s3-reports}"
+    mkdir -p "$dest"
+    say "pull s3://$BUCKET/reports -> $dest (read cache, no --delete)"
+    s3 s3 sync "s3://$BUCKET/reports" "$dest" "${COMMON_EXCLUDES[@]}" --only-show-errors
+}
+
+cmd_pull_summaries() {
+    local dest="${1:-$ROOT/.cache/s3-summaries}"
+    mkdir -p "$dest"
+    say "pull s3://$BUCKET/summaries -> $dest (read cache, no --delete)"
+    s3 s3 sync "s3://$BUCKET/summaries" "$dest" "${COMMON_EXCLUDES[@]}" --only-show-errors
+}
+
+# --- sync-summaries: local summaries/ -> S3 summaries/ (append-only) -------
+# **No --delete, and that is load-bearing.** Unlike reports/, summaries/ is
+# gitignored, so actions/checkout restores none of its history and the local
+# tree holds only what this run produced. A --delete mirror from a tree that
+# partial would wipe every prior summary in the bucket on every run -- the
+# exact state/ vs archive/ distinction this script's header spells out, with
+# summaries/ firmly on the archive/ side.
+#
+# Note the asymmetry with cmd_pull_summaries: that one fills .cache/, this
+# one pushes from summaries/. The two directories are deliberately different
+# (see espn_ff/ai/summarize.py's module docstring) -- the read cache holds
+# the full history, the output tree holds one run.
+cmd_sync_summaries() {
+    if [ ! -d "$ROOT/summaries" ]; then
+        say "no summaries/ -- nothing to sync"
+        return 0
+    fi
+    say "sync summaries/ -> s3://$BUCKET/summaries (append-only)"
+    s3 s3 sync "$ROOT/summaries" "s3://$BUCKET/summaries" "${COMMON_EXCLUDES[@]}" --only-show-errors
+}
+
 # --- receipt: record what this run actually did ---------------------------
 # Written even when the command failed, so a budget-aborted odds job or an
 # expired-cookie ESPN job leaves a trail. stale flags come from the feeds'
@@ -264,11 +311,14 @@ PY
 }
 
 case "${1:-}" in
-    restore)      shift; cmd_restore "${1:-}" ;;
-    restore-out)  shift; cmd_restore_out "$@" ;;
-    archive)      shift; cmd_archive ;;
-    push-state)   shift; cmd_push_state "${1:-}" ;;
-    sync-reports) shift; cmd_sync_reports ;;
-    receipt)      shift; cmd_receipt "$@" ;;
-    *) echo "usage: $0 {restore [subtrees]|restore-out <dataset>...|archive|push-state [owned-subtrees]|sync-reports|receipt <workflow> <run_id> <cmd> <code>}" >&2; exit 64 ;;
+    restore)        shift; cmd_restore "${1:-}" ;;
+    restore-out)    shift; cmd_restore_out "$@" ;;
+    archive)        shift; cmd_archive ;;
+    push-state)     shift; cmd_push_state "${1:-}" ;;
+    sync-reports)   shift; cmd_sync_reports ;;
+    pull-reports)   shift; cmd_pull_reports "${1:-}" ;;
+    pull-summaries) shift; cmd_pull_summaries "${1:-}" ;;
+    sync-summaries) shift; cmd_sync_summaries ;;
+    receipt)        shift; cmd_receipt "$@" ;;
+    *) echo "usage: $0 {restore [subtrees]|restore-out <dataset>...|archive|push-state [owned-subtrees]|sync-reports|pull-reports [dest]|pull-summaries [dest]|sync-summaries|receipt <workflow> <run_id> <cmd> <code>}" >&2; exit 64 ;;
 esac

@@ -45,14 +45,24 @@ Times are ET and hold year-round: the schedules are pinned to
 | `report.yml` | Tue 10:00 | `report --day tuesday` | no |
 | `report.yml` | Tue 11:00 | `report --day tuesday-waivers` | no |
 | `report.yml` | Wed 10:00 | `report --day wednesday` | no |
+| `summary.yml` | on `report` completing, **plus** four backstop slots | `summarize` | no |
 | `tests.yml` | on push / PR (GitHub's own trigger) | `pytest` | no |
 
-`tests.yml` is the only workflow GitHub still triggers by itself; it runs on
-`push` and `pull_request`, which are events rather than a clock. Every other
-row is an EventBridge schedule — `docs/aws-scheduling.md` has the cron
-expressions, the inputs each one sends, and the two 30-minute ordering gaps
-(espn→odds on Mon/Tue, nflverse routine→forced on Thursday) that must survive
-any retiming.
+`tests.yml` runs on `push` and `pull_request`; `summary.yml` runs on
+`workflow_run` off `report`. Those are the only two rows GitHub triggers by
+itself, and both are events rather than a clock — there is still no GitHub
+cron anywhere in this repo. Every other row is an EventBridge schedule —
+`docs/aws-scheduling.md` has the cron expressions, the inputs each one
+sends, and the two 30-minute ordering gaps (espn→odds on Mon/Tue, nflverse
+routine→forced on Thursday) that must survive any retiming.
+
+`summary.yml` is the one workflow with two triggers. The `workflow_run`
+event is the primary path and fires within seconds of a report landing in
+S3; the four EventBridge slots (Mon 10:50, Tue 10:20, Tue 11:20, Wed 10:20)
+are a backstop for a dropped event or a `report.yml` that never ran. Both
+land in the same input-free, idempotent job, so a backstop firing after the
+event already did the work finds nothing to do and spends nothing. See
+`docs/ai-summaries.md`.
 
 The `odds.yml` slots map one-to-one onto the five-job schedule in
 `docs/odds-budget.md`: `slate` (Tue 09:38 ET), `props` (Thu 10:08),
@@ -87,6 +97,7 @@ s3://espn-ff-data-2026/
   archive/    append-only history, never deleted            (synced WITHOUT --delete)
   latest/     newest copy of each output dataset
   reports/    exact mirror of the repo's reports/ tree       (synced WITH --delete)
+  summaries/  one JSON summary per report, append-only       (synced WITHOUT --delete)
   logs/runs/  one receipt per workflow run
 ```
 
@@ -96,6 +107,19 @@ one-writer-per-subtree sense, but because it mirrors a git-tracked
 directory — `actions/checkout` restores the complete history before
 `report.yml` runs, so the local copy is always the full, authoritative set
 by the time it syncs.
+
+**`summaries/` is the mirror image of that, and the difference is exactly
+why it never takes `--delete`.** It is gitignored, so `actions/checkout`
+restores none of its history and `summary.yml`'s local `summaries/` tree
+holds only what that run produced. A `--delete` mirror from a tree that
+partial would wipe every prior summary on every run. The prior history
+reaches the runner as a read-only cache under `.cache/s3-summaries` instead,
+which is never written to and never pushed — see `docs/ai-summaries.md`.
+
+Three verbs serve it: `pull-reports` and `pull-summaries` fill those read
+caches (neither uses `--delete`, so `sync-reports` stays the only
+`--delete` path over `reports/`), and `sync-summaries` pushes the run's
+output append-only.
 
 **The two prefixes exist because local pruning is not the archive policy.**
 `espn_ff/sleeper/snapshots.py:_prune` keeps only the last
@@ -119,6 +143,13 @@ needs to read but **pushes back only what it owns**:
 | `nflverse.yml` | `nflverse raw raw/nflverse` | `nflverse`, `raw/nflverse` |
 | `odds.yml` | `odds raw raw/odds` | `odds`, `raw/odds` |
 | `report.yml` | `raw sleeper nflverse raw/nflverse odds`, plus `latest/out/{matchups,weekly-rosters,player-pool,roster-slots,teams,transactions}` | none of `data/` — see below |
+| `summary.yml` | nothing under `data/` at all, only `latest/out/{teams,roster-slots}` plus the `reports/` and `summaries/` read caches | `summaries/`, which is outside `data/` and append-only |
+
+`summary.yml` takes `report.yml`'s pattern one step further: it restores no
+`data/` subtree whatsoever and so is not an `ff-run` caller at all (that
+action's whole contract is restore → run → archive → push *state*). It is
+also the only workflow that owns a bucket prefix outside `data/`, which is
+why it gets `sync-summaries` rather than `push-state`.
 
 `report.yml` is the odd one out twice over: it is the first workflow that
 passes an empty `push-paths` and means it (it restores several subtrees
@@ -196,8 +227,8 @@ Two consequences worth stating plainly, because this repo is public:
 The role's permissions stop at this one bucket, so even a successfully
 assumed session can reach nothing else in the account.
 
-`ESPN_S2`, `SWID`, `ODDS_API_KEY` and `AWS_ROLE_ARN` are `gh_env` secrets;
-`AWS_REGION` and `S3_BUCKET` are `gh_env` variables. No `.env` is written
+`ESPN_S2`, `SWID`, `ODDS_API_KEY`, `GEMINI_API_KEY` and `AWS_ROLE_ARN` are
+`gh_env` secrets; `AWS_REGION` and `S3_BUCKET` are `gh_env` variables. No `.env` is written
 in CI — `config.load_dotenv` uses `os.environ.setdefault`, so workflow
 `env:` entries win *(Documented — `espn_ff/config.py:60`)*.
 
@@ -218,6 +249,17 @@ the distinction lives entirely in `cli.py`'s handler ordering — which
 `tests/test_cli_exit_codes.py` pins.
 
 Exit 3 is the only one that always needs a person: see the runbook below.
+
+**`summarize` is the one command that never returns anything but 0.** A
+missing `GEMINI_API_KEY`, a missing report, a dead model or a dropped
+connection all print to stderr and exit 0. That is a deliberate departure
+from the table above, for this command only: a summary is additive — the
+report is already rendered, committed and mirrored by the time it runs — so
+nothing it can fail at is worth failing a run over. `GeminiError` is
+correspondingly absent from `cli.main`'s except-chain, so the departure
+cannot leak into any other command. `summary.yml` inverts it at the edge: a
+non-zero exit there means something *outside* the command broke, and the
+workflow does fail on it.
 
 ## Runbook
 
@@ -375,6 +417,13 @@ spend credits for a value that already exists.
   the clobbered run is lost.
 - **No lockfile.** `uv pip install -e ".[dev]"` resolves fresh each run, so
   an upstream release can break CI with no local change.
+- **`summary.yml`'s primary trigger is the one thing here GitHub delivers.**
+  Everything else moved to EventBridge precisely because GitHub offers no
+  delivery guarantee and no signal when a slot is skipped; a `workflow_run`
+  event is a different reliability profile from GitHub cron, but it is not
+  an independently observable one either. The four AWS backstop slots bound
+  the damage to ~20 minutes rather than eliminating it.
+  `docs/ai-summaries.md` has the rest of that layer's gaps.
 - **`latest/` duplicates `archive/`.** It exists for convenience; drop it
   if the redundancy stops earning its keep.
 - **A report can succeed and say nothing.** The skip-on-missing discipline

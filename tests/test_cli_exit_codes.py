@@ -10,14 +10,22 @@ with every transient outage:
 Both subclass a broader error (BudgetExceeded < OddsError,
 PrivateLeagueError < EspnError), so the distinction lives entirely in the
 handler ordering in cli.py. These tests pin that ordering.
+
+`summarize` is the one deliberate exception to all of it: it returns 0 for
+every failure it knows how to have, because a summary is additive and
+nothing it can fail at is worth failing a run over. GeminiError is
+deliberately absent from main()'s except-chain for that reason -- the
+command catches it itself. The last block of tests here pins that.
 """
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
+import requests
 
 from espn_ff import cli
+from espn_ff.ai.client import GeminiError
 from espn_ff.client import EspnError, PrivateLeagueError
 from espn_ff.nflverse.client import NflverseError
 from espn_ff.odds.ledger import BudgetExceeded, OddsError
@@ -121,3 +129,100 @@ def test_report_filename_uses_et_date_not_runner_local_date(monkeypatch, tmp_pat
     written = list(tmp_path.rglob("*-tuesday-week-in-review.md"))
     assert len(written) == 1
     assert written[0].name.startswith("2026-09-15-")
+
+
+# --- summarize: always 0 --------------------------------------------------
+
+
+REPORT = """\
+# Waiver wire and opening market -- 2026 week 2
+
+**Covers** week 2's waiver window
+**Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET
+**Rendered** Tue 2026-09-15 21:18 ET
+"""
+
+
+@pytest.fixture
+def summarize_root(monkeypatch, tmp_path):
+    """A project root with one unsummarized report and no credential in the
+    environment. cmd_summarize derives every default path from
+    config.PROJECT_ROOT, so pointing that at tmp_path is enough to keep the
+    whole command inside the sandbox."""
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+    # load_dotenv would otherwise read a real .env off the developer's disk
+    # and hand this test a live key.
+    monkeypatch.setattr(cli.config, "load_dotenv", lambda path=None: None)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    report = tmp_path / ".cache" / "s3-reports" / "2026" / "week-02" / "2026-09-15-tuesday-waiver-wire.md"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(REPORT)
+    return tmp_path
+
+
+def test_summarize_returns_zero_with_no_api_key(summarize_root, capsys):
+    """An unconfigured model must not fail a run. The report is already
+    written and mirrored; the summary is the additive part."""
+    assert cli.main(["summarize"]) == cli.EXIT_OK
+    assert "GEMINI_API_KEY not set" in capsys.readouterr().err
+
+
+def test_summarize_returns_zero_with_nothing_to_summarize(monkeypatch, tmp_path):
+    """The steady state: the AWS backstop firing 20 minutes after the
+    workflow_run event already did the work."""
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+
+    assert cli.main(["summarize"]) == cli.EXIT_OK
+
+
+def test_summarize_spends_nothing_when_there_is_nothing_to_do(monkeypatch, tmp_path):
+    """Not merely "returns 0" -- it must not construct a client at all, or
+    an idempotent no-op run would still fail on a missing credential."""
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+
+    def never(*args, **kwargs):
+        raise AssertionError("a client was constructed for a run with no work")
+
+    monkeypatch.setattr(cli.ai_summarize, "GeminiClient", never)
+    assert cli.main(["summarize"]) == cli.EXIT_OK
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        GeminiError("HTTP 503 after 4 attempts"),
+        GeminiError("generation stopped with finishReason=MAX_TOKENS"),
+        requests.ConnectionError("name or service not known"),
+    ],
+)
+def test_summarize_returns_zero_when_the_client_dies(summarize_root, monkeypatch, exc):
+    class DeadClient:
+        model = "dead"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def generate(self, *args, **kwargs):
+            raise exc
+
+    monkeypatch.setattr(cli.ai_summarize, "GeminiClient", DeadClient)
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-real-key")
+
+    assert cli.main(["summarize"]) == cli.EXIT_OK
+
+
+def test_summarize_returns_zero_when_the_client_cannot_even_be_built(summarize_root, monkeypatch):
+    def boom(*args, **kwargs):
+        raise GeminiError("GEMINI_API_KEY not set -- add it to .env")
+
+    monkeypatch.setattr(cli.ai_summarize, "GeminiClient", boom)
+
+    assert cli.main(["summarize"]) == cli.EXIT_OK
+
+
+def test_gemini_errors_are_not_in_mains_except_chain():
+    """The departure is scoped to cmd_summarize, deliberately. If GeminiError
+    were ever added to main()'s handler chain it would silently start
+    mapping to exit 1 for every other command too."""
+    assert not issubclass(GeminiError, (EspnError, NflverseError, OddsError))

@@ -98,6 +98,17 @@ Parameters:
     Default: DISABLED
     AllowedValues: [ENABLED, DISABLED]
 
+  # Unlike every switch above, this one does not arbitrate between GitHub's
+  # clock and AWS's -- summary.yml never had an on.schedule. It gates a
+  # *backstop* behind a GitHub-internal workflow_run event that fires first
+  # in the normal case. Enabling it is safe at any time: the job is
+  # idempotent, so a backstop firing after the event already ran finds
+  # nothing to do.
+  SummaryScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+
 Conditions:
 
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
@@ -138,7 +149,8 @@ Resources:
               IsValueSecret: false
 
   # The `*` is a dynamic path parameter filled per rule with the workflow
-  # filename, so all five workflows share one destination.
+  # filename, so every dispatched workflow shares one destination -- a new
+  # one needs a rule, never a second destination or a token change.
   GitHubDispatchDestination:
     Type: AWS::Events::ApiDestination
     Properties:
@@ -271,9 +283,10 @@ Resources:
 
   # --- Rules: one per workflow --------------------------------------------
   #
-  # espn, sleeper and health take no dispatch inputs, so their body is a
-  # constant. nflverse and odds carry inputs, so their body is assembled by an
-  # input transformer from fields the schedule puts in the event detail.
+  # espn, sleeper, health and summary take no dispatch inputs, so their body
+  # is a constant. nflverse, odds and report carry inputs, so their body is
+  # assembled by an input transformer from fields the schedule puts in the
+  # event detail.
 
   HealthRule:
     Type: AWS::Events::Rule
@@ -417,6 +430,33 @@ Resources:
             InputPathsMap:
               day: $.detail.day
             InputTemplate: !Sub '{"ref":"${GitHubRef}","inputs":{"day":"<day>"}}'
+          RetryPolicy:
+            MaximumRetryAttempts: 5
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig:
+            Arn: !GetAtt DispatchDlq.Arn
+
+  # summary is the only rule whose workflow takes no inputs at all, so its
+  # body is a constant like health/sleeper/espn rather than an input
+  # transformer. It keeps the default auto-retry: `espn_ff summarize`
+  # discovers what needs doing instead of being told, so a duplicate
+  # delivery finds every report already summarized and spends nothing. That
+  # is the opposite of odds, where a duplicate pre_lock costs 25 credits.
+  SummaryRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ff-dispatch-summary
+      EventBusName: !Ref DispatchBus
+      EventPattern:
+        source: [ff.scheduler]
+        detail-type: [dispatch.summary]
+      Targets:
+        - Id: github
+          Arn: !GetAtt GitHubDispatchDestination.Arn
+          RoleArn: !GetAtt DispatchInvokeRole.Arn
+          Input: !Sub '{"ref":"${GitHubRef}"}'
+          HttpParameters:
+            PathParameterValues: [summary.yml]
           RetryPolicy:
             MaximumRetryAttempts: 5
             MaximumEventAgeInSeconds: 3600
@@ -923,6 +963,118 @@ Resources:
         EventBridgeParameters:
           Source: ff.scheduler
           DetailType: dispatch.report
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  # --- Summary backstops ---------------------------------------------------
+  #
+  # Each sits 20 minutes behind the report slot it covers. They are a
+  # backstop, not the primary path: summary.yml's workflow_run trigger
+  # normally fires within seconds of the matching report run completing, and
+  # by the time one of these arrives there is usually nothing left to do.
+  #
+  # All four send an identical, empty payload -- `espn_ff summarize` takes
+  # no input. Four exist rather than one so Tuesday's waiver summary lands on
+  # Tuesday rather than waiting for the next slot to come round; 20 minutes
+  # is a margin over a report run, not over a feed.
+  #
+  # These are the only schedules in this stack that may safely fire against
+  # work that is already done, which is also why they keep the default
+  # retries -- see SummaryRule.
+
+  SummaryMondaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: summary-monday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref SummaryScheduleState
+      ScheduleExpression: cron(50 10 ? * MON *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Mon 10:50 ET -- backstop, 20 min behind report-monday
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.summary
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  SummaryTuesdaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: summary-tuesday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref SummaryScheduleState
+      ScheduleExpression: cron(20 10 ? * TUE *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Tue 10:20 ET -- backstop, 20 min behind report-tuesday
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.summary
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  SummaryTuesdayWaiversSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: summary-tuesday-waivers
+      GroupName: !Ref ScheduleGroup
+      State: !Ref SummaryScheduleState
+      ScheduleExpression: cron(20 11 ? * TUE *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Tue 11:20 ET -- backstop, 20 min behind report-tuesday-waivers
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.summary
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  SummaryWednesdaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: summary-wednesday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref SummaryScheduleState
+      ScheduleExpression: cron(20 10 ? * WED *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Wed 10:20 ET -- backstop, 20 min behind report-wednesday
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.summary
         RetryPolicy:
           MaximumRetryAttempts: 5
           MaximumEventAgeInSeconds: 3600

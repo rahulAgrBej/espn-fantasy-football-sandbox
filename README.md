@@ -44,10 +44,18 @@ and error message is redacted before it's printed) and the pre-commit hook
 below blocks any staged file containing an `ODDS_API_KEY=<value>` assignment
 or a bare 32-hex-character key.
 
+`summarize` needs a third key, `GEMINI_API_KEY`, from
+[aistudio.google.com](https://aistudio.google.com). It bills, but unlike the
+Odds key it is not metered against a fixed quota — a summary costs roughly
+two cents — so there is no ledger and no guard, only the same pre-commit
+scan. It travels as an `x-goog-api-key` request header and never as a URL
+query parameter, so there is no URL or exception for it to leak through.
+
 ### Keeping secrets out of git
 
 Two layers. `.gitignore` covers `.env*`, `*.env`, `.envrc`, `.Renviron`,
-`CLAUDE.md` and friends, `.claude/`, `data/`, and key/pem files.
+`CLAUDE.md` and friends, `.claude/`, `data/`, `summaries/`, `.cache/`, and
+key/pem files.
 
 Because `.gitignore` does nothing against `git add -f` or an already-tracked
 file, `.githooks/pre-commit` rejects any commit that stages one of those paths.
@@ -82,6 +90,8 @@ with permissions that stop at a single S3 bucket. See `docs/automation.md`.
 .venv/bin/python -m espn_ff odds <job>       # metered! one of: slate, props, line_movement, pre_lock, results
 .venv/bin/python -m espn_ff projections      # derived betting-market projections -> data/out/ (no network)
 .venv/bin/python -m espn_ff credits          # credits used / 500 (free, local, reads the ledger only)
+.venv/bin/python -m espn_ff report --day monday   # render one weekly report -> reports/ (no network)
+.venv/bin/python -m espn_ff summarize        # AI summary of every report that has none yet -> summaries/
 ```
 
 Flags: `--season`, `--league-id`, `--team-id`, `--week`, `--weeks 1-18`,
@@ -97,7 +107,14 @@ Wednesday weekday check -- never the credit budget -- for `odds props`),
 `--min-snap-pct` (display filter on the `features` CSV, default 0),
 `--dry-run` (odds: estimate the credit cost and check the guard without
 issuing anything), `--events` (odds `props`/`pre_lock`: comma-separated
-event ids to restrict the pull to).
+event ids to restrict the pull to), `--day` (which report to render, or a
+filter for `summarize`), `--limit` / `--reports-dir` / `--summaries-dir` /
+`--summaries-out` (`summarize`; `--force` there re-summarizes what already
+has a summary).
+
+`summarize` never exits non-zero -- a missing key, a dead model or a dropped
+connection all print to stderr and return 0, because a summary is additive
+and the report it describes is already written. See `docs/ai-summaries.md`.
 
 CSVs land in `data/out/` as `dd-mm-yyyy-name.csv`, and are mirrored to S3
 by the scheduled workflows -- see `docs/automation.md`.
@@ -117,6 +134,8 @@ Prefer `gh workflow run` over running these commands locally -- see
 | `espn_ff/sleeper/` | Sleeper player-status layer — client, snapshots, ESPN id join, derived signals |
 | `espn_ff/nflverse/` | nflverse role-feature layer — client, parquet store, ESPN id crosswalk, derived features |
 | `espn_ff/odds/` | The Odds API betting-market layer — credit ledger, metered client, parquet store, name join, derived projections |
+| `espn_ff/report/` | The four weekly markdown reports and their shared loaders/renderers |
+| `espn_ff/ai/` | Generated report summaries — Gemini client, pure prompt assembly, discovery, JSON envelope |
 | `scripts/probe.py` | Dump key paths from a cached payload |
 | `scripts/practice_coverage.py` | practice_participation coverage report |
 | `scripts/nflverse_coverage.py` | nflverse id-resolution and manifest-freshness coverage report |
@@ -124,7 +143,8 @@ Prefer `gh workflow run` over running these commands locally -- see
 | `docs/odds-budget.md` | The Odds API's credit-budget invariant, cost table, job schedule, and guard runbook |
 | `docs/automation.md` | How the schedule runs unattended: workflows, S3 state/archive split, OIDC, runbook |
 | `docs/aws-scheduling.md` | Why the clock lives in AWS, the EventBridge schedules, and how a failed trigger alarms |
-| `.github/workflows/` | The five collection workflows plus CI, all dispatched from AWS |
+| `docs/ai-summaries.md` | The generated report summaries: prompt, triggering, envelope, cost, and why the command always exits 0 |
+| `.github/workflows/` | The five collection workflows, the report renderer and its summarizer, plus CI — all dispatched from AWS |
 | `scripts/s3_sync.sh` | Restore/archive/push the `data/` tree against S3 |
 | `scripts/rotate_espn_cookies.sh` | Rotate the ESPN cookies and validate them in CI |
 | `scripts/rotate_dispatch_token.sh` | Rotate the PAT AWS dispatches with, and prove it end to end |
@@ -381,6 +401,11 @@ lineup or waiver decision, and `docs/automation.md` has the workflow/S3 runbook.
 | Saturday | 09:23 / 13:23 / 18:23 | Routine background refresh only, no new decision-relevant data | nflverse — routine 3x/day pull |
 | Sunday | 10:38 | Featured + undecided-slot prop lines, final line before lock | The Odds API — `pre_lock` job (critical priority) |
 | Sunday | 13:08–00:38 Mon | Live scoring, live rosters | ESPN — `LIVE_TTL`-gated `--refresh` (weekly-rosters, matchups), every 30 min |
+
+The four reports render at Mon 10:30, Tue 10:00, Tue 11:00 and Wed 10:00 ET
+(`docs/report-weekly-schedule.md`). Each one's AI summary follows within
+seconds, off a `workflow_run` event rather than a clock, with an EventBridge
+backstop 20 minutes behind each slot — `docs/ai-summaries.md`.
 
 ## Tests
 

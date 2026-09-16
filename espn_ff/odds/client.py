@@ -1,14 +1,17 @@
-"""HTTP client for The Odds API. This is the fourth and last module in this
-repo that touches the network -- espn_ff/client.py talks to ESPN,
+"""HTTP client for The Odds API. This is the fourth of five modules in this
+repo that touch the network -- espn_ff/client.py talks to ESPN,
 espn_ff/sleeper/client.py to Sleeper, espn_ff/nflverse/client.py to
-nflverse's GitHub release assets, and this one to a metered vendor.
+nflverse's GitHub release assets, this one to a metered vendor, and
+espn_ff/ai/client.py to a model.
 
-Every other client in this repo can be re-run for free when in doubt. This
-one cannot: a request here has a real dollar-equivalent cost, so every
-paid call is routed through espn_ff.odds.ledger.guard/reconcile with no way
-around it, and retries are deliberately expensive -- MAX_ATTEMPTS=3,
+It is the only one of the five whose budget is fixed. Every other client
+here can be re-run for free when in doubt -- including the AI one, whose
+calls cost a fraction of a cent against no quota. This one cannot: a request
+here has a real dollar-equivalent cost drawn from a 500-credit period, so
+every paid call is routed through espn_ff.odds.ledger.guard/reconcile with
+no way around it, and retries are deliberately expensive -- MAX_ATTEMPTS=3,
 BACKOFF_BASE=2.0, MIN_REQUEST_INTERVAL=1.0s, diverging from the shared
-4 / 1.5 the other three clients use, because a retry here is a new billed
+4 / 1.5 the other four clients use, because a retry here is a new billed
 request rather than a free do-over.
 """
 
