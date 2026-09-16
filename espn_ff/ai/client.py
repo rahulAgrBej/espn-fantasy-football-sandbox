@@ -44,16 +44,36 @@ MAX_ATTEMPTS = 4
 BACKOFF_BASE = 1.5
 TIMEOUT = 120
 
-# Roughly 2x the OUTPUT_CONTRACT word cap in prompt.py, in tokens. Generous
-# enough that a well-behaved response never trips MAX_TOKENS, tight enough
-# that a runaway one stops rather than billing indefinitely.
-MAX_OUTPUT_TOKENS = 700
+# **This budget covers thinking, not just the answer.** That is the whole
+# reason it is not ~2x the OUTPUT_CONTRACT word cap: this model reasons
+# before it writes, and those tokens are spent against the same ceiling and
+# billed at the same output rate. An Observed run spent 1,742 thinking
+# tokens to produce a 253-token, 162-word summary -- so a cap sized for the
+# answer alone (700 was the first attempt) trips MAX_TOKENS every single
+# time and, correctly, stores nothing.
+#
+# 4000 is ~2x that observed total: enough that a well-behaved response never
+# trips the ceiling, tight enough that a runaway one stops rather than
+# billing indefinitely. `usage.thoughtsTokenCount` in every envelope is what
+# makes the real figure visible rather than guessed at.
+MAX_OUTPUT_TOKENS = 4000
 
 # Deterministic-leaning on purpose: two runs over the same report should not
 # disagree about what the week's decision is.
 TEMPERATURE = 0.2
 
-USAGE_FIELDS = ("promptTokenCount", "candidatesTokenCount", "totalTokenCount")
+# `thoughtsTokenCount` and `cachedContentTokenCount` are recorded because
+# neither is inferable from the other three, and both move the cost: thinking
+# tokens bill at the output rate, and cached prompt tokens bill below the
+# input rate. The first is also the number that diagnoses a MAX_TOKENS
+# failure, which is otherwise invisible from the envelope.
+USAGE_FIELDS = (
+    "promptTokenCount",
+    "candidatesTokenCount",
+    "thoughtsTokenCount",
+    "cachedContentTokenCount",
+    "totalTokenCount",
+)
 
 
 class GeminiError(RuntimeError):
@@ -121,12 +141,12 @@ class GeminiClient:
                     f"{response.text[:200]}"
                 )
 
-            return self._parse(response.json())
+            return self._parse(response.json(), max_output_tokens)
 
         raise GeminiError(last_error or "request failed")
 
     @staticmethod
-    def _parse(payload):
+    def _parse(payload, max_output_tokens=MAX_OUTPUT_TOKENS):
         feedback = payload.get("promptFeedback") or {}
         if feedback.get("blockReason"):
             raise GeminiError(f"prompt blocked before generation: {feedback['blockReason']}")
@@ -138,9 +158,21 @@ class GeminiClient:
         candidate = candidates[0]
         finish = candidate.get("finishReason")
         if finish and finish != "STOP":
+            usage = payload.get("usageMetadata") or {}
+            detail = ""
+            if finish == "MAX_TOKENS":
+                # Named explicitly because the first thing to check is
+                # thinking, not the word cap -- a summary well inside
+                # OUTPUT_CONTRACT's limit still trips this if the budget was
+                # sized for the answer alone. See MAX_OUTPUT_TOKENS.
+                detail = (
+                    f" (thinking spent {usage.get('thoughtsTokenCount', 0)} tokens, answer "
+                    f"{usage.get('candidatesTokenCount', 0)}, against a "
+                    f"maxOutputTokens of {max_output_tokens})"
+                )
             raise GeminiError(
-                f"generation stopped with finishReason={finish} -- refusing to return a "
-                "truncated or filtered summary"
+                f"generation stopped with finishReason={finish}{detail} -- refusing to "
+                "return a truncated or filtered summary"
             )
 
         parts = ((candidate.get("content") or {}).get("parts")) or []

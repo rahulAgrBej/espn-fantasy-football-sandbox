@@ -32,13 +32,20 @@ anywhere).
 | `SummaryRule` + 4 schedules | `infra/scheduler.yaml` | The AWS backstop, 20 min behind each report slot |
 | `summaries/` | the bucket | One JSON envelope per summarized report, append-only |
 
-Cost is roughly **$0.024 per summary, $0.10 a week** at four summaries —
-~30k input tokens against ~300 output *(Inferred — from measured character
-counts at ~4 chars/token, against introductory $0.75/1M in and $3.75/1M
-out)*. Not credit-metered, so unlike `docs/odds-budget.md`'s ledger there is
-no guard, no quota and nothing to reconcile. The number is stated here
-anyway because this repo tracks metered spend deliberately and a reader
-should be able to tell the two situations apart.
+Cost is roughly **$0.03 per summary, $0.12 a week** at four summaries
+*(Observed — two real generations on 2026-09-15: 27,313 and 25,529 prompt
+tokens, 292 and 253 answer tokens, plus 1,906 and 1,742 **thinking** tokens,
+against introductory $0.75/1M in and $3.75/1M out)*. Not credit-metered, so
+unlike `docs/odds-budget.md`'s ledger there is no guard, no quota and
+nothing to reconcile. The number is stated here anyway because this repo
+tracks metered spend deliberately and a reader should be able to tell the
+two situations apart.
+
+**Thinking tokens are about a quarter of the cost and all of the risk.**
+This model reasons before it writes, those tokens are spent against
+`maxOutputTokens` and billed at the output rate, and they outnumber the
+answer roughly 6:1. `client.MAX_OUTPUT_TOKENS` is therefore sized for
+thinking, not for prose — see "The first deployed run failed" below.
 
 ## The command takes no input, and that is the design
 
@@ -257,7 +264,11 @@ report tree's own shape, one prefix over.
   "generated_at": "2026-09-15T21:20:11-04:00",
   "prior_reports": ["reports/2026/week-01/....md"],
   "prompt_sha256": "<64 hex chars of system instruction + user message>",
-  "usage": {"promptTokenCount": 0, "candidatesTokenCount": 0, "totalTokenCount": 0}
+  "usage": {
+    "promptTokenCount": 27313, "candidatesTokenCount": 292,
+    "thoughtsTokenCount": 1906, "cachedContentTokenCount": 0,
+    "totalTokenCount": 29511
+  }
 }
 ```
 
@@ -275,8 +286,49 @@ describe the artifact on disk even if a later render would produce something
 different. `tests/test_ai_reports.py` round-trips that contract between the
 two modules, which do not import each other.
 
-`usage` is what will eventually turn the cost figures above from Inferred
-into Observed.
+`usage` is what turned the cost figures above from Inferred into Observed,
+and `thoughtsTokenCount` specifically is what makes a MAX_TOKENS failure
+diagnosable from the stored artifact rather than only from a live retry.
+
+## The first deployed run failed, and that is the story
+
+The first real dispatch (run `35051048341`, 2026-09-16) exited 0, wrote no
+envelope, and logged this for both reports:
+
+```
+[warning] 2026-09-15-tuesday-waiver-wire: generation stopped with
+finishReason=MAX_TOKENS -- refusing to return a truncated or filtered
+summary -- left unsummarized for the next run
+```
+
+`MAX_OUTPUT_TOKENS` had been set to 700 — roughly twice the
+`OUTPUT_CONTRACT` word cap, which is the right size for the *answer* and
+nowhere near enough for this model. An Observed generation spends ~1,900
+thinking tokens to produce a ~290-token, ~180-word summary. The budget is
+shared, so every call tripped the ceiling mid-thought.
+
+Three things went right, and they are the reason this is a footnote rather
+than an incident:
+
+- **Nothing was stored.** The `finishReason != STOP` check refused the
+  truncated output. A summary that stopped mid-sentence would have read as
+  complete and sat in the bucket indefinitely.
+- **The run still exited 0** and pushed nothing, so no report was blocked and
+  no workflow went red for a failure that costs a summary.
+- **It was self-healing by construction.** Both reports stayed unsummarized,
+  so the next trigger picked them up with no backfill, no `--force`, and no
+  manual step.
+
+The fix was `MAX_OUTPUT_TOKENS = 4000` plus recording `thoughtsTokenCount`
+in every envelope, so the next person sees the real number instead of
+inferring it. The `MAX_TOKENS` error message now names thinking, the answer
+size and the cap, because the instinctive fix — turning down the prose word
+cap — would have changed nothing.
+
+A remaining lever, deliberately not pulled: `generationConfig.thinkingConfig`
+could bound thinking explicitly rather than leaving it to the model's
+default. Adding an untested field to a working request was the worse trade
+once the cap was sized correctly.
 
 ## Why it always exits 0
 
@@ -404,9 +456,13 @@ summary up.
 - **`--limit` bounds a backfill.** The cap logs every report it dropped by
   name, so it is not silent, but it is only visible to someone reading the
   run output. A backfilled season takes several runs to catch up.
-- **Gemini implicit prompt caching is not exploited.** The ~22k-token
-  system instruction is identical across all four summaries in a week and
-  changes only when the docs do. Nothing currently takes advantage of that.
+- **Implicit prompt caching happens but is neither relied on nor
+  measured.** The ~22k-token system instruction is identical across all four
+  summaries in a week and changes only when the docs do, and one Observed
+  call reported `cachedContentTokenCount: 20450` against a 25,529-token
+  prompt — while another, minutes later, reported `0`. So the discount is
+  real and opportunistic. Nothing requests it, nothing depends on it, and
+  the cost figures above assume none of it.
 - **No prompt-version pinning beyond `prompt_sha256`.** A prompt change is
   detectable after the fact but not addressable: there is no way to ask for
   "the summary as generated by prompt X", and no automatic re-run of

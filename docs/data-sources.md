@@ -600,7 +600,7 @@ prefix append-only.
 | `generated_at` | ISO-8601 **with an ET offset**, never naive UTC — same trap `render._fmt_ts` exists to avoid | — | Written every successful generation |
 | `prior_reports` | Bucket keys of the up-to-4 same-season, same-type reports supplied as context, oldest-first. Empty for the first report of a season | — | — |
 | `prompt_sha256` | Hex digest of the system instruction plus user message. Tells a reader whether the prompt that produced this summary is still the one in the tree | — | — |
-| `usage` | `promptTokenCount` / `candidatesTokenCount` / `totalTokenCount` as the vendor reported them; zeros when the response carried no `usageMetadata` | — | — |
+| `usage` | `promptTokenCount` / `candidatesTokenCount` / `thoughtsTokenCount` / `cachedContentTokenCount` / `totalTokenCount` as the vendor reported them; zeros for any the response omitted. `thoughtsTokenCount` is reasoning spent before the answer — billed at the output rate, ~6x the answer itself, and the number that diagnoses a `MAX_TOKENS` failure. `cachedContentTokenCount` is the discounted share of the prompt and varies call to call | — | — |
 
 **There is no staleness flag here, deliberately.** Every other artifact in
 this document carries one because a feed can go dark and leave old data

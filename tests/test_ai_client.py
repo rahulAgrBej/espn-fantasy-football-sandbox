@@ -81,9 +81,13 @@ def test_a_clean_generation_returns_text_and_usage(client):
     result = client.generate("system", "user")
 
     assert result["text"] == "Start Gibbs."
+    # Every USAGE_FIELD is present, zero-filled when the vendor omits it, so
+    # a stored envelope always has the same shape to read.
     assert result["usage"] == {
         "promptTokenCount": 31000,
         "candidatesTokenCount": 300,
+        "thoughtsTokenCount": 0,
+        "cachedContentTokenCount": 0,
         "totalTokenCount": 31300,
     }
 
@@ -249,3 +253,49 @@ def test_the_retry_policy_matches_the_shared_one_not_the_metered_one():
     assert ai_client.MAX_ATTEMPTS == sleeper_client.MAX_ATTEMPTS
     assert ai_client.BACKOFF_BASE == sleeper_client.BACKOFF_BASE
     assert ai_client.RETRY_STATUS == sleeper_client.RETRY_STATUS
+
+
+# --- the output budget covers thinking ------------------------------------
+
+
+def test_the_output_budget_leaves_room_for_thinking():
+    """This model reasons before it writes, and those tokens are spent
+    against maxOutputTokens and billed at the output rate. A budget sized
+    for the answer alone trips MAX_TOKENS on every call -- which is exactly
+    what the first deployed run did, at 700 against 1,742 thinking tokens."""
+    from espn_ff.ai import client as ai_client
+    from espn_ff.ai import prompt
+
+    # A generous multiple of the prose cap, because thinking dwarfs it.
+    assert ai_client.MAX_OUTPUT_TOKENS > prompt.WORD_CAP * 8
+
+
+def test_thinking_and_cache_tokens_are_recorded(client):
+    """Neither is inferable from the other three counts, and both move the
+    cost. thoughtsTokenCount is also the number that diagnoses a MAX_TOKENS
+    failure, which is otherwise invisible from the stored envelope."""
+    payload = ok_payload()
+    payload["usageMetadata"]["thoughtsTokenCount"] = 1742
+    payload["usageMetadata"]["cachedContentTokenCount"] = 20450
+    _with(client, FakeResponse(payload=payload))
+
+    usage = client.generate("system", "user")["usage"]
+
+    assert usage["thoughtsTokenCount"] == 1742
+    assert usage["cachedContentTokenCount"] == 20450
+
+
+def test_a_max_tokens_failure_names_thinking_and_the_cap(client):
+    """The first thing to check is thinking, not the word cap -- a summary
+    well inside OUTPUT_CONTRACT's limit still trips this. The message has to
+    say so, or the next person turns down the prose cap and nothing changes."""
+    payload = ok_payload("half a sen", finish="MAX_TOKENS")
+    payload["usageMetadata"]["thoughtsTokenCount"] = 690
+    _with(client, FakeResponse(payload=payload))
+
+    with pytest.raises(GeminiError) as caught:
+        client.generate("system", "user", max_output_tokens=700)
+
+    message = str(caught.value)
+    assert "thinking spent 690 tokens" in message
+    assert "maxOutputTokens of 700" in message
