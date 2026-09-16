@@ -1,7 +1,7 @@
 """Guards against the hand-maintained links between workflow YAML and the
 Python it dispatches.
 
-Two of them, both maintained by hand in separate files with nothing else
+Three of them, all maintained by hand in separate files with nothing else
 checking they agree:
 
 1.  report.yml's workflow_dispatch options vs espn_ff.cli.REPORTS. A day
@@ -14,6 +14,12 @@ checking they agree:
     filename, and a name that matches nothing is not an error. The event
     simply never fires, summary.yml keeps working off its AWS backstop, and
     the only symptom is summaries arriving 20 minutes late forever.
+
+3.  infra/scheduler.yaml's `Input: '{"day":"<key>"}'` occurrences vs
+    espn_ff.cli.REPORTS. Adding a report day means touching cli.py,
+    report.yml and scheduler.yaml by hand in three separate files; the first
+    two guards above catch a drift between the first two, but nothing
+    caught a report day with no AWS schedule at all until this one.
 """
 
 import re
@@ -24,6 +30,7 @@ from espn_ff import cli
 WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 REPORT_YML = WORKFLOWS / "report.yml"
 SUMMARY_YML = WORKFLOWS / "summary.yml"
+SCHEDULER_YAML = Path(__file__).resolve().parent.parent / "infra" / "scheduler.yaml"
 
 
 def _options_in_report_yml():
@@ -48,6 +55,30 @@ def _watched_workflows_in_summary_yml():
 
 def test_report_yml_options_match_cli_reports():
     assert _options_in_report_yml() == set(cli.REPORTS)
+
+
+def _report_days_in_scheduler_yaml():
+    text = SCHEDULER_YAML.read_text()
+    return set(re.findall(r'Input:\s*\'\{"day":"([^"]+)"\}\'', text))
+
+
+def _summary_schedule_names_in_scheduler_yaml():
+    text = SCHEDULER_YAML.read_text()
+    return set(re.findall(r"^\s*Name:\s*summary-([a-z-]+)\s*$", text, re.MULTILINE))
+
+
+def test_scheduler_yaml_has_a_report_schedule_per_cli_report():
+    """infra/scheduler.yaml is hand-linked to cli.REPORTS the same way
+    report.yml is, but nothing checked it until now -- a report day could
+    ship with a working `--day` flag and a working workflow option and
+    still never be dispatched by AWS at all."""
+    assert _report_days_in_scheduler_yaml() == set(cli.REPORTS)
+
+
+def test_scheduler_yaml_has_a_summary_backstop_per_report_schedule():
+    """Same class of silent drift as the report-schedule guard above: a new
+    report day needs its own summary-* backstop schedule too."""
+    assert _summary_schedule_names_in_scheduler_yaml() == set(cli.REPORTS)
 
 
 def test_summary_yml_watches_report_yml_by_its_actual_name():

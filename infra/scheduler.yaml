@@ -1023,6 +1023,37 @@ Resources:
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn
 
+  # 52 minutes after odds-line-movement's 10:08 ET slot and 169 after
+  # sleeper-daily's 08:11 -- both feeds this report reads, and odds is the
+  # tighter margin. Its input is metered, like report-tuesday-waivers and
+  # report-thursday: a missed or budget-aborted line_movement run leaves the
+  # movement section reading "insufficient data" while this run still exits 0,
+  # so the gap is the only thing protecting it. Preserve it if either side is
+  # retimed.
+  ReportFridaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: report-friday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref ReportScheduleState
+      ScheduleExpression: cron(0 11 ? * FRI *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Fri 11:00 ET -- lineup lock
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"day":"friday"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.report
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
   # --- Summary backstops ---------------------------------------------------
   #
   # Each sits 20 minutes behind the report slot it covers. They are a
@@ -1030,8 +1061,8 @@ Resources:
   # normally fires within seconds of the matching report run completing, and
   # by the time one of these arrives there is usually nothing left to do.
   #
-  # All five send an identical, empty payload -- `espn_ff summarize` takes
-  # no input. Five exist rather than one so Tuesday's waiver summary lands on
+  # All six send an identical, empty payload -- `espn_ff summarize` takes
+  # no input. Six exist rather than one so Tuesday's waiver summary lands on
   # Tuesday rather than waiting for the next slot to come round; 20 minutes
   # is a margin over a report run, not over a feed.
   #
@@ -1144,6 +1175,30 @@ Resources:
       ScheduleExpression: cron(20 11 ? * THU *)
       ScheduleExpressionTimezone: America/New_York
       Description: Thu 11:20 ET -- backstop, 20 min behind report-thursday
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.summary
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  SummaryFridaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: summary-friday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref SummaryScheduleState
+      ScheduleExpression: cron(20 11 ? * FRI *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Fri 11:20 ET -- backstop, 20 min behind report-friday
       FlexibleTimeWindow:
         Mode: "OFF"
       Target:

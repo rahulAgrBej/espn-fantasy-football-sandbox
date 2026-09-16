@@ -288,6 +288,18 @@ def test_dp_agrees_with_the_closed_form_oracle():
     assert {row["player_name"] for row in result["lineup"]} == {"RB1", "RB2", "WR1", "WR2", "WR3"}
 
 
+def test_solve_slots_no_eligible_candidate_yields_negative_one_not_a_crash():
+    """A slot with zero eligible candidates must surface as -1, not raise --
+    the extracted DP core's own contract, independent of any caller's rows."""
+    values = [10.0, 8.0]
+    eligibility = [{"QB"}, {"QB"}]
+    slot_list = ["QB", "RB"]
+    total, ordered_slots, chosen = tuesday.solve_slots(values, eligibility, slot_list)
+    assert total == pytest.approx(10.0)
+    rb_index = ordered_slots.index("RB")
+    assert chosen[rb_index] == -1
+
+
 def test_rosters_are_never_read_from_the_wrong_week():
     """A missing week filter would silently mix a post-waiver roster into
     a retrospective -- this frame carries both weeks and only week 1

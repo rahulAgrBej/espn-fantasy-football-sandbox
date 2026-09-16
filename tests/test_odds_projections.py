@@ -139,6 +139,57 @@ def test_build_returns_empty_frames_with_nothing_on_disk(tmp_path, monkeypatch):
     assert team_totals_points.empty
 
 
+# ---- team_totals_by_capture ------------------------------------------------
+
+def _capture_rows(captured_at, week, min_spread, gb_spread, total):
+    return [
+        {"captured_at": captured_at, "week": week, "event_id": "e1", "team": "MIN",
+         "market": "spreads", "book": "draftkings", "outcome_name": "Minnesota Vikings", "point": min_spread},
+        {"captured_at": captured_at, "week": week, "event_id": "e1", "team": "GB",
+         "market": "spreads", "book": "draftkings", "outcome_name": "Green Bay Packers", "point": gb_spread},
+        {"captured_at": captured_at, "week": week, "event_id": "e1", "team": None,
+         "market": "totals", "book": "draftkings", "outcome_name": "Over", "point": total},
+    ]
+
+
+def test_team_totals_by_capture_keeps_two_captures_distinct_not_medianed(tmp_path, monkeypatch):
+    """The regression team_totals_by_capture exists to fix: build()'s
+    consensus_line groups on (event_id, team, market) only, so two captures
+    of the same event with different lines would median into one row.
+    This accessor must instead return one row per (captured_at, team)."""
+    path = tmp_path / "team_totals.parquet"
+    rows = _capture_rows("2026-09-15T22:25:00+00:00", 2, -2.5, 2.5, 44.5) + \
+        _capture_rows("2026-09-19T14:08:00+00:00", 2, -4.0, 4.0, 44.5)
+    pd.DataFrame(rows).to_parquet(path)
+    monkeypatch.setattr(projections.config, "ODDS_TEAM_TOTALS", path)
+
+    result = projections.team_totals_by_capture(week=2)
+
+    assert set(result["captured_at"]) == {"2026-09-15T22:25:00+00:00", "2026-09-19T14:08:00+00:00"}
+    min_rows = result[result["team"] == "MIN"].sort_values("captured_at")
+    assert list(min_rows["implied_team_total"]) == pytest.approx([23.5, 24.25])
+    assert "event_id" not in result.columns
+
+
+def test_team_totals_by_capture_filters_by_week(tmp_path, monkeypatch):
+    path = tmp_path / "team_totals.parquet"
+    rows = _capture_rows("2026-09-15T22:25:00+00:00", 2, -2.5, 2.5, 44.5) + \
+        _capture_rows("2026-09-22T22:25:00+00:00", 3, -1.0, 1.0, 40.0)
+    pd.DataFrame(rows).to_parquet(path)
+    monkeypatch.setattr(projections.config, "ODDS_TEAM_TOTALS", path)
+
+    result = projections.team_totals_by_capture(week=3)
+
+    assert set(result["captured_at"]) == {"2026-09-22T22:25:00+00:00"}
+
+
+def test_team_totals_by_capture_missing_parquet_returns_empty_with_columns(tmp_path, monkeypatch):
+    monkeypatch.setattr(projections.config, "ODDS_TEAM_TOTALS", tmp_path / "team_totals.parquet")
+    result = projections.team_totals_by_capture(week=2)
+    assert result.empty
+    assert list(result.columns) == ["captured_at", "team", "spread", "total", "implied_team_total"]
+
+
 # ---- resolve_props -------------------------------------------------------
 
 def _props_points_df():

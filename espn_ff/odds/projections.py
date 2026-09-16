@@ -92,6 +92,34 @@ def implied_team_totals(consensus_df):
     return merged
 
 
+def team_totals_by_capture(week=None):
+    """implied_team_total per (captured_at, team) -- consensus computed
+    WITHIN each capture rather than across all of them, which is what
+    build() does. Tuesday's slate and Friday's line_movement write to the
+    same parquet under the same dedupe keys (store.TOTALS_DEDUPE_KEYS
+    includes captured_at); this is the accessor that reads them apart.
+    Returns columns captured_at, team, spread, total, implied_team_total --
+    `event_id` is dropped, since a bare 32-hex string is rejected by
+    .githooks/pre-commit and Odds API event ids are exactly that shape.
+    """
+    columns = ["captured_at", "team", "spread", "total", "implied_team_total"]
+    if not config.ODDS_TEAM_TOTALS.exists():
+        return pd.DataFrame(columns=columns)
+
+    totals = pd.read_parquet(config.ODDS_TEAM_TOTALS)
+    if week is not None and "week" in totals.columns:
+        totals = totals[totals["week"] == week]
+    if totals.empty:
+        return pd.DataFrame(columns=columns)
+
+    frames = []
+    for captured_at, group in totals.groupby("captured_at"):
+        merged = implied_team_totals(consensus_line(group))
+        merged["captured_at"] = captured_at
+        frames.append(merged[columns])
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
+
+
 def prop_to_points(consensus_df, scoring):
     """consensus_df: consensus_line's output for player prop markets.
     scoring: the list of scoring-rule dicts from league_scoring.json

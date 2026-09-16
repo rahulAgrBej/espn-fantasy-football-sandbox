@@ -299,12 +299,51 @@ def _slot_instances(roster_slots_df):
     return slots
 
 
+def solve_slots(values, eligibility, slot_list):
+    """Exact maximum-value assignment of candidates to starting-slot
+    instances. `values[i]` and `eligibility[i]` are parallel, one entry per
+    candidate; `slot_list` is _slot_instances' output. Returns
+    (total, ordered_slots, chosen) where `chosen[i]` indexes into `values`
+    for `ordered_slots[i]`, or -1 when no eligible candidate remained.
+    Callers map indices back to their own rows -- this function knows
+    nothing about points, projections, rosters or IR.
+
+    Bitmask DP over candidates, memoized on (slot_index, used_mask), slots
+    ordered most-constrained (fewest eligible candidates) first to keep
+    branching low. Roughly 40k states worst case for 9 slots and a dozen
+    startable candidates -- instant, and no new dependency (scipy/networkx
+    are not installed)."""
+    counts = [sum(1 for e in eligibility if slot in e) for slot in slot_list]
+    ordered_slots = [slot_list[i] for i in sorted(range(len(slot_list)), key=lambda i: counts[i])]
+
+    @lru_cache(maxsize=None)
+    def solve(slot_index, used_mask):
+        if slot_index == len(ordered_slots):
+            return 0.0, ()
+        slot = ordered_slots[slot_index]
+        best_value, best_choice = None, None
+        for i, value in enumerate(values):
+            if used_mask & (1 << i) or slot not in eligibility[i]:
+                continue
+            rest_value, rest_choice = solve(slot_index + 1, used_mask | (1 << i))
+            total = value + rest_value
+            if best_value is None or total > best_value:
+                best_value, best_choice = total, (i,) + rest_choice
+        if best_choice is None:
+            # No eligible candidate remains for this slot -- shouldn't happen
+            # against a full roster, but skip rather than crash.
+            rest_value, rest_choice = solve(slot_index + 1, used_mask)
+            return rest_value, (-1,) + rest_choice
+        return best_value, best_choice
+
+    total, chosen = solve(0, 0)
+    solve.cache_clear()
+    return total, ordered_slots, list(chosen)
+
+
 def optimal_lineup(rosters_df, week, team_id, pool_df, roster_slots_df, allowed_slots):
-    """Exact best legal lineup via bitmask DP over players, memoized on
-    (slot_index, used_mask), slots ordered most-constrained (fewest
-    eligible candidates) first to keep branching low. Roughly 40k states
-    worst case for 9 slots and a dozen startable candidates -- instant, and
-    no new dependency (scipy/networkx are not installed).
+    """Exact best legal lineup, via solve_slots over this week's rosterable
+    (non-IR) players scored on `points`.
 
     Returns None (headline suppressed) when any rosterable (non-IR)
     player's points reads NaN -- every comparison against NaN is False, so
@@ -327,31 +366,8 @@ def optimal_lineup(rosters_df, week, team_id, pool_df, roster_slots_df, allowed_
         eligibility.append(slots)
 
     slot_list = _slot_instances(roster_slots_df)
-    counts = [sum(1 for e in eligibility if slot in e) for slot in slot_list]
-    ordered_slots = [slot_list[i] for i in sorted(range(len(slot_list)), key=lambda i: counts[i])]
-
-    @lru_cache(maxsize=None)
-    def solve(slot_index, used_mask):
-        if slot_index == len(ordered_slots):
-            return 0.0, ()
-        slot = ordered_slots[slot_index]
-        best_points, best_choice = None, None
-        for i, c in enumerate(candidates):
-            if used_mask & (1 << i) or slot not in eligibility[i]:
-                continue
-            rest_points, rest_choice = solve(slot_index + 1, used_mask | (1 << i))
-            total = c.points + rest_points
-            if best_points is None or total > best_points:
-                best_points, best_choice = total, (i,) + rest_choice
-        if best_choice is None:
-            # No eligible candidate remains for this slot -- shouldn't happen
-            # against a full roster, but skip rather than crash.
-            rest_points, rest_choice = solve(slot_index + 1, used_mask)
-            return rest_points, (-1,) + rest_choice
-        return best_points, best_choice
-
-    optimal_points, chosen = solve(0, 0)
-    solve.cache_clear()
+    values = [c.points for c in candidates]
+    optimal_points, ordered_slots, chosen = solve_slots(values, eligibility, slot_list)
 
     lineup = [
         {"slot": ordered_slots[i], "player_name": candidates[idx].player_name, "points": candidates[idx].points}

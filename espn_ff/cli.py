@@ -30,6 +30,7 @@ from .odds import ledger as odds_ledger
 from .odds import projections as odds_projections
 from .odds.ledger import BudgetExceeded, OddsError
 from .report import loaders
+from .report import friday as report_friday
 from .report import monday as report_monday
 from .report import thursday as report_thursday
 from .report import tuesday as report_tuesday
@@ -49,6 +50,7 @@ REPORTS = {
     "tuesday-waivers": (report_waivers.build, "tuesday", "waiver-wire"),
     "wednesday": (report_wednesday.build, "wednesday", "availability-watchlist"),
     "thursday": (report_thursday.build, "thursday", "usage-and-market"),
+    "friday": (report_friday.build, "friday", "lineup-lock"),
 }
 
 

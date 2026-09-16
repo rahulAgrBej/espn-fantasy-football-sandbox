@@ -21,6 +21,7 @@ INDEX = {
     ("tuesday", "waiver-wire"): "tuesday-waivers",
     ("wednesday", "availability-watchlist"): "wednesday",
     ("thursday", "usage-and-market"): "thursday",
+    ("friday", "lineup-lock"): "friday",
 }
 
 

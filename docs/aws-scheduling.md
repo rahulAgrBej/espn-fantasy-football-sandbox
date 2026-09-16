@@ -77,7 +77,7 @@ fields the schedule puts in the event detail.
 
 ## The schedules
 
-All twenty-six are pinned to `America/New_York` *(Observed — `aws scheduler
+All twenty-eight are pinned to `America/New_York` *(Observed — `aws scheduler
 list-schedules --group-name ff-collection`)*. EventBridge cron takes six fields
 — minute, hour, day-of-month, month, day-of-week, year — and requires `?` in
 one of the two day fields.
@@ -105,13 +105,15 @@ one of the two day fields.
 | `report-tuesday-waivers` | `cron(0 11 ? * TUE *)` | Tue 11:00 | `day=tuesday-waivers` |
 | `report-wednesday` | `cron(0 10 ? * WED *)` | Wed 10:00 | `day=wednesday` |
 | `report-thursday` | `cron(0 11 ? * THU *)` | Thu 11:00 | `day=thursday` |
+| `report-friday` | `cron(0 11 ? * FRI *)` | Fri 11:00 | `day=friday` |
 | `summary-monday` | `cron(50 10 ? * MON *)` | Mon 10:50 | — |
 | `summary-tuesday` | `cron(20 10 ? * TUE *)` | Tue 10:20 | — |
 | `summary-tuesday-waivers` | `cron(20 11 ? * TUE *)` | Tue 11:20 | — |
 | `summary-wednesday` | `cron(20 10 ? * WED *)` | Wed 10:20 | — |
 | `summary-thursday` | `cron(20 11 ? * THU *)` | Thu 11:20 | — |
+| `summary-friday` | `cron(20 11 ? * FRI *)` | Fri 11:20 | — |
 
-The five `summary-*` rows are unlike every other schedule in this stack:
+The six `summary-*` rows are unlike every other schedule in this stack:
 they are a **backstop**, not the primary trigger. `summary.yml` normally
 runs off a `workflow_run` event fired by `report.yml` completing, within
 seconds of the report landing in S3, and by the time one of these slots
@@ -121,7 +123,7 @@ built to stop depending on (see "Why the clock moved") — an AWS schedule is
 the only part of this system that can notice a report has no summary.
 
 They send no inputs at all, because `espn_ff summarize` takes none: it
-discovers what needs summarizing rather than being told. Five exist rather
+discovers what needs summarizing rather than being told. Six exist rather
 than one so Tuesday's waiver summary lands on Tuesday rather than waiting
 for the next slot to come round. The 20-minute offsets are a margin over a
 *report run*, not over a feed, so they carry none of the ordering
@@ -273,7 +275,7 @@ leaves a window where GitHub and AWS both own the slot.
 
 `SummaryScheduleState` is the one switch that arbitrates nothing —
 `summary.yml` never had an `on.schedule` to remove, so there is no window to
-avoid and it can be flipped at any time. Its four slots are a backstop
+avoid and it can be flipped at any time. Its six slots are a backstop
 behind a `workflow_run` event, and because the job is idempotent a backstop
 that fires against work already done costs nothing. The ordering that *does*
 matter for it is the ordinary one: `summary.yml` must be on the default
