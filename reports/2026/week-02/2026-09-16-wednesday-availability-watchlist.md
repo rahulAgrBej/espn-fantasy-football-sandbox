@@ -2,7 +2,7 @@
 
 **Covers** Wed 2026-09-16 -- the first of week 2's three practice days
 **Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET
-**Rendered** Wed 2026-09-16 09:36 ET
+**Rendered** Wed 2026-09-16 10:00 ET
 
 ## Freshness
 - sleeper: 2026-09-16 08:11:31 ET
