@@ -104,7 +104,56 @@ def settlements(transactions_df, week):
     }
 
 
-def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id):
+# The waiver-processing *night* (Tuesday into Wednesday) is Documented --
+# league setting, per the league manager. The 03:00 ET clock time below is
+# Inferred: no artifact in this repo evidences when ESPN actually runs the
+# batch. The one Observed data point (2026-09-16) has the claims stamped
+# 07:02:58 ET, comfortably after this boundary, so an early boundary is the
+# safe direction -- it can only make the gate stricter, never let a
+# pre-settlement read through.
+WAIVER_RUN_ET_HOUR = 3
+_WAIVER_RUN_WEEKDAY = 2  # Wednesday, per datetime.weekday()
+
+
+def last_waiver_boundary(rendered_at):
+    """The most recent Wednesday `WAIVER_RUN_ET_HOUR` ET at or before
+    `rendered_at` (epoch seconds). Returned as a tz-aware ET datetime."""
+    now = pd.Timestamp(rendered_at, unit="s", tz="UTC").tz_convert(weeks.ET)
+    boundary = now.normalize() + pd.Timedelta(hours=WAIVER_RUN_ET_HOUR)
+    # Walk back to the most recent Wednesday boundary at or before `now`.
+    days_since_wed = (boundary.weekday() - _WAIVER_RUN_WEEKDAY) % 7
+    boundary -= pd.Timedelta(days=days_since_wed)
+    if boundary > now:
+        boundary -= pd.Timedelta(days=7)
+    return boundary
+
+
+def waiver_read_is_settled(fetched_at, rendered_at):
+    """Whether an ESPN `mTransactions2` payload fetched at `fetched_at` is a
+    post-settlement read for the waiver run preceding `rendered_at`.
+
+    A boundary comparison rather than an hours-old threshold: the question
+    is not "is this data recent" but "was it fetched after the run it claims
+    to report". A 20-hour-old payload passed the flat 24-hour
+    `ESPN_STALE_HOURS` check while predating the waiver run entirely
+    (Observed 2026-09-16) -- which is how the Wednesday report came to print
+    three confident zeros and assert a pull that never happened.
+
+    Returns (settled: bool, reason: str|None)."""
+    boundary = last_waiver_boundary(rendered_at)
+    if fetched_at is None:
+        return False, "the ESPN transactions payload has never been fetched"
+    fetched = pd.Timestamp(fetched_at, unit="s", tz="UTC").tz_convert(weeks.ET)
+    if fetched < boundary:
+        return False, (
+            f"the ESPN transactions payload was fetched {fetched:%a %Y-%m-%d %H:%M ET}, "
+            f"before this week's waiver run (boundary {boundary:%a %Y-%m-%d %H:%M ET}) -- "
+            "it cannot show what that run settled"
+        )
+    return True, None
+
+
+def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id, settled_read=None):
     """Successful (`status == EXECUTED`) FREEAGENT/WAIVER ADD/DROP rows in
     the same `{week - 1, week}` window `settlements()` uses, split three
     ways: what we claimed, what another team claimed (so an alternate can be
@@ -128,12 +177,20 @@ def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id):
 
     `free_agents_df` is received, not recomputed -- the caller already
     needs it for the alternates step, so this stays a pure function over
-    fixtures, same contract as `add_candidates`."""
+    fixtures, same contract as `add_candidates`.
+
+    `settled_read` is `(bool, reason)` from `waiver_read_is_settled`, passed
+    in rather than computed here so this stays disk-free. When it says the
+    payload predates the waiver run, this returns the insufficient shape --
+    zeros from a pre-settlement read are a misleading figure, not a
+    finding."""
     empty = {
         "insufficient": True, "claimed_by_us": [], "claimed_by_others": [], "newly_available": [],
         "pending_count": 0, "failed_count": 0, "unknown_count": 0, "excluded_count": 0,
         "unresolved_ids": set(),
     }
+    if settled_read is not None and not settled_read[0]:
+        return {**empty, "reason": settled_read[1]}
     if transactions_df.empty:
         return {**empty, "reason": "no transactions export on disk"}
 

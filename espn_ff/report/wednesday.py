@@ -38,9 +38,14 @@ from .. import config, weeks
 from ..sleeper import signals as sleeper_signals
 from ..sleeper import snapshots as sleeper_snapshots
 from . import availability, monday, pool, tuesday
-from .loaders import freshness, latest_export
+from .loaders import espn_view_freshness, freshness, latest_export
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
-from .waivers import waiver_outcomes, week_projection
+from .waivers import waiver_outcomes, waiver_read_is_settled, week_projection
+
+# The views cmd_export fetches transactions from -- see espn_ff/cli.py's
+# transactions block. Kept beside the gate that reads it so the two cannot
+# drift apart silently.
+_TRANSACTION_VIEWS = ["mTransactions2", "mTeam"]
 
 DEPTH_LOOKBACK_DAYS = 3
 
@@ -324,8 +329,9 @@ FOOTER_NOTES = [
     "No drop candidates today. Dropping on one day of practice data discards a player before "
     "the signal that would justify it exists.",
     "This league's waiver deadline was last night (Documented -- league setting, per the league "
-    "manager), not tonight. This morning's ESPN pull captures transactions.csv in its settled "
-    "state, though this report does not itself render waiver rows -- see Tuesday's waiver report.",
+    "manager), not tonight. Whether this run actually read a post-settlement transactions.csv is "
+    "stated in the waiver-outcomes section rather than assumed here -- the ESPN pull that makes it "
+    "settled is a separate scheduled job and can fail or be skipped independently of this report.",
     "\"Newly available\" below is a render-time snapshot of this week's free-agent pool, not a "
     "guarantee -- a listed player can be claimed before this report is read.",
     "Waiver outcomes below share the same {week - 1, week} transactions.csv window "
@@ -362,10 +368,20 @@ def render(season, week, team_id, watch_rows, signals_df, avail_df, starters, mo
             f"{len(watch_rows)} of {len(starters)} starters are on the watchlist "
             f"as of this morning's snapshot."
         )
-    lines.append(
-        "_Waiver-deadline note: this league's deadline was last night (Tuesday into Wednesday), "
-        "not tonight -- this morning's ESPN pull is the first settled read of last night's run._"
-    )
+    # Only claim a settled read when one actually happened. The unconditional
+    # version of this line asserted a pull that had not run (Observed
+    # 2026-09-16) -- a footer or dateline claiming a fetch is exactly as false
+    # as a table built on it.
+    if outcomes["insufficient"] and outcomes.get("reason"):
+        lines.append(
+            "_Waiver-deadline note: this league's deadline was last night (Tuesday into "
+            f"Wednesday), not tonight -- but {outcomes['reason']}._"
+        )
+    else:
+        lines.append(
+            "_Waiver-deadline note: this league's deadline was last night (Tuesday into Wednesday), "
+            "not tonight -- this morning's ESPN pull is the first settled read of last night's run._"
+        )
     lines.append("")
 
     lines.append("## Waiver outcomes")
@@ -539,7 +555,12 @@ def build(season, week, team_id=None):
     )
     moves = depth_chart_moves(signals_df, roster_names)
 
-    outcomes = waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id)
+    settled_read = waiver_read_is_settled(
+        espn_view_freshness(_TRANSACTION_VIEWS, season=season), rendered_at
+    )
+    outcomes = waiver_outcomes(
+        transactions_df, pool_df, free_agents_df, week, team_id, settled_read=settled_read
+    )
     alternates_by_player, alt_fallback_names, alt_nan_names = {}, set(), set()
     if not outcomes["insufficient"]:
         for lost in outcomes["claimed_by_others"]:

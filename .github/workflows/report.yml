@@ -74,6 +74,16 @@ jobs:
           state-paths: "raw sleeper nflverse raw/nflverse odds"
           restore-out-datasets: "matchups weekly-rosters player-pool roster-slots teams transactions"
           push-paths: ""
+          # This job produces no data/out/ export -- it only restores them.
+          # cmd_restore_out re-stamps each restored file with today's date,
+          # so leaving archiving on made a read-only render copy yesterday's
+          # data into today's archive slot and back over latest/out/. That is
+          # why archive/out/transactions/2026-09-15.csv and -16.csv were
+          # byte-identical (Observed 2026-09-16), and why the archive could
+          # not serve as a recovery path for the week-1 history it should
+          # have held. `push-paths: ""` already declares this job owns
+          # nothing; archiving must respect that.
+          archive: "false"
           aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           s3-bucket: ${{ vars.S3_BUCKET }}

@@ -2,6 +2,7 @@
 gate, opening-market degradation ladder, and per-slot add candidates.
 Fixtures only, no network, no disk."""
 
+import json
 from datetime import datetime
 
 import pandas as pd
@@ -263,6 +264,63 @@ def test_waiver_outcomes_unresolved_player_id_surfaced_without_crashing():
     result = waivers.waiver_outcomes(df, pool_df, free_agents_df, week=2, team_id=5)
     assert 999 in result["unresolved_ids"]
     assert len(result["claimed_by_us"]) == 1
+
+
+# ---- the settled-read gate -------------------------------------------------
+
+
+def _et(y, m, d, hh, mm=0):
+    return datetime(y, m, d, hh, mm, tzinfo=ET).timestamp()
+
+
+@pytest.mark.parametrize("fetched,rendered,expected", [
+    # Wed 09:08 pull, Wed 10:00 render -- the intended shape.
+    (_et(2026, 9, 16, 9, 8), _et(2026, 9, 16, 10, 0), True),
+    # The 2026-09-16 incident: Tue 14:10 pull, Wed 10:03 render. ~20h old, so
+    # it passed the flat 24-hour ESPN_STALE_HOURS check while predating the
+    # waiver run entirely.
+    (_et(2026, 9, 15, 14, 10), _et(2026, 9, 16, 10, 3), False),
+    # A Wednesday-afternoon re-render off the morning pull is still settled.
+    (_et(2026, 9, 16, 9, 8), _et(2026, 9, 16, 16, 30), True),
+    # A Friday render still reading Tuesday's pull is not.
+    (_et(2026, 9, 15, 14, 10), _et(2026, 9, 18, 10, 0), False),
+    # A Friday render off Wednesday's pull is.
+    (_et(2026, 9, 16, 9, 8), _et(2026, 9, 18, 10, 0), True),
+])
+def test_waiver_read_is_settled_uses_the_run_boundary_not_an_age_threshold(fetched, rendered, expected):
+    settled, reason = waivers.waiver_read_is_settled(fetched, rendered)
+    assert settled is expected
+    assert (reason is None) is expected
+
+
+def test_never_fetched_is_not_a_settled_read():
+    settled, reason = waivers.waiver_read_is_settled(None, _et(2026, 9, 16, 10, 0))
+    assert settled is False and "never been fetched" in reason
+
+
+def test_gate_failure_returns_insufficient_rather_than_zeros():
+    """A pre-settlement read must not render as '0 claimed' -- that is a
+    misleading figure, not a finding."""
+    df = pd.DataFrame([_txn_row(2, "WAIVER", "ADD", player_id=10, acting_team_id=8)])
+    pool_df = pd.DataFrame([_pool_row(10, "Someone", "WR", "NO", "WR,Bench,IR", 9.0)])
+    result = waivers.waiver_outcomes(
+        df, pool_df, pd.DataFrame(columns=["player_id"]), week=2, team_id=5,
+        settled_read=(False, "the ESPN transactions payload was fetched Tue ..."),
+    )
+    assert result["insufficient"] is True
+    assert "fetched Tue" in result["reason"]
+    assert result["claimed_by_others"] == []
+
+
+def test_gate_pass_does_not_suppress_real_outcomes():
+    df = pd.DataFrame([_txn_row(2, "WAIVER", "ADD", player_id=10, acting_team_id=8)])
+    pool_df = pd.DataFrame([_pool_row(10, "Someone", "WR", "NO", "WR,Bench,IR", 9.0)])
+    result = waivers.waiver_outcomes(
+        df, pool_df, pd.DataFrame(columns=["player_id"]), week=2, team_id=5,
+        settled_read=(True, None),
+    )
+    assert result["insufficient"] is False
+    assert [r["player_name"] for r in result["claimed_by_others"]] == ["Someone"]
 
 
 # ---- waiver order ---------------------------------------------------------
@@ -565,6 +623,55 @@ def test_render_header_shows_insufficient_data_when_the_calendar_is_absent():
 
 
 # ---- loaders: odds freshness -----------------------------------------------
+
+
+def test_espn_view_freshness_does_not_let_a_fresh_view_mask_a_stale_one(tmp_path, monkeypatch):
+    """The silence behind the 2026-09-16 incident: `_espn_freshness` takes
+    the max across every cached view, so a fresh mMatchupScore pull made a
+    day-old mTransactions2 payload read as fresh and no staleness warning
+    ever appeared."""
+    from espn_ff import cache
+
+    season_dir = tmp_path / "2026"
+    season_dir.mkdir()
+    old = datetime(2026, 9, 15, 14, 10, tzinfo=ET).timestamp()
+    new = datetime(2026, 9, 16, 9, 24, tzinfo=ET).timestamp()
+
+    txn_slug = cache._slug("-".join(sorted(["mTransactions2", "mTeam"])))
+    other_slug = cache._slug("-".join(sorted(["mMatchupScore", "mTeam"])))
+    (season_dir / f"{txn_slug}-aaaa.meta.json").write_text(json.dumps({"fetched_at": old}))
+    (season_dir / f"{other_slug}-bbbb.meta.json").write_text(json.dumps({"fetched_at": new}))
+
+    monkeypatch.setattr(loaders.config, "RAW_DIR", tmp_path)
+
+    # The feed-level view reports the newest ANY view landed -- that is its
+    # job, and it is exactly why it must not be used as a correctness gate.
+    assert loaders._espn_freshness(season=2026)[0] == pytest.approx(new)
+    # The per-view question returns the transactions payload's own age.
+    assert loaders.espn_view_freshness(["mTransactions2", "mTeam"], season=2026) == pytest.approx(old)
+
+
+def test_espn_view_freshness_is_none_when_that_view_never_ran(tmp_path, monkeypatch):
+    (tmp_path / "2026").mkdir()
+    monkeypatch.setattr(loaders.config, "RAW_DIR", tmp_path)
+    assert loaders.espn_view_freshness(["mTransactions2", "mTeam"], season=2026) is None
+
+
+def test_espn_view_freshness_is_order_independent(tmp_path, monkeypatch):
+    """cache_path sorts views before slugging, so a caller reordering its
+    view list must still resolve the same files."""
+    from espn_ff import cache
+
+    season_dir = tmp_path / "2026"
+    season_dir.mkdir()
+    ts = datetime(2026, 9, 16, 9, 8, tzinfo=ET).timestamp()
+    slug = cache._slug("-".join(sorted(["mTransactions2", "mTeam"])))
+    (season_dir / f"{slug}-aaaa.meta.json").write_text(json.dumps({"fetched_at": ts}))
+    monkeypatch.setattr(loaders.config, "RAW_DIR", tmp_path)
+
+    a = loaders.espn_view_freshness(["mTransactions2", "mTeam"], season=2026)
+    b = loaders.espn_view_freshness(["mTeam", "mTransactions2"], season=2026)
+    assert a == b == pytest.approx(ts)
 
 
 def test_odds_freshness_prefers_captured_at_over_ran_at(tmp_path, monkeypatch):

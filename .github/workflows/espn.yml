@@ -42,8 +42,13 @@ jobs:
           command: |
             pull --refresh
             export --refresh
-          state-paths: "raw"
-          push-paths: "raw"
+          # `espn` carries the cumulative transaction store. espn.yml is its
+          # sole writer, which is what makes push-state's --delete safe here.
+          # It must be restored as well as pushed: merging into an empty
+          # store would publish a truncated export, which is the failure the
+          # store exists to prevent.
+          state-paths: "raw espn"
+          push-paths: "raw espn"
           aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           s3-bucket: ${{ vars.S3_BUCKET }}

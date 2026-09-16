@@ -291,6 +291,33 @@ def test_render_claimed_by_others_with_no_alternates_shows_explicit_message():
     assert "No same-slot free-agent alternate found." in text
 
 
+def test_gate_failure_render_states_the_gap_and_drops_the_false_pull_claim():
+    """The report must not assert a pull that did not happen. Before the
+    gate, this line was unconditional and claimed 'this morning's ESPN pull
+    is the first settled read' on a render whose payload predated the waiver
+    run entirely (Observed 2026-09-16)."""
+    outcomes = {
+        **_INSUFFICIENT_OUTCOMES,
+        "reason": "the ESPN transactions payload was fetched Tue 2026-09-15 14:10 ET, "
+                  "before this week's waiver run",
+    }
+    text = wednesday.render(2026, 2, 5, [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [],
+                            outcomes, {}, wednesday.FOOTER_NOTES, rendered_at=1_760_000_000)
+
+    assert "this morning's ESPN pull is the first settled read" not in text
+    assert "before this week's waiver run" in text
+    assert wednesday.INSUFFICIENT_DATA in text
+    # and never a confident zero
+    assert "0 claimed by us, 0 claimed by other teams" not in text
+
+
+def test_gate_pass_keeps_the_settled_read_prose():
+    outcomes = _outcomes()
+    text = wednesday.render(2026, 2, 5, [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [],
+                            outcomes, {}, wednesday.FOOTER_NOTES, rendered_at=1_760_000_000)
+    assert "this morning's ESPN pull is the first settled read" in text
+
+
 def test_render_claimed_by_us_and_newly_available_tables_render():
     outcomes = _outcomes(
         claimed_by_us=[{

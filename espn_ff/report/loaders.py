@@ -64,7 +64,45 @@ def _nflverse_freshness():
     return max(fetched_ats), stale
 
 
+def espn_view_freshness(views, season=None):
+    """`fetched_at` for one specific set of ESPN views, or None when that
+    view has never been fetched.
+
+    `_espn_freshness` deliberately answers a *different* question -- "when
+    did the ESPN feed last run at all" -- by taking the max across every
+    cached view. That makes it wrong for any caller asking whether a
+    particular payload is current: a fresh `mMatchupScore` pull masks a
+    day-old `mTransactions2` one, which is exactly how the 2026-09-16
+    Wednesday report read `stale = False` while rendering waiver outcomes
+    from a payload that predated the waiver run (Observed). Do not merge the
+    two functions back together.
+
+    The slug is derived through `cache._slug`/`cache.cache_path`'s own
+    convention rather than hard-coded: `cache_path` sorts the view list
+    before slugging, so a caller reordering its views would silently break a
+    literal glob and this would return None."""
+    from .. import cache
+
+    season = season or config.SEASON
+    season_dir = config.RAW_DIR / str(season)
+    if not season_dir.exists():
+        return None
+
+    slug = cache._slug("-".join(sorted(views)))
+    fetched_ats = []
+    for meta_path in season_dir.glob(f"{slug}-*.meta.json"):
+        try:
+            fetched_ats.append(json.loads(meta_path.read_text()).get("fetched_at"))
+        except (json.JSONDecodeError, OSError):
+            continue
+    fetched_ats = [f for f in fetched_ats if f is not None]
+    return max(fetched_ats) if fetched_ats else None
+
+
 def _espn_freshness(season=None):
+    """Feed-level freshness for the report header: when did *any* ESPN view
+    last land. See `espn_view_freshness` for the per-view question, which is
+    what a correctness gate must ask instead."""
     season = season or config.SEASON
     season_dir = config.RAW_DIR / str(season)
     if not season_dir.exists():

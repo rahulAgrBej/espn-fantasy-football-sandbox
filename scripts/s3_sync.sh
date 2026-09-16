@@ -38,6 +38,13 @@ STATE_SUBTREES=(
     "odds"
     "sleeper"
     "nflverse"
+    # data/espn holds the cumulative transaction store, which is the one
+    # ESPN artifact that cannot be rebuilt by re-pulling: mTransactions2
+    # stops returning a scoring period's rows once the period rolls (see
+    # espn_ff/espn_store.py). Omitting it here would mean a
+    # disaster-recovery restore silently rebuilds without any transaction
+    # history -- the same class of loss this store exists to prevent.
+    "espn"
     "raw"
     "raw/nflverse"
     "raw/sleeper"

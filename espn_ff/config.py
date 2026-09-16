@@ -17,6 +17,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 OUT_DIR = PROJECT_ROOT / "data" / "out"
 
+# ESPN durable stores. Unlike every other data/out/ export, which is a
+# snapshot ESPN will happily re-serve, the transaction log is NOT re-pullable
+# once a scoring period rolls: mTransactions2 returned 214 period-1 rows on a
+# Tue 04:42 ET pull and only 2 period-2 rows on the 14:10 pull the same day
+# (Observed 2026-09-15), and nothing in S3 or the archive held the
+# difference. This parquet is the only cumulative record -- see
+# espn_ff/espn_store.py.
+ESPN_DIR = PROJECT_ROOT / "data" / "espn"
+ESPN_TRANSACTIONS = ESPN_DIR / "transactions.parquet"
+
 # Sleeper player-status layer -- entirely separate store, ISO dates (see
 # espn_ff/sleeper/snapshots.py for why).
 SLEEPER_DIR = PROJECT_ROOT / "data" / "sleeper"

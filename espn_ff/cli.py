@@ -1,7 +1,9 @@
 """Command line entry point: python -m espn_ff <command>"""
 
 import argparse
+import json
 import sys
+import time
 from datetime import date, datetime
 
 import pandas as pd
@@ -27,6 +29,7 @@ from .odds import jobs as odds_jobs
 from .odds import ledger as odds_ledger
 from .odds import projections as odds_projections
 from .odds.ledger import BudgetExceeded, OddsError
+from .report import loaders
 from .report import monday as report_monday
 from .report import tuesday as report_tuesday
 from .report import waivers as report_waivers
@@ -60,6 +63,49 @@ def _write(df, name):
     df.to_csv(path, index=False)
     print(f"  {name:<22} {len(df):>5} rows -> {path.name}")
     return path
+
+
+def _export_transactions(client, season, names, current):
+    """Fetch, merge into the cumulative store, then export the *merged*
+    frame. Exporting the raw pull instead is the bug this exists to prevent
+    (espn_ff/espn_store.py's module docstring has the measurement).
+
+    Also writes `data/espn/last_export.json` when the merged frame is
+    smaller than the newest existing export -- the signature of a runner
+    that failed to restore `state/espn` and is about to publish a truncated
+    `latest/out/transactions.csv`, i.e. this incident reproduced by the fix
+    meant to prevent it. `report/loaders.py` reads that file as an ESPN
+    staleness input, so the guard is visible in the reports rather than only
+    in a run log nobody reads."""
+    from . import espn_store
+
+    fetched = txn.transactions_frame(
+        client.get_league(["mTransactions2", "mTeam"], ttl=ttl_for(None, current)), season, names
+    )
+    prior = loaders.latest_export("transactions")
+    merged = espn_store.append_transactions(fetched)
+
+    fetched_n, merged_n, prior_n = len(fetched), len(merged), len(prior)
+    print(f"  {'transactions':<22} {fetched_n:>5} fetched -> {merged_n} in store")
+
+    config.ESPN_DIR.mkdir(parents=True, exist_ok=True)
+    shrank = prior_n > 0 and merged_n < prior_n
+    (config.ESPN_DIR / "last_export.json").write_text(json.dumps({
+        "transactions_rows": merged_n,
+        "fetched_rows": fetched_n,
+        "prior_export_rows": prior_n,
+        "stale": shrank,
+        "reason": (
+            f"merged transactions ({merged_n}) are fewer than the prior export ({prior_n}) -- "
+            "the cumulative store was probably not restored before this run"
+        ) if shrank else None,
+        "ran_at": time.time(),
+    }, indent=2))
+    if shrank:
+        print(f"::warning::transactions export shrank from {prior_n} to {merged_n} rows -- "
+              "data/espn/ was probably not restored before this run")
+
+    _write(merged, "transactions")
 
 
 def _weeks(spec, current):
@@ -212,12 +258,11 @@ def cmd_export(client, args):
         ),
         "draft",
     )
-    _write(
-        txn.transactions_frame(
-            client.get_league(["mTransactions2", "mTeam"], ttl=ttl_for(None, current)), season, names
-        ),
-        "transactions",
-    )
+    # Transactions are merged into a cumulative store before export, never
+    # written straight through: mTransactions2 stops returning a scoring
+    # period's rows once the period rolls, so a straight-through write
+    # destroys history that cannot be re-pulled. See espn_ff/espn_store.py.
+    _export_transactions(client, season, names, current)
     _write(
         players.players_frame(client.get_player_pool(ttl=ttl_for(None, current)), season, current),
         "player-pool",
