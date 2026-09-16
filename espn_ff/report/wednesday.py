@@ -396,6 +396,7 @@ def render(season, week, team_id, watch_rows, signals_df, avail_df, starters, mo
         lines.append("### Claimed by other teams")
         if not outcomes["claimed_by_others"]:
             lines.append("_(none)_")
+            lines.append("")
         else:
             for r in outcomes["claimed_by_others"]:
                 lines.append(f"#### {r['player_name']} ({r['position']}) -- claimed by {r['acting_team']}")
