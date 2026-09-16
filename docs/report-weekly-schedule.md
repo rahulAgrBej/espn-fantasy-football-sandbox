@@ -17,23 +17,24 @@ and the reason the times still look offset rather than aligned is that
 they are anchored to the collection slots.
 
 **Monday, Tuesday's week-in-review, Tuesday's waiver wire, Wednesday,
-Thursday and Friday are implemented; the rest of the week is still a
+Thursday, Friday and Saturday are implemented; Sunday is still a
 specification.** `espn_ff/report/` is the report engine. `python -m espn_ff
 report --day monday` renders the Monday-night call from data already on
 disk *(Observed)*, `python -m espn_ff report --day tuesday` renders the
 week-in-review, `python -m espn_ff report --day tuesday-waivers` renders
 the waiver wire and opening market, `python -m espn_ff report --day
 wednesday` renders the availability watchlist, `python -m espn_ff report
---day thursday` renders the usage and market report, and `python -m espn_ff
-report --day friday` renders the lineup lock. `thursday` and `friday` are
-both built and their tests pass, but -- same footing Wednesday was on until
-its first real run -- no claim in either section below is tagged
-**Observed** yet; see the known-gaps entry. `espn_ff/cli.py`'s `REPORTS`
-dict has no `saturday`/`sunday` entries yet -- calling `report --day` with
-any other value exits with a clear "not implemented" rather than an empty
-file. This document is still the specification for the remaining two
-reports, not a description of them, which is why no claim in those
-sections is tagged **Observed**.
+--day thursday` renders the usage and market report, `python -m espn_ff
+report --day friday` renders the lineup lock, and `python -m espn_ff report
+--day saturday` renders the contingency check. `thursday`, `friday` and
+`saturday` are all built and their tests pass, but -- same footing
+Wednesday was on until its first real run -- no claim in any of their
+sections below is tagged **Observed** yet; see the known-gaps entry.
+`espn_ff/cli.py`'s `REPORTS` dict has no `sunday` entry yet -- calling
+`report --day` with any other value exits with a clear "not implemented"
+rather than an empty file. This document is still the specification for
+that remaining report, not a description of it, which is why no claim in
+its section is tagged **Observed**.
 
 ## Overview
 
@@ -65,13 +66,13 @@ Sunday's slot is the one with a hard deadline behind it: 11:30 ET leaves 90
 minutes before 13:00 ET kickoffs, and unlike the old UTC pinning that holds
 in November too rather than drifting to 10:30.
 
-When the remaining five are built they belong in `infra/scheduler.yaml`
-alongside the collection schedules, with one rule per report workflow,
-the same way `ReportTuesdayWaiversSchedule` was added for the 11:00
-waiver report. The only odds-dependent margin currently live is that
-82-minute Tuesday 11:00 slot; the tightest margins among the rest are the
-37-minute Wednesday and Saturday slots, which wait only on feeds that do
-auto-retry (`docs/aws-scheduling.md`).
+When Sunday is built it belongs in `infra/scheduler.yaml` alongside the
+collection schedules, with one rule per report workflow, the same way
+`ReportSaturdaySchedule` was added for the 10:00 contingency check. The
+only odds-dependent margin currently live is the 82-minute Tuesday 11:00
+slot; the tightest margins among the rest are the 37-minute Wednesday and
+Saturday slots, which wait only on feeds that do auto-retry
+(`docs/aws-scheduling.md`).
 
 ## What every report contains
 
@@ -422,25 +423,53 @@ make room for a weekend streaming add at D/ST or K, reusing
 
 ## Saturday — contingency check
 
-**What it shows.** A diff against Friday, and deliberately little else.
-New `OUT` or `DOUBTFUL` designations since Friday's snapshot,
-practice-squad elevations, and depth-chart moves. No odds job runs
-Saturday and the report should not imply one did — `docs/odds-budget.md`
-has no Saturday slot because there is no market event between Friday's
-`line_movement` and Sunday's `pre_lock`.
+A diff against Friday, and deliberately little else. Saturday reads two
+feeds only, both daily: Sleeper (`sleeper-daily`, 08:11 ET) and nflverse
+(`nflverse-routine`, 09:23 ET). ESPN's last pull is still Wednesday's, so
+roster and lineup moves made Thursday through Saturday are invisible, and
+no odds job runs at all — `docs/odds-budget.md` has no Saturday slot
+because there is no market event between Friday's `line_movement` and
+Sunday's `pre_lock`. The freshness header omits the `odds:` line entirely
+rather than showing a permanently-stale one, so the report never implies a
+job that did not run.
 
-**What to look out for.** Saturday is quiet by design, not by accident,
-and nothing surfaced today should override Friday's read on its own. A
-change here is almost always a designation change rather than new
-information about usage or role.
+**What it shows.** The baseline for every diff is Sleeper's own daily slim
+snapshots (`data/sleeper/slim/`, 10 kept locally) — the newest snapshot
+strictly before today's, named explicitly with the gap actually used
+(`baseline_snapshot`'s `days_used`), which is normally one day but is never
+assumed to be. `sleeper_signals.availability_tier` is computed directly
+against the baseline and current snapshots (reused as-is, per
+`availability.py`'s standing rule against a second tier function) to find
+every player whose tier moved, each direction labelled `worse` or `better`;
+a worsening starter is paired inline with the best legal bench replacement,
+recomputed against today's data rather than carried from Friday's artifact,
+since nothing persists that computation. Practice-squad elevations and
+other raw Sleeper `status`/`active` transitions render next, followed by a
+one-day-lookback depth-chart delta (`wednesday.practice_signals`'s existing
+`lookback_days` parameter, passed 1 instead of its Wednesday default), and
+finally today's nflverse `report_status` for every at-risk starter,
+labelled plainly as today's absolute official word rather than a diff —
+nflverse's `injuries` parquet is overwritten in place by each pull and
+nflverse publishes no history, so Friday's designation cannot be recovered
+to diff against.
+
+**What to look out for.** Saturday is quiet by design, not by accident:
+its correct output on an ordinary week is "nothing moved," and nothing
+surfaced here should override Friday's read on its own — a change is
+almost always a designation change, not new usage or role information. A
+player with no Sleeper match on either snapshot is counted and named in
+the footer, never silently read as unchanged.
 
 **Decisions due.** Hold or adjust a single slot. Confirm no starter is
-on a bye and none is sitting in an IR slot where they cannot score.
+on a bye this week (checked against the week's full schedule, not one
+weekday's) and that no one is sitting in an IR slot while healthy enough
+to score — both checks render an explicit all-clear line when they find
+nothing, rather than an empty section.
 
-**Swap and drop candidates.** Only players whose `tier` changed since
-Friday, each paired with the replacement Friday already computed, so
-the swap is one step rather than a fresh evaluation. If no tier moved,
-the section says so in a line.
+**Swap and drop candidates.** Only players whose tier changed since the
+baseline snapshot, each paired with a freshly-computed replacement rather
+than one carried from Friday. If no tier moved, the section says so in a
+line rather than rendering an empty table.
 
 ## Sunday — pre-lock call
 
@@ -512,7 +541,16 @@ rollout step. **Friday is dispatched.** `infra/scheduler.yaml`'s
 both feeds this report reads, and odds is again the tighter margin. It
 shares `ReportScheduleState` and `report.yml`'s `report` concurrency group
 with the other five, and goes live on change-set execution for the same
-reason `report-thursday` did.
+reason `report-thursday` did. **Saturday is dispatched.**
+`infra/scheduler.yaml`'s `report-saturday` fires `report.yml` at Sat 10:00
+ET, 37 minutes after nflverse's routine pull and 109 after Sleeper's 08:11
+daily pull — the only two feeds this report reads, and nflverse is the
+tighter margin, tying `report-wednesday` for the tightest report margin of
+the week; acceptable for the same reason, that both feeds auto-retry and a
+late one leaves the diff reading `insufficient data` at exit 0 rather than
+failing the run. It shares `ReportScheduleState` and `report.yml`'s
+`report` concurrency group with the other six, and goes live on change-set
+execution for the same reason `report-thursday` and `report-friday` did.
 
 **Reports read state and own none of it, except the reports themselves.**
 `report.yml` restores every state subtree it needs and pushes none of
@@ -568,21 +606,44 @@ key-to-function map, and was previously undocumented here.
   filed under week 2, visible in the body's `**Covers**`/`**Week 1**`
   lines now, still not in the path.
 - **Monday, Tuesday's week-in-review, and Tuesday's waiver wire are the
-  only reports that have been Observed running.** Wednesday, Thursday and
-  Friday are built but not yet Observed — `report --day wednesday`,
-  `report --day thursday` and `report --day friday` all exist and their
-  tests pass, but no scheduled or dispatched run has produced a real
-  artifact from any of the three. Thursday additionally depends on a path
-  never yet exercised end-to-end: props -> `odds.projections.resolve_props`
-  -> the market and divergence sections, which has only ever run against
-  fixtures, never a real `player_props.parquet` capture. Friday depends on
-  an analogous never-exercised path: `line_movement` ->
+  only reports that have been Observed running.** Wednesday, Thursday,
+  Friday and Saturday are built but not yet Observed — `report --day
+  wednesday`, `report --day thursday`, `report --day friday` and `report
+  --day saturday` all exist and their tests pass, but no scheduled or
+  dispatched run has produced a real artifact from any of the four.
+  Thursday additionally depends on a path never yet exercised end-to-end:
+  props -> `odds.projections.resolve_props` -> the market and divergence
+  sections, which has only ever run against fixtures, never a real
+  `player_props.parquet` capture. Friday depends on an analogous
+  never-exercised path: `line_movement` ->
   `odds.projections.team_totals_by_capture` -> the line-movement section,
   and on `team_totals.parquet` actually holding a second capture at all —
-  see the next two gaps. The remaining two report slots (Saturday, Sunday)
-  are still intent, not description — every time, threshold, and behavior
-  in those sections is a specification until something has run a real NFL
-  week.
+  see the next two gaps. Saturday's own tier diff depends on the same
+  never-exercised Sleeper history: it needs two consecutive daily slim
+  snapshots on disk, which is a day-two-of-collection condition never yet
+  observed either. Sunday, the remaining report slot, is still intent, not
+  description — every time, threshold, and behavior in that section is a
+  specification until something has run a real NFL week.
+- **Saturday's tier diff can only ever see Sleeper's own movement.**
+  `data/nflverse/injuries.parquet` is overwritten in place by every
+  nflverse pull (`nflverse/store.py:local_path` is one file per
+  dataset/season) and nflverse publishes no history, so Friday's official
+  `report_status` is unrecoverable by the time Saturday renders. "Today's
+  official designations" is therefore an absolute read of today's nflverse
+  data, explicitly labelled as such, never a diff against Friday's.
+- **Saturday's ESPN view is Wednesday's.** `espn-wednesday` (09:08 ET) is
+  the last ESPN pull before Saturday renders — there is no `espn-saturday`
+  slot — so any roster or lineup-slot move ESPN would show for Thursday
+  through Saturday (a waiver add, an IR designation, a lineup edit) is
+  invisible to this report. The tier diff and depth-chart moves still work
+  off that same, now-stale `weekly-rosters.csv` snapshot.
+- **Saturday's swap replacements are recomputed, not carried from
+  Friday's artifact.** Nothing persists Friday's own `held_open_slots`/
+  `recommended_lineup` computation for Saturday to read, so
+  `wednesday.best_replacement` is called again against today's data. The
+  two agree whenever no relevant input has moved since Friday; when one
+  has, today's answer is the more current one, not a discrepancy to
+  reconcile.
 - **`practice_trajectory` reads `— / — / —` for every row on Wednesday's
   first run.** This is the standing gap noted throughout
   `docs/data-sources.md`: the daily slim-snapshot store has not yet

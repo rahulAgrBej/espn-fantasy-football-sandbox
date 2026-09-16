@@ -74,6 +74,23 @@ def test_remaining_games_handles_more_than_one_monday_game(monkeypatch):
     assert set(result["home_team"]) == {"CHI", "WSH"}
 
 
+def test_remaining_games_weekday_none_returns_every_game_in_the_week(monkeypatch):
+    """Saturday's bye-week check needs the whole week's slate, not one
+    weekday's -- weekday=None must skip the weekday filter entirely."""
+    games = _games(
+        [
+            {"season": 2026, "week": 2, "game_type": "REG", "home_team": "LA", "away_team": "NYG",
+             "weekday": "Monday", "gameday": "2026-09-21", "gametime": "20:15"},
+            {"season": 2026, "week": 2, "game_type": "REG", "home_team": "KC", "away_team": "DEN",
+             "weekday": "Sunday", "gameday": "2026-09-20", "gametime": "13:00"},
+        ]
+    )
+    monkeypatch.setattr(schedule.nflverse_store, "load", lambda name: games)
+
+    result = schedule.remaining_games(2026, 2, weekday=None)
+    assert len(result) == 2
+
+
 def test_teams_in_returns_home_and_away_normalized():
     games = _games([{"home_team": "LAR", "away_team": "NYG"}])
     assert schedule.teams_in(games) == {"LAR", "NYG"}

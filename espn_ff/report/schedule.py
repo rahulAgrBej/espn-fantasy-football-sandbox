@@ -14,6 +14,9 @@ from ..nflverse import store as nflverse_store
 
 def remaining_games(season, week, weekday="Monday"):
     """The `weekday` slice of nflverse's schedules for (season, week).
+    `weekday=None` skips the weekday filter entirely and returns the whole
+    week's slate -- Saturday's bye-week check needs every game, not one
+    weekday's.
 
     Returns an empty frame when the week has no game on that weekday --
     callers must not assume exactly one. 2026 happens to have exactly one
@@ -21,12 +24,14 @@ def remaining_games(season, week, weekday="Monday"):
     season's schedule, not a rule this function may rely on.
     """
     games = nflverse_store.load("schedules")
-    subset = games[
+    mask = (
         (games["season"] == season)
         & (games["week"] == week)
         & (games["game_type"] == "REG")
-        & (games["weekday"] == weekday)
-    ].copy()
+    )
+    if weekday is not None:
+        mask &= games["weekday"] == weekday
+    subset = games[mask].copy()
     if subset.empty:
         return subset
     subset["home_team"] = subset["home_team"].map(normalize_team)

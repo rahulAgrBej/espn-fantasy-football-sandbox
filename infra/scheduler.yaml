@@ -1054,6 +1054,35 @@ Resources:
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn
 
+  # 37 minutes after nflverse-routine's 09:23 slot and 109 after sleeper's
+  # 08:11 -- the only two feeds this report reads. Ties report-wednesday for
+  # the tightest report margin of the week; acceptable for the same reason,
+  # that both feeds auto-retry and a late one leaves the diff reading
+  # "insufficient data" at exit 0 rather than failing the run.
+  ReportSaturdaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: report-saturday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref ReportScheduleState
+      ScheduleExpression: cron(0 10 ? * SAT *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Sat 10:00 ET -- contingency check
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"day":"saturday"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.report
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
   # --- Summary backstops ---------------------------------------------------
   #
   # Each sits 20 minutes behind the report slot it covers. They are a
@@ -1199,6 +1228,30 @@ Resources:
       ScheduleExpression: cron(20 11 ? * FRI *)
       ScheduleExpressionTimezone: America/New_York
       Description: Fri 11:20 ET -- backstop, 20 min behind report-friday
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.summary
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  SummarySaturdaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: summary-saturday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref SummaryScheduleState
+      ScheduleExpression: cron(20 10 ? * SAT *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Sat 10:20 ET -- backstop, 20 min behind report-saturday
       FlexibleTimeWindow:
         Mode: "OFF"
       Target:

@@ -131,6 +131,22 @@ def test_report_filename_uses_et_date_not_runner_local_date(monkeypatch, tmp_pat
     assert written[0].name.startswith("2026-09-15-")
 
 
+def test_report_day_saturday_dispatches_to_the_saturday_builder(monkeypatch, tmp_path):
+    """report --day saturday must route to report_saturday.build, the same
+    way test_report_day_tuesday_dispatches_to_the_tuesday_builder pins
+    tuesday's routing."""
+    stub = lambda season, week, team_id=None: "stub saturday report\n"
+    monkeypatch.setitem(cli.REPORTS, "saturday", (stub, "saturday", "contingency-check"))
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+
+    code = cli.main(["report", "--day", "saturday", "--week", "3"])
+
+    assert code == cli.EXIT_OK
+    written = list(tmp_path.rglob("*-saturday-contingency-check.md"))
+    assert len(written) == 1
+    assert written[0].read_text() == "stub saturday report\n"
+
+
 # --- summarize: always 0 --------------------------------------------------
 
 
