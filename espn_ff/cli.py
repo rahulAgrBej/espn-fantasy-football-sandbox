@@ -2,7 +2,7 @@
 
 import argparse
 import sys
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 
@@ -27,6 +27,7 @@ from .odds.ledger import BudgetExceeded, OddsError
 from .report import monday as report_monday
 from .report import tuesday as report_tuesday
 from .report import waivers as report_waivers
+from .weeks import ET
 
 # day key -> (build function, <day> filename segment, output slug). The key
 # is usually the day, but Tuesday carries two reports, so "tuesday-waivers"
@@ -497,7 +498,8 @@ def cmd_report(client, args):
 
     out_dir = config.PROJECT_ROOT / "reports" / str(season) / f"week-{week:02d}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{date.today():%Y-%m-%d}-{day_label}-{slug}.md"
+    rendered_on = datetime.now(ET).date()
+    path = out_dir / f"{rendered_on:%Y-%m-%d}-{day_label}-{slug}.md"
     path.write_text(text)
     print(f"  wrote {path}")
     return 0

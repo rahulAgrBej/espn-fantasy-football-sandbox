@@ -12,6 +12,9 @@ PrivateLeagueError < EspnError), so the distinction lives entirely in the
 handler ordering in cli.py. These tests pin that ordering.
 """
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from espn_ff import cli
@@ -88,3 +91,33 @@ def test_report_day_tuesday_dispatches_to_the_tuesday_builder(monkeypatch, tmp_p
     written = list(tmp_path.rglob("*-tuesday-week-in-review.md"))
     assert len(written) == 1
     assert written[0].read_text() == "stub tuesday report\n"
+
+
+def test_report_filename_uses_et_date_not_runner_local_date(monkeypatch, tmp_path):
+    """A UTC runner can already be into the next calendar day while ET
+    (what header_lines stamps `**Rendered**` with) is still on the
+    previous one. cmd_report used to name the file from `date.today()`
+    (runner-local), so a render crossing that boundary landed beside the
+    stale file instead of replacing it. Pins that the filename is now
+    derived from `datetime.now(ET)` instead."""
+    stub = lambda season, week, team_id=None: "stub tuesday report\n"
+    monkeypatch.setitem(cli.REPORTS, "tuesday", (stub, "tuesday", "week-in-review"))
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+
+    # 2026-09-16 02:00 UTC is 2026-09-15 22:00 ET (EDT, UTC-4) -- the two
+    # calendar dates disagree.
+    utc_evening = datetime(2026, 9, 16, 2, 0, tzinfo=ZoneInfo("UTC"))
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return utc_evening.astimezone(tz) if tz else utc_evening
+
+    monkeypatch.setattr(cli, "datetime", FixedDatetime)
+
+    code = cli.main(["report", "--day", "tuesday", "--week", "2"])
+
+    assert code == cli.EXIT_OK
+    written = list(tmp_path.rglob("*-tuesday-week-in-review.md"))
+    assert len(written) == 1
+    assert written[0].name.startswith("2026-09-15-")
