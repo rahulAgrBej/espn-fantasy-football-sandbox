@@ -77,7 +77,8 @@ fields the schedule puts in the event detail.
 
 ## The schedules
 
-All twenty-two are pinned to `America/New_York`. EventBridge cron takes six fields
+All twenty-three are pinned to `America/New_York` *(Observed — `aws scheduler
+list-schedules --group-name ff-collection`)*. EventBridge cron takes six fields
 — minute, hour, day-of-month, month, day-of-week, year — and requires `?` in
 one of the two day fields.
 
@@ -318,9 +319,13 @@ auto-disable.
   depending on. A dropped event is invisible for up to 20 minutes, and the
   DLQ alarm cannot see it at all, because nothing was dispatched to fail.
   What the backstop guarantees is that a summary is at most one slot late,
-  not that anyone learns the fast path stopped working. **None of the four
-  has fired on a real week**, and neither has the `workflow_run` trigger
-  itself.
+  not that anyone learns the fast path stopped working.
+  The dispatch path itself **is** Observed working: a hand-fired
+  `dispatch.summary` event reached `SummaryRule`, the API destination and
+  GitHub, producing run `35051530130` with an empty DLQ (2026-09-16). What
+  remains unexercised is the *clock* — none of the four schedules has fired
+  on its own, and the `workflow_run` trigger has not fired at all, since
+  every `summary` run so far was dispatched by hand.
 - **Nothing has been Observed on a real NFL week.** The DST arithmetic and the
   ordering gaps were verified before deploying, but no full week has run
   through this path. Treat the timings as intent until `logs/runs/` has a few

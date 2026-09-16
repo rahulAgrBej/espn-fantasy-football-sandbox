@@ -436,7 +436,17 @@ gh workflow run summary.yml   # must find nothing to do, and spend nothing
 
 Then the real chain: `gh workflow run report.yml -f day=wednesday`, and
 confirm a `summary` run appears on its own within a minute of the report run
-completing, with nobody dispatching it.
+completing, with nobody dispatching it. **This is the one step of the
+rollout still unexercised** — every `summary` run so far was dispatched by
+hand or by a hand-fired EventBridge event, so `workflow_run` has not yet
+fired once.
+
+What *is* Observed as of 2026-09-16: the command itself (runs `35051369201`
+writing both envelopes, `35051473872` and `35051530130` finding nothing to
+do and spending nothing), the append-only push, the run receipts under
+`logs/runs/summary/`, `report.sha256` matching the object in the bucket, and
+the whole AWS path — a hand-fired `dispatch.summary` event reached
+`SummaryRule`, the API destination and GitHub with an empty DLQ.
 
 To exercise the failure path for real rather than in unit tests, point
 `GeminiClient`'s injectable `base` at an unreachable host: the run must exit
