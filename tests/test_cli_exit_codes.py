@@ -147,6 +147,22 @@ def test_report_day_saturday_dispatches_to_the_saturday_builder(monkeypatch, tmp
     assert written[0].read_text() == "stub saturday report\n"
 
 
+def test_report_day_sunday_dispatches_to_the_sunday_builder(monkeypatch, tmp_path):
+    """report --day sunday must route to report_sunday.build, the same way
+    test_report_day_saturday_dispatches_to_the_saturday_builder pins
+    saturday's routing."""
+    stub = lambda season, week, team_id=None: "stub sunday report\n"
+    monkeypatch.setitem(cli.REPORTS, "sunday", (stub, "sunday", "pre-lock-call"))
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+
+    code = cli.main(["report", "--day", "sunday", "--week", "3"])
+
+    assert code == cli.EXIT_OK
+    written = list(tmp_path.rglob("*-sunday-pre-lock-call.md"))
+    assert len(written) == 1
+    assert written[0].read_text() == "stub sunday report\n"
+
+
 # --- summarize: always 0 --------------------------------------------------
 
 

@@ -2,8 +2,7 @@ name: report
 
 # Renders one of docs/report-weekly-schedule.md's reports from data already
 # on disk and commits the result to reports/, mirroring it to S3 as well.
-# `monday`, `tuesday`, `tuesday-waivers`, `wednesday`, `thursday`, `friday`
-# and `saturday` are implemented (espn_ff/cli.py's REPORTS) -- the workflow
+# Every day in espn_ff/cli.py's REPORTS is implemented -- the workflow
 # forwards whatever `day` AWS sends and lets cmd_report's own "not
 # implemented" guard handle the rest, so a future report day needs no new
 # workflow file, just a wider `options:` list below plus a new schedule.
@@ -21,6 +20,7 @@ name: report
 #   report-thursday         Thu 11:00 ET
 #   report-friday           Fri 11:00 ET
 #   report-saturday         Sat 10:00 ET
+#   report-sunday           Sun 11:30 ET
 #
 # each after that day's ESPN/nflverse/odds exports, all of which some report
 # here reads. That ordering is an assumption this workflow cannot enforce --
@@ -36,7 +36,7 @@ on:
       day:
         description: "Which day's report to render"
         type: choice
-        options: [monday, tuesday, tuesday-waivers, wednesday, thursday, friday, saturday]
+        options: [monday, tuesday, tuesday-waivers, wednesday, thursday, friday, saturday, sunday]
         required: true
 
 permissions:
@@ -65,7 +65,7 @@ jobs:
           day="${{ inputs.day }}"
           if [ -z "$day" ]; then
             echo "::error::No day named on this dispatch -- refusing to run." \
-                 "The caller must send one of: monday, tuesday, tuesday-waivers, wednesday, thursday, friday, saturday"
+                 "The caller must send one of: monday, tuesday, tuesday-waivers, wednesday, thursday, friday, saturday, sunday"
             exit 1
           fi
           echo "day=$day" >> "$GITHUB_OUTPUT"

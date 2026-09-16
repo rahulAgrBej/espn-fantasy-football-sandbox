@@ -190,6 +190,84 @@ def test_team_totals_by_capture_missing_parquet_returns_empty_with_columns(tmp_p
     assert list(result.columns) == ["captured_at", "team", "spread", "total", "implied_team_total"]
 
 
+# ---- props_by_capture ------------------------------------------------------
+
+def _prop_capture_rows(captured_at, week, point, player="Jayden Reed"):
+    """One book, one line market -- enough to pin which capture a figure
+    came from, which is all these tests are about."""
+    return [
+        {"captured_at": captured_at, "week": week, "event_id": "e1", "player_name": player,
+         "team": "GB", "market": "player_receptions", "book": "draftkings",
+         "outcome_name": "Over", "price": -115, "point": point},
+        {"captured_at": captured_at, "week": week, "event_id": "e1", "player_name": player,
+         "team": "GB", "market": "player_receptions", "book": "draftkings",
+         "outcome_name": "Under", "price": -105, "point": point},
+    ]
+
+
+def _scoring(monkeypatch):
+    monkeypatch.setattr(projections.store, "read_league_scoring", lambda: [{"stat_abbrev": "REC", "points": 1.0}])
+
+
+def test_props_by_capture_keeps_two_captures_distinct_not_medianed(tmp_path, monkeypatch):
+    """The reason this accessor exists. Thursday's props_primary capture and
+    Sunday's pre_lock capture live in one parquet; consensus_line groups on
+    (event_id, player_name, team, market) with no captured_at, so build()
+    would median a 4.5 and a 6.5 into one 5.5 row and the Sunday report
+    would call that "the pre_lock consensus"."""
+    path = tmp_path / "player_props.parquet"
+    rows = _prop_capture_rows("2026-09-17T14:08:00+00:00", 3, 4.5) + \
+        _prop_capture_rows("2026-09-20T14:38:00+00:00", 3, 6.5)
+    pd.DataFrame(rows).to_parquet(path)
+    monkeypatch.setattr(projections.config, "ODDS_PROPS", path)
+    _scoring(monkeypatch)
+
+    result = projections.props_by_capture(week=3)
+
+    assert set(result["captured_at"]) == {"2026-09-17T14:08:00+00:00", "2026-09-20T14:38:00+00:00"}
+    by_capture = result.sort_values("captured_at")
+    assert list(by_capture["point"]) == pytest.approx([4.5, 6.5])
+    assert list(by_capture["fantasy_points"]) == pytest.approx([4.5, 6.5])
+    assert "event_id" not in result.columns
+
+
+def test_props_by_capture_filters_by_week(tmp_path, monkeypatch):
+    path = tmp_path / "player_props.parquet"
+    rows = _prop_capture_rows("2026-09-17T14:08:00+00:00", 3, 4.5) + \
+        _prop_capture_rows("2026-09-24T14:08:00+00:00", 4, 5.5)
+    pd.DataFrame(rows).to_parquet(path)
+    monkeypatch.setattr(projections.config, "ODDS_PROPS", path)
+    _scoring(monkeypatch)
+
+    result = projections.props_by_capture(week=4)
+
+    assert set(result["captured_at"]) == {"2026-09-24T14:08:00+00:00"}
+
+
+def test_props_by_capture_missing_parquet_returns_empty_with_columns(tmp_path, monkeypatch):
+    monkeypatch.setattr(projections.config, "ODDS_PROPS", tmp_path / "player_props.parquet")
+    result = projections.props_by_capture(week=3)
+    assert result.empty
+    assert list(result.columns) == ["captured_at", "player_name", "team", "market", "point", "fantasy_points"]
+
+
+def test_props_by_capture_output_still_resolves_through_resolve_props(tmp_path, monkeypatch):
+    """Dropping event_id must not break the ids.resolve join -- player_name
+    and team are the only two columns it reads, and both are kept."""
+    path = tmp_path / "player_props.parquet"
+    pd.DataFrame(_prop_capture_rows("2026-09-20T14:38:00+00:00", 3, 6.5)).to_parquet(path)
+    monkeypatch.setattr(projections.config, "ODDS_PROPS", path)
+    _scoring(monkeypatch)
+    _isolate_from_disk(monkeypatch, tmp_path)
+
+    captured = projections.props_by_capture(week=3)
+    espn_players_df = pd.DataFrame([{"player_id": 4361741, "player_name": "Jayden Reed", "pro_team": "GB"}])
+    out, unmatched = projections.resolve_props(captured, espn_players_df=espn_players_df)
+
+    assert out.iloc[0]["espn_player_id"] == 4361741
+    assert len(unmatched) == 0
+
+
 # ---- resolve_props -------------------------------------------------------
 
 def _props_points_df():

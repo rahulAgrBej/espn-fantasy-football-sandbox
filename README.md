@@ -134,7 +134,7 @@ Prefer `gh workflow run` over running these commands locally -- see
 | `espn_ff/sleeper/` | Sleeper player-status layer — client, snapshots, ESPN id join, derived signals |
 | `espn_ff/nflverse/` | nflverse role-feature layer — client, parquet store, ESPN id crosswalk, derived features |
 | `espn_ff/odds/` | The Odds API betting-market layer — credit ledger, metered client, parquet store, name join, derived projections |
-| `espn_ff/report/` | The seven weekly markdown reports and their shared loaders/renderers |
+| `espn_ff/report/` | The eight weekly markdown reports and their shared loaders/renderers |
 | `espn_ff/ai/` | Generated report summaries — Gemini client, pure prompt assembly, discovery, JSON envelope |
 | `scripts/probe.py` | Dump key paths from a cached payload |
 | `scripts/practice_coverage.py` | practice_participation coverage report |
@@ -403,8 +403,9 @@ lineup or waiver decision, and `docs/automation.md` has the workflow/S3 runbook.
 | Sunday | 10:38 | Featured + undecided-slot prop lines, final line before lock | The Odds API — `pre_lock` job (critical priority) |
 | Sunday | 13:08–00:38 Mon | Live scoring, live rosters | ESPN — `LIVE_TTL`-gated `--refresh` (weekly-rosters, matchups), every 30 min |
 
-The seven reports render at Mon 10:30, Tue 10:00, Tue 11:00, Wed 10:00,
-Thu 11:00, Fri 11:00 and Sat 10:00 ET (`docs/report-weekly-schedule.md`).
+The eight reports render at Mon 10:30, Tue 10:00, Tue 11:00, Wed 10:00,
+Thu 11:00, Fri 11:00, Sat 10:00 and Sun 11:30 ET
+(`docs/report-weekly-schedule.md`).
 Each one's AI summary follows within seconds, off a `workflow_run` event
 rather than a clock, with an EventBridge backstop 20 minutes behind each
 slot — `docs/ai-summaries.md`.

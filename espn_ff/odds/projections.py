@@ -144,6 +144,50 @@ def prop_to_points(consensus_df, scoring):
     return out
 
 
+def props_by_capture(week=None):
+    """fantasy_points per (captured_at, player_name, market) -- consensus
+    computed WITHIN each capture rather than across all of them, which is
+    what build() does. Thursday's props_primary and Sunday's pre_lock write
+    to the same parquet under the same dedupe keys (store.PROPS_DEDUPE_KEYS
+    includes captured_at); this is the accessor that reads them apart, the
+    team_totals_by_capture analogue for the other file.
+
+    It matters more here than it does for team totals. pre_lock pulls props
+    with `commence_after=now` (odds/jobs.py:pre_lock), so its capture is
+    exactly the still-undecided slate and no other capture is -- medianing
+    it together with Thursday's folds a Thursday line into a figure the
+    Sunday report calls "the pre_lock consensus".
+
+    Returns columns captured_at, player_name, team, market, point,
+    fantasy_points -- `event_id` is dropped, since a bare 32-hex string is
+    rejected by .githooks/pre-commit and Odds API event ids are exactly
+    that shape. `player_name` and `team` are both kept because they are the
+    only two columns ids.resolve reads, so resolve_props still works on
+    this frame unchanged.
+    """
+    columns = ["captured_at", "player_name", "team", "market", "point", "fantasy_points"]
+    if not config.ODDS_PROPS.exists():
+        return pd.DataFrame(columns=columns)
+
+    props = pd.read_parquet(config.ODDS_PROPS)
+    if week is not None and "week" in props.columns:
+        props = props[props["week"] == week]
+    if props.empty:
+        return pd.DataFrame(columns=columns)
+
+    scoring = store.read_league_scoring() or []
+    frames = []
+    for captured_at, group in props.groupby("captured_at"):
+        points = prop_to_points(consensus_line(group), scoring)
+        points["captured_at"] = captured_at
+        # reindex, not [columns]: consensus_line's group_cols is the
+        # intersection of its four candidates with the input's own columns,
+        # so a frame without `team` would raise KeyError here rather than
+        # rendering the column as `--`.
+        frames.append(points.reindex(columns=columns))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
+
+
 def _default_xwalk():
     """config.NFLVERSE_XWALK read for `ids._xwalk_index`'s shape
     (display_name/latest_team/espn_player_id), not report/availability.py's

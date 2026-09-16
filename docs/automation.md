@@ -47,7 +47,9 @@ Times are ET and hold year-round: the schedules are pinned to
 | `report.yml` | Wed 10:00 | `report --day wednesday` | no |
 | `report.yml` | Thu 11:00 | `report --day thursday` | no |
 | `report.yml` | Fri 11:00 | `report --day friday` | no |
-| `summary.yml` | on `report` completing, **plus** six backstop slots | `summarize` | no |
+| `report.yml` | Sat 10:00 | `report --day saturday` | no |
+| `report.yml` | Sun 11:30 | `report --day sunday` | no |
+| `summary.yml` | on `report` completing, **plus** eight backstop slots | `summarize` | no |
 | `tests.yml` | on push / PR (GitHub's own trigger) | `pytest` | no |
 
 `tests.yml` runs on `push` and `pull_request`; `summary.yml` runs on
@@ -60,9 +62,9 @@ routine→forced on Thursday) that must survive any retiming.
 
 `summary.yml` is the one workflow with two triggers. The `workflow_run`
 event is the primary path and fires within seconds of a report landing in
-S3; the six EventBridge slots (Mon 10:50, Tue 10:20, Tue 11:20, Wed 10:20,
-Thu 11:20, Fri 11:20) are a backstop for a dropped event or a `report.yml`
-that never ran. Both
+S3; the eight EventBridge slots (Mon 10:50, Tue 10:20, Tue 11:20, Wed 10:20,
+Thu 11:20, Fri 11:20, Sat 10:20, Sun 11:50) are a backstop for a dropped
+event or a `report.yml` that never ran. Both
 land in the same input-free, idempotent job, so a backstop firing after the
 event already did the work finds nothing to do and spends nothing. See
 `docs/ai-summaries.md`.
@@ -424,7 +426,7 @@ spend credits for a value that already exists.
   Everything else moved to EventBridge precisely because GitHub offers no
   delivery guarantee and no signal when a slot is skipped; a `workflow_run`
   event is a different reliability profile from GitHub cron, but it is not
-  an independently observable one either. The five AWS backstop slots bound
+  an independently observable one either. The eight AWS backstop slots bound
   the damage to ~20 minutes rather than eliminating it.
   `docs/ai-summaries.md` has the rest of that layer's gaps.
 - **`latest/` duplicates `archive/`.** It exists for convenience; drop it

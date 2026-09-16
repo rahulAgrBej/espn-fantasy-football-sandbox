@@ -23,6 +23,7 @@ INDEX = {
     ("thursday", "usage-and-market"): "thursday",
     ("friday", "lineup-lock"): "friday",
     ("saturday", "contingency-check"): "saturday",
+    ("sunday", "pre-lock-call"): "sunday",
 }
 
 

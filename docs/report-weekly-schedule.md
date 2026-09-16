@@ -16,25 +16,21 @@ collection run takes, which is minutes. The 37–82 minutes below are ample,
 and the reason the times still look offset rather than aligned is that
 they are anchored to the collection slots.
 
-**Monday, Tuesday's week-in-review, Tuesday's waiver wire, Wednesday,
-Thursday, Friday and Saturday are implemented; Sunday is still a
-specification.** `espn_ff/report/` is the report engine. `python -m espn_ff
-report --day monday` renders the Monday-night call from data already on
-disk *(Observed)*, `python -m espn_ff report --day tuesday` renders the
-week-in-review, `python -m espn_ff report --day tuesday-waivers` renders
-the waiver wire and opening market, `python -m espn_ff report --day
-wednesday` renders the availability watchlist, `python -m espn_ff report
---day thursday` renders the usage and market report, `python -m espn_ff
-report --day friday` renders the lineup lock, and `python -m espn_ff report
---day saturday` renders the contingency check. `thursday`, `friday` and
-`saturday` are all built and their tests pass, but -- same footing
-Wednesday was on until its first real run -- no claim in any of their
-sections below is tagged **Observed** yet; see the known-gaps entry.
-`espn_ff/cli.py`'s `REPORTS` dict has no `sunday` entry yet -- calling
-`report --day` with any other value exits with a clear "not implemented"
-rather than an empty file. This document is still the specification for
-that remaining report, not a description of it, which is why no claim in
-its section is tagged **Observed**.
+**All eight reports are implemented.** `espn_ff/report/` is the report
+engine. `python -m espn_ff report --day monday` renders the Monday-night
+call from data already on disk *(Observed)*, `python -m espn_ff report
+--day tuesday` renders the week-in-review, `python -m espn_ff report --day
+tuesday-waivers` renders the waiver wire and opening market, `python -m
+espn_ff report --day wednesday` renders the availability watchlist, `python
+-m espn_ff report --day thursday` renders the usage and market report,
+`python -m espn_ff report --day friday` renders the lineup lock, `python -m
+espn_ff report --day saturday` renders the contingency check, and `python
+-m espn_ff report --day sunday` renders the pre-lock call. `thursday`,
+`friday`, `saturday` and `sunday` are all built and their tests pass, but
+-- same footing Wednesday was on until its first real run -- no claim in
+any of their sections below is tagged **Observed** yet; see the known-gaps
+entry. A `--day` value outside `espn_ff/cli.py`'s `REPORTS` dict exits with
+a clear "not implemented" rather than writing an empty file.
 
 ## Overview
 
@@ -62,17 +58,21 @@ therefore delivers the official week-N injury report before the 10:30
 report renders. Monday no longer waits on Odds `results`; that job still
 runs at 09:38 but feeds nothing Monday reads.
 
-Sunday's slot is the one with a hard deadline behind it: 11:30 ET leaves 90
-minutes before 13:00 ET kickoffs, and unlike the old UTC pinning that holds
-in November too rather than drifting to 10:30.
+Sunday's slot is the one with a hard deadline behind it rather than only a
+feed ordering: 11:30 ET leaves 90 minutes before 13:00 ET kickoffs, and
+because it is pinned to `America/New_York` rather than a fixed UTC offset,
+that gap holds in November too rather than drifting to 10:30.
 
-When Sunday is built it belongs in `infra/scheduler.yaml` alongside the
-collection schedules, with one rule per report workflow, the same way
-`ReportSaturdaySchedule` was added for the 10:00 contingency check. The
-only odds-dependent margin currently live is the 82-minute Tuesday 11:00
-slot; the tightest margins among the rest are the 37-minute Wednesday and
-Saturday slots, which wait only on feeds that do auto-retry
-(`docs/aws-scheduling.md`).
+Every one of the eight now has its own rule in `infra/scheduler.yaml`
+alongside the collection schedules, one per report workflow. Two of the
+margins are odds-dependent: the 82-minute Tuesday 11:00 slot and Sunday's
+52-minute one. Sunday's is the one that matters most, because `pre_lock` is
+the only job permitted to draw the credit reserve to zero and cannot be
+cheaply replayed (`docs/odds-budget.md`) — the report's answer to a
+`pre_lock` that did not land is to say so, not to render Friday's lines
+under a Sunday heading. The tightest margins among the rest are the
+37-minute Wednesday and Saturday slots, which wait only on feeds that do
+auto-retry (`docs/aws-scheduling.md`).
 
 ## What every report contains
 
@@ -473,34 +473,92 @@ line rather than rendering an empty table.
 
 ## Sunday — pre-lock call
 
-**What it shows.** The `pre_lock` job's featured lines and its props for
-still-undecided slots, the final `tier` and `injury_status` read from
-the 08:00 Sleeper run, and the specific slots Friday left open.
+The last report before the lock, and the only one whose value decays by the
+minute. Sunday reads three feeds: odds `pre_lock` (10:38 ET), Sleeper's
+daily slim snapshot (08:11 ET) and nflverse's routine pull (09:23 ET).
+ESPN's last pull is still Wednesday's — `espn-sunday-live` does not start
+until 13:08, after the lock — so the lineup this report solves is solved
+against a four-day-old `weekly-rosters.csv`, one day staler than Saturday's
+already is.
 
-**What to look out for.** Check `data/odds/last_run.json`'s `stale`
-flag for `pre_lock` specifically — the file is keyed per job so one
-job's staleness never masks another's, and a budget-aborted `pre_lock`
-leaves Friday's lines in place looking identical to a fresh pull. This
-is the one job permitted to draw down the reserve, which
-`docs/odds-budget.md` owns the rules for; the report's only job is to
-verify it actually ran.
+**Verifying `pre_lock` is the report's own first section.**
+`pre_lock_read` is a reason-string ladder over `data/odds/last_run.json`,
+keyed on the `pre_lock` job specifically so one job's staleness never masks
+another's: no entry at all; that entry's own `stale` flag set (the
+budget-abort case `docs/odds-budget.md` owns); and a third rung no other
+gate in this repo carries — an entry whose `ran_at` is not today's ET date.
+That last one is the subtle failure: last Sunday's entry carries `stale =
+False` and is identical to this morning's in every field but its date, and
+`team_totals.parquet` still holds Friday's `line_movement` capture, so the
+market sections would render normally off a three-day-old line. Both
+parquets additionally carry a `from_this_run` verdict comparing
+`last_run`'s `ran_at` against the newest `captured_at`; a mismatch is
+bannered above the table rather than left to the reader. That comparison is
+**Inferred** — neither parquet carries a job-name column, so timestamp
+agreement is the strongest instrument available.
 
-**Decisions due.** **The final lock, before 13:00 ET.** After kickoff
-this report is history, and it should carry its own generation timestamp
-prominently enough that a stale tab is obvious.
+**What it shows.** `pre_lock`'s featured spreads and totals with the delta
+against the previous capture — the *last two* captures, not the first
+against the last, since by Sunday the parquet holds three for the week
+(Tuesday's `slate`, Friday's `line_movement`, this morning's `pre_lock`)
+and diffing against the earliest would render "movement since Tuesday's
+open" under a Sunday heading. Unlike Friday's section, a single capture is
+not insufficient here: Friday's section *is* the diff, while this one is
+the job's lines, so the absolute numbers are the deliverable and the delta
+renders `--`. Then this morning's props, isolated to the newest capture by
+`odds.projections.props_by_capture` — a per-capture accessor `build()`
+cannot express, since it medians every capture of a week into one row and
+would fold Thursday's `props` line into a figure this report calls "the
+`pre_lock` consensus". Then the lineup being locked, and today's resolved
+`tier` for every player in it.
 
-**Swap and drop candidates.** Only the slots Friday held open, ranked by
-the `pre_lock` consensus, plus any starter whose `tier` moved to `OUT`
-overnight shown with the bench replacement already identified. The
-footer must state plainly that official inactives drop roughly 90
-minutes before kickoff and appear in no feed this pipeline touches — a
-report generated at 11:30 cannot see them, and saying so is the
-difference between a limitation and a silent error.
+**What to look out for.** The undecided slots are **recomputed, not read**.
+Nothing persists `friday.held_open_slots`; it exists only inside Friday's
+rendered markdown. Sunday reruns `friday.recommended_lineup` and
+`friday.held_open_slots` against this morning's data — the same call
+Saturday already makes for its replacements — and labels the section
+"slots still undecided as of this morning" rather than "what Friday held".
+The two agree whenever no relevant input has moved.
+
+**Decisions due.** **The final lock, before the first Sunday kickoff.** The
+generation timestamp is the report's first body line, above even the
+freshness block, carrying the minutes remaining and the kickoff it is
+counting to, so a tab left open past kickoff says so at a glance rather
+than looking current. That kickoff comes from nflverse's own slate via
+`schedule.remaining_games(weekday="Sunday")`; when the slate cannot be read
+the line falls back to the 13:00 ET deadline and says which it used.
+`gameday`/`gametime` are read as an ET wall clock, which is **Inferred** —
+nflverse publishes no zone for that column. After kickoff the minutes
+figure goes negative rather than being clamped, and the line says the
+report is history.
+
+**Swap and drop candidates.** Each undecided slot's candidates ranked by
+the `pre_lock` consensus rather than by ESPN's projection, with
+`friday._best_alternative` run alongside so a disagreement between the two
+rules is stated rather than hidden — that disagreement is the whole reason
+this section renders at 11:30 instead of being settled at 11:00 on Friday.
+A candidate with no prop quote in this morning's capture ranks on
+`week_projection` instead, sorts last, and is named in the footer rather
+than coerced to `0.0`. Separately, every starter whose `tier` reads `OUT`
+is paired with a bench replacement, in two buckets: those that moved
+overnight (the spec's case, via `saturday.baseline_snapshot`/`tier_diff`/
+`swap_pairs` reused whole) and those already `OUT` at the baseline — a
+starter who was already out is still a lineup you must not lock, and
+dropping them for reading the spec literally would be an error dressed as
+fidelity. `HIGH_RISK`-but-not-`OUT` is deliberately absent: an at-risk
+starter with a close alternative is already an undecided slot above.
+
+The footer states plainly that official inactives drop roughly 90 minutes
+before kickoff and appear in no feed this pipeline touches — a report
+generated at 11:30 cannot see them, and saying so is the difference between
+a limitation and a silent error. That sentence is kept word-for-word
+identical to Saturday's, pinned by a test, so the two cannot drift into
+different claims about the one thing neither can see.
 
 ## How these will run
 
 `docs/automation.md` and `docs/aws-scheduling.md` own the general
-mechanics; five points specific to reports are worth stating here.
+mechanics; a few points specific to reports are worth stating here.
 
 **Monday is dispatched.** `infra/scheduler.yaml`'s `report-monday` schedule
 fires `.github/workflows/report.yml` at Mon 10:30 ET, 67 minutes after
@@ -549,8 +607,22 @@ tighter margin, tying `report-wednesday` for the tightest report margin of
 the week; acceptable for the same reason, that both feeds auto-retry and a
 late one leaves the diff reading `insufficient data` at exit 0 rather than
 failing the run. It shares `ReportScheduleState` and `report.yml`'s
-`report` concurrency group with the other six, and goes live on change-set
+`report` concurrency group with the other seven, and goes live on change-set
 execution for the same reason `report-thursday` and `report-friday` did.
+**Sunday is dispatched.** `infra/scheduler.yaml`'s `report-sunday` fires
+`report.yml` at Sun 11:30 ET, 52 minutes after Odds `pre_lock`'s 10:38 slot
+and 199 after Sleeper's 08:11 — odds is the tighter margin, as it is for
+`report-tuesday-waivers`. It is the only report slot with a hard external
+deadline rather than only a feed ordering behind it: 11:30 leaves 90 minutes
+before 13:00 ET kickoffs, and the `America/New_York` pinning holds that gap
+in November too rather than drifting to 10:30. A late `pre_lock` leaves the
+market sections reading `insufficient data` at exit 0 rather than failing
+the run — but unlike the other odds-dependent slots, `pre_lock` is the one
+job permitted to draw the reserve to zero and cannot be cheaply replayed,
+which is why the report verifies that it ran rather than assuming it. It
+shares `ReportScheduleState` and the `report` concurrency group with the
+other seven, and goes live on change-set execution for the same reason the
+three before it did.
 
 **Reports read state and own none of it, except the reports themselves.**
 `report.yml` restores every state subtree it needs and pushes none of
@@ -607,10 +679,9 @@ key-to-function map, and was previously undocumented here.
   lines now, still not in the path.
 - **Monday, Tuesday's week-in-review, and Tuesday's waiver wire are the
   only reports that have been Observed running.** Wednesday, Thursday,
-  Friday and Saturday are built but not yet Observed — `report --day
-  wednesday`, `report --day thursday`, `report --day friday` and `report
-  --day saturday` all exist and their tests pass, but no scheduled or
-  dispatched run has produced a real artifact from any of the four.
+  Friday, Saturday and Sunday are built but not yet Observed — all five
+  `report --day` values exist and their tests pass, but no scheduled or
+  dispatched run has produced a real artifact from any of them.
   Thursday additionally depends on a path never yet exercised end-to-end:
   props -> `odds.projections.resolve_props` -> the market and divergence
   sections, which has only ever run against fixtures, never a real
@@ -621,9 +692,53 @@ key-to-function map, and was previously undocumented here.
   see the next two gaps. Saturday's own tier diff depends on the same
   never-exercised Sleeper history: it needs two consecutive daily slim
   snapshots on disk, which is a day-two-of-collection condition never yet
-  observed either. Sunday, the remaining report slot, is still intent, not
-  description — every time, threshold, and behavior in that section is a
-  specification until something has run a real NFL week.
+  observed either. **Sunday is the least exercised of the five.**
+  `docs/aws-scheduling.md` records that `odds pre_lock` has never fired
+  once under either scheduler, so `player_props.parquet` has never held a
+  `pre_lock` capture at all and the whole `pre_lock` ->
+  `odds.projections.props_by_capture` -> market-ranked undecided slots path
+  has only ever run against fixtures. Its `from_this_run` check has
+  therefore never seen a real capture to agree or disagree with.
+- **Sunday's `from_this_run` verdict is Inferred, not Observed.** Neither
+  `team_totals.parquet` nor `player_props.parquet` carries a job-name
+  column, so "did this capture come from `pre_lock`" is answered by
+  timestamp agreement between `last_run`'s `ran_at` and the newest
+  `captured_at`, inside a 300-second window. It degrades if two odds jobs
+  ever land inside that window, and it cannot distinguish a `pre_lock` that
+  wrote `last_run` but failed before `append_snapshot` from one whose
+  featured half simply returned nothing. It is the strongest instrument
+  available, not a certainty.
+- **Sunday's undecided slots are recomputed, not Friday's.** Nothing
+  persists `friday.held_open_slots`, so Sunday re-derives them from this
+  morning's data using the same two functions. The two agree whenever no
+  relevant input has moved since Friday; when one has, this morning's
+  answer is the more current one, not a discrepancy to reconcile. Sunday
+  cannot prove it is answering the exact slots Friday printed, which is why
+  the section is headed "still undecided as of this morning" rather than
+  "what Friday held". Same class as the Saturday-replacements gap below.
+- **Sunday's ESPN view is Wednesday's, one day staler than Saturday's.**
+  `espn-sunday-live` starts at 13:08, after this report renders, so every
+  roster, IR and lineup-slot move since Wednesday 09:08 is invisible and
+  the lineup being locked is solved against that snapshot. A player added
+  on waivers Thursday cannot be recommended because he is not in
+  `week_rosters` at all.
+- **Sunday's props carry the job's undecided boundary, not the report's.**
+  `odds/jobs.py:pre_lock` filters `commence_after=now` at roughly 10:38;
+  the report renders at 11:30. A game kicking off in that hour is in the
+  capture and is no longer a decision, and Sunday cannot cross-reference:
+  `player_props.parquet` carries no kickoff time, and `props_by_capture`
+  drops `event_id` because `.githooks/pre-commit` rejects the bare 32-hex
+  strings Odds API event ids are. The hook wins; the gap is footnoted.
+- **Sunday's kickoff clock reads nflverse's `gametime` as ET.** The column
+  carries no zone and nflverse publishes none *(Inferred — Observed only
+  that Monday-night games read `20:15`)*. Misreading it as UTC would move
+  the stated deadline by four hours. When the slate cannot be read at all,
+  the 13:00 ET figure shown is the spec's default, labelled as such.
+- **Nothing in these reports is ever scored.** Ranking Sunday's undecided
+  slots by the `pre_lock` consensus rather than by ESPN's projection is a
+  stated choice, not a fitted one — no report here is measured against what
+  actually happened, so "the market was right" is an assumption this design
+  makes and never tests.
 - **Saturday's tier diff can only ever see Sleeper's own movement.**
   `data/nflverse/injuries.parquet` is overwritten in place by every
   nflverse pull (`nflverse/store.py:local_path` is one file per

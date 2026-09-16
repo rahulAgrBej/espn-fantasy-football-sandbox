@@ -33,6 +33,7 @@ from .report import loaders
 from .report import friday as report_friday
 from .report import monday as report_monday
 from .report import saturday as report_saturday
+from .report import sunday as report_sunday
 from .report import thursday as report_thursday
 from .report import tuesday as report_tuesday
 from .report import waivers as report_waivers
@@ -53,6 +54,7 @@ REPORTS = {
     "thursday": (report_thursday.build, "thursday", "usage-and-market"),
     "friday": (report_friday.build, "friday", "lineup-lock"),
     "saturday": (report_saturday.build, "saturday", "contingency-check"),
+    "sunday": (report_sunday.build, "sunday", "pre-lock-call"),
 }
 
 

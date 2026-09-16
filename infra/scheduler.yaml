@@ -1083,6 +1083,40 @@ Resources:
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn
 
+  # 52 minutes after odds-pre-lock's 10:38 slot and 199 after sleeper's
+  # 08:11 -- odds is the tighter margin, as it is for report-tuesday-waivers.
+  # Unlike every other report slot, this one has a hard external deadline
+  # rather than only a feed ordering behind it: 11:30 ET leaves 90 minutes
+  # before 13:00 ET kickoffs, and pinning to America/New_York holds that gap
+  # in November too rather than drifting to 10:30. A late pre_lock leaves the
+  # market sections reading "insufficient data" at exit 0 rather than failing
+  # the run -- but unlike the other odds-dependent slots, pre_lock is the one
+  # job permitted to draw the reserve to zero and cannot be replayed cheaply
+  # (docs/odds-budget.md).
+  ReportSundaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: report-sunday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref ReportScheduleState
+      ScheduleExpression: cron(30 11 ? * SUN *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Sun 11:30 ET -- pre-lock call
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"day":"sunday"}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.report
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
   # --- Summary backstops ---------------------------------------------------
   #
   # Each sits 20 minutes behind the report slot it covers. They are a
@@ -1252,6 +1286,30 @@ Resources:
       ScheduleExpression: cron(20 10 ? * SAT *)
       ScheduleExpressionTimezone: America/New_York
       Description: Sat 10:20 ET -- backstop, 20 min behind report-saturday
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatchBus.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{}'
+        EventBridgeParameters:
+          Source: ff.scheduler
+          DetailType: dispatch.summary
+        RetryPolicy:
+          MaximumRetryAttempts: 5
+          MaximumEventAgeInSeconds: 3600
+        DeadLetterConfig:
+          Arn: !GetAtt DispatchDlq.Arn
+
+  SummarySundaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: summary-sunday
+      GroupName: !Ref ScheduleGroup
+      State: !Ref SummaryScheduleState
+      ScheduleExpression: cron(50 11 ? * SUN *)
+      ScheduleExpressionTimezone: America/New_York
+      Description: Sun 11:50 ET -- backstop, 20 min behind report-sunday
       FlexibleTimeWindow:
         Mode: "OFF"
       Target:

@@ -77,8 +77,12 @@ fields the schedule puts in the event detail.
 
 ## The schedules
 
-All twenty-eight are pinned to `America/New_York` *(Observed — `aws scheduler
-list-schedules --group-name ff-collection`)*. EventBridge cron takes six fields
+All thirty-two are pinned to `America/New_York` *(Documented —
+`infra/scheduler.yaml`; the twenty-eight that predate `report-saturday` and
+`report-sunday` are also **Observed** via `aws scheduler list-schedules
+--group-name ff-collection`, but those four have not been deployed yet, so
+the count here is the template's, not the stack's)*. EventBridge cron takes
+six fields
 — minute, hour, day-of-month, month, day-of-week, year — and requires `?` in
 one of the two day fields.
 
@@ -106,14 +110,18 @@ one of the two day fields.
 | `report-wednesday` | `cron(0 10 ? * WED *)` | Wed 10:00 | `day=wednesday` |
 | `report-thursday` | `cron(0 11 ? * THU *)` | Thu 11:00 | `day=thursday` |
 | `report-friday` | `cron(0 11 ? * FRI *)` | Fri 11:00 | `day=friday` |
+| `report-saturday` | `cron(0 10 ? * SAT *)` | Sat 10:00 | `day=saturday` |
+| `report-sunday` | `cron(30 11 ? * SUN *)` | Sun 11:30 | `day=sunday` |
 | `summary-monday` | `cron(50 10 ? * MON *)` | Mon 10:50 | — |
 | `summary-tuesday` | `cron(20 10 ? * TUE *)` | Tue 10:20 | — |
 | `summary-tuesday-waivers` | `cron(20 11 ? * TUE *)` | Tue 11:20 | — |
 | `summary-wednesday` | `cron(20 10 ? * WED *)` | Wed 10:20 | — |
 | `summary-thursday` | `cron(20 11 ? * THU *)` | Thu 11:20 | — |
 | `summary-friday` | `cron(20 11 ? * FRI *)` | Fri 11:20 | — |
+| `summary-saturday` | `cron(20 10 ? * SAT *)` | Sat 10:20 | — |
+| `summary-sunday` | `cron(50 11 ? * SUN *)` | Sun 11:50 | — |
 
-The six `summary-*` rows are unlike every other schedule in this stack:
+The eight `summary-*` rows are unlike every other schedule in this stack:
 they are a **backstop**, not the primary trigger. `summary.yml` normally
 runs off a `workflow_run` event fired by `report.yml` completing, within
 seconds of the report landing in S3, and by the time one of these slots
@@ -123,7 +131,7 @@ built to stop depending on (see "Why the clock moved") — an AWS schedule is
 the only part of this system that can notice a report has no summary.
 
 They send no inputs at all, because `espn_ff summarize` takes none: it
-discovers what needs summarizing rather than being told. Six exist rather
+discovers what needs summarizing rather than being told. Eight exist rather
 than one so Tuesday's waiver summary lands on Tuesday rather than waiting
 for the next slot to come round. The 20-minute offsets are a margin over a
 *report run*, not over a feed, so they carry none of the ordering
@@ -363,8 +371,12 @@ auto-disable.
   a `restore-out-datasets` list missing `transactions`. Neither the DLQ
   alarm nor the run receipt distinguishes those causes *(Inferred)*.
 - **Sunday has never been exercised at all.** The ESPN live-scoring grid, the
-  Sunday `health` probe and `odds pre_lock` have never fired once, under either
-  scheduler. The first Sunday after cutover should be watched live.
+  Sunday `health` probe, `odds pre_lock` and now `report-sunday` have never
+  fired once, under either scheduler. The first Sunday after cutover should be
+  watched live — and `report-sunday` in particular has a dependency none of the
+  other report slots do: it reads `pre_lock`'s capture, so a `pre_lock` that
+  fails takes the Sunday report's market sections with it, and `pre_lock` is
+  the one job whose credits cannot be spent twice (`docs/odds-budget.md`).
 - **The alarm covers dispatch, not execution.** A slot that dispatches cleanly
   and then fails inside GitHub does not touch the DLQ. Detecting *that* means
   reading the run receipts, which nothing currently does.
