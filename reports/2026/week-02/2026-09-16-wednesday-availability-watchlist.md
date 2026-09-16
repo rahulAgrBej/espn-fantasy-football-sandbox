@@ -2,7 +2,7 @@
 
 **Covers** Wed 2026-09-16 -- the first of week 2's three practice days
 **Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET
-**Rendered** Wed 2026-09-16 11:03 ET
+**Rendered** Wed 2026-09-16 11:06 ET
 
 ## Freshness
 - sleeper: 2026-09-16 08:11:31 ET
@@ -16,29 +16,15 @@
 _Waiver-deadline note: this league's deadline was last night (Tuesday into Wednesday), not tonight -- this morning's ESPN pull is the first settled read of last night's run._
 
 ## Waiver outcomes
-0 claimed by us, 6 claimed by other teams, 4 newly available.
+0 claimed by us, 1 claimed by other teams, 0 newly available.
 _2 row(s) in this window are still pending -- excluded above._
 _3 claim(s) in this window failed or were canceled (`FAILED_*`/`CANCELED`) and are excluded above -- a losing claim on a contested player is recorded for every team that attempted it, not just the winner._
-_215 other transaction(s) in this window were DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._
+_10 other transaction(s) in this window were DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._
 
 ### Claimed by us
 _(none)_
 
 ### Claimed by other teams
-#### Chris Boswell (K) -- claimed by BYE WEEK
-| player | position | pro_team | week_projected |
-|---|---|---|---|
-| Cairo Santos | K | CHI | 9.1 |
-| Chase McLaughlin | K | TB | 8.8 |
-| Tyler Bass | K | BUF | 8.7 |
-
-#### Chris Brooks (RB) -- claimed by Cheek clappers
-| player | position | pro_team | week_projected |
-|---|---|---|---|
-| Adonai Mitchell | WR | NYJ | 9.0 |
-| Denzel Boston | WR | CLE | 9.0 |
-| Caleb Douglas | WR | MIA | 8.9 |
-
 #### Devaughn Vele (WR) -- claimed by Rashee Rice Krispies
 | player | position | pro_team | week_projected |
 |---|---|---|---|
@@ -46,34 +32,8 @@ _(none)_
 | Denzel Boston | WR | CLE | 9.0 |
 | Caleb Douglas | WR | MIA | 8.9 |
 
-#### Hunter Henry (TE) -- claimed by Foreign Expansion
-| player | position | pro_team | week_projected |
-|---|---|---|---|
-| Pat Freiermuth | TE | PIT | 8.5 |
-| Kenyon Sadiq | TE | NYJ | 8.1 |
-| Dalton Schultz | TE | HOU | 8.1 |
-
-#### Jaguars D/ST (D/ST) -- claimed by BYE WEEK
-| player | position | pro_team | week_projected |
-|---|---|---|---|
-| Buccaneers D/ST | D/ST | TB | 8.0 |
-| 49ers D/ST | D/ST | SF | 6.6 |
-| Bears D/ST | D/ST | CHI | 6.4 |
-
-#### Michael Mayer (TE) -- claimed by BYE WEEK
-| player | position | pro_team | week_projected |
-|---|---|---|---|
-| Pat Freiermuth | TE | PIT | 8.5 |
-| Kenyon Sadiq | TE | NYJ | 8.1 |
-| Dalton Schultz | TE | HOU | 8.1 |
-
 ### Newly available
-| player | position | pro_team | dropped by | period | date |
-|---|---|---|---|---|---|
-| Browns D/ST | D/ST | CLE | BYE WEEK | 1 | 2026-09-09 01:07:27.303 |
-| Pat Freiermuth | TE | PIT | Foreign Expansion | 1 | 2026-09-08 15:14:57.959 |
-| Tyler Shough | QB | NO | BYE WEEK | 1 | 2026-09-10 01:03:58.903 |
-| Wil Lutz | K | DEN | BYE WEEK | 1 | 2026-09-09 00:49:15.881 |
+_(none)_
 
 ## Watchlist
 No starter is OUT, HIGH_RISK or COIN_FLIP on today's read.
