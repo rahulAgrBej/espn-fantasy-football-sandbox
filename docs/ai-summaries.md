@@ -1,6 +1,6 @@
 # AI summaries
 
-The four weekly reports are dense — week 2's waiver report is 166 lines with
+The five weekly reports are dense — week 2's waiver report is 166 lines with
 seven per-slot candidate tables — and none of them says *what changed since
 last week* or *what the one decision actually is*. Reading them is the work.
 This layer generates a short prose summary of each one and stores it as its
@@ -29,10 +29,10 @@ anywhere).
 | `espn_ff/ai/reports.py` | — | Discovery, prior selection, header parsing |
 | `espn_ff/ai/summarize.py` | — | Orchestration and the JSON envelope |
 | `summary.yml` | `.github/workflows/` | `workflow_run` off `report`, plus dispatch |
-| `SummaryRule` + 4 schedules | `infra/scheduler.yaml` | The AWS backstop, 20 min behind each report slot |
+| `SummaryRule` + 5 schedules | `infra/scheduler.yaml` | The AWS backstop, 20 min behind each report slot |
 | `summaries/` | the bucket | One JSON envelope per summarized report, append-only |
 
-Cost is roughly **$0.03 per summary, $0.12 a week** at four summaries
+Cost is roughly **$0.03 per summary, $0.15 a week** at five summaries
 *(Observed — two real generations on 2026-09-15: 27,313 and 25,529 prompt
 tokens, 292 and 253 answer tokens, plus 1,906 and 1,742 **thinking** tokens,
 against introductory $0.75/1M in and $3.75/1M out)*. Not credit-metered, so
@@ -116,7 +116,7 @@ Both paths land in the same job.
 | Path | Mechanism | Purpose |
 |---|---|---|
 | Primary | `on: workflow_run: {workflows: [report], types: [completed]}` | Fires within seconds of the report landing in S3 |
-| Backstop | Four EventBridge schedules → `dispatch.summary` → `summary.yml` | Catches a dropped event, or a `report.yml` that never ran |
+| Backstop | Five EventBridge schedules → `dispatch.summary` → `summary.yml` | Catches a dropped event, or a `report.yml` that never ran |
 
 The backstop is in character for this repo. `docs/aws-scheduling.md` records
 why the clock moved to AWS at all: five consecutive missed GitHub-cron slots
@@ -125,9 +125,9 @@ slot was due. A GitHub-internal event is a different reliability profile
 from GitHub cron, but it is not an independently observable one either — so
 the AWS schedule stays as the thing that notices.
 
-The four backstops sit 20 minutes behind each report slot: Mon 10:50, Tue
-10:20, Tue 11:20, Wed 10:20 ET. Because the job is input-free all four send
-an identical, empty payload; four exist rather than one so Tuesday's waiver
+The five backstops sit 20 minutes behind each report slot: Mon 10:50, Tue
+10:20, Tue 11:20, Wed 10:20, Thu 11:20 ET. Because the job is input-free all
+five send an identical, empty payload; five exist rather than one so Tuesday's waiver
 summary lands on Tuesday rather than waiting for the next slot to come
 round.
 
@@ -344,7 +344,7 @@ correspondingly **absent** from `cli.main`'s except-chain; the command
 catches it itself, so the departure cannot leak into any other command.
 
 Failure is also per report, not per run: a model that dies on the third of
-four reports still leaves the first two on disk, and writes no envelope for
+five reports still leaves the first two on disk, and writes no envelope for
 the third, so the next trigger retries exactly that one.
 
 `summary.yml` inverts this at the edge: because the command is built to exit
@@ -467,7 +467,7 @@ summary up.
   name, so it is not silent, but it is only visible to someone reading the
   run output. A backfilled season takes several runs to catch up.
 - **Implicit prompt caching happens but is neither relied on nor
-  measured.** The ~22k-token system instruction is identical across all four
+  measured.** The ~22k-token system instruction is identical across all five
   summaries in a week and changes only when the docs do, and one Observed
   call reported `cachedContentTokenCount: 20450` against a 25,529-token
   prompt — while another, minutes later, reported `0`. So the discount is

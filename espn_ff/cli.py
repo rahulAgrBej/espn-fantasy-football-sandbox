@@ -31,6 +31,7 @@ from .odds import projections as odds_projections
 from .odds.ledger import BudgetExceeded, OddsError
 from .report import loaders
 from .report import monday as report_monday
+from .report import thursday as report_thursday
 from .report import tuesday as report_tuesday
 from .report import waivers as report_waivers
 from .report import wednesday as report_wednesday
@@ -47,6 +48,7 @@ REPORTS = {
     "tuesday": (report_tuesday.build, "tuesday", "week-in-review"),
     "tuesday-waivers": (report_waivers.build, "tuesday", "waiver-wire"),
     "wednesday": (report_wednesday.build, "wednesday", "availability-watchlist"),
+    "thursday": (report_thursday.build, "thursday", "usage-and-market"),
 }
 
 

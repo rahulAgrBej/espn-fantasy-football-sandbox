@@ -45,6 +45,20 @@ def latest_export(name):
     return pd.read_csv(path)
 
 
+def features(season, week):
+    """The (season, week) slice of data/nflverse/player_week_features.parquet.
+    Empty frame -- not an exception -- when the file is absent, so a
+    scheduled run degrades to `insufficient data` at exit 0. Read directly
+    off `config.NFLVERSE_FEATURES` rather than through `latest_export`: the
+    parquet is written straight to data/nflverse/ by `cmd_features`, not
+    dated into data/out/ -- the CSV export there is a `--min-snap-pct`
+    display filter, not the canonical table."""
+    if not config.NFLVERSE_FEATURES.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(config.NFLVERSE_FEATURES)
+    return df[(df["season"] == season) & (df["week"] == week)].reset_index(drop=True)
+
+
 def _sleeper_freshness():
     path = config.SLEEPER_DIR / "last_run.json"
     if not path.exists():
@@ -62,6 +76,33 @@ def _nflverse_freshness():
         return None, True
     stale = any(nflverse_store.is_stale(entry) for entry in manifest.values())
     return max(fetched_ats), stale
+
+
+# The nflverse datasets `nflverse.features.build` actually reads -- not
+# every dataset in the manifest (players/injuries/depth_charts feed other
+# things, not player_week_features's provisional flag or its snap/target
+# columns).
+_FEATURES_DATASETS = ("schedules", "snap_counts", "stats_player")
+
+
+def nflverse_features_freshness(season=None):
+    """`fetched_at` for the specific nflverse datasets behind
+    `player_week_features.parquet`, not the feed-level max `_nflverse_freshness`
+    returns across every dataset (players, injuries, depth_charts included).
+    Named in the canonical-read gate's reason string when the features table
+    is absent or still provisional -- the `espn_view_freshness` precedent
+    above, applied to nflverse: a narrow accessor per caller rather than a
+    widened feed-level one. `season`-seasonal datasets (snap_counts,
+    stats_player) are keyed `name/season` in the manifest; `schedules` is
+    not seasonal and is keyed by bare name."""
+    season = season or config.SEASON
+    manifest = nflverse_store.read_manifest()
+    fetched_ats = []
+    for name in _FEATURES_DATASETS:
+        entry = manifest.get(f"{name}/{season}") or manifest.get(name)
+        if entry and entry.get("fetched_at") is not None:
+            fetched_ats.append(entry["fetched_at"])
+    return max(fetched_ats) if fetched_ats else None
 
 
 def espn_view_freshness(views, season=None):

@@ -17,7 +17,7 @@ Yes/No prices only) carry `point = NaN` and are de-vigged here instead.
 import pandas as pd
 
 from .. import config
-from . import store
+from . import ids, store
 from .markets import MARKET_STATS
 
 
@@ -114,6 +114,41 @@ def prop_to_points(consensus_df, scoring):
             fantasy_points.append(row["point"] * points_by_stat.get(stat, 0))
     out["fantasy_points"] = fantasy_points
     return out
+
+
+def _default_xwalk():
+    """config.NFLVERSE_XWALK read for `ids._xwalk_index`'s shape
+    (display_name/latest_team/espn_player_id), not report/availability.py's
+    narrower gsis_id one -- same file, different consumer. Missing file
+    degrades to an empty frame with the right columns, never raises."""
+    if not config.NFLVERSE_XWALK.exists():
+        return pd.DataFrame(columns=["display_name", "latest_team", "espn_player_id"])
+    return pd.read_csv(config.NFLVERSE_XWALK)
+
+
+def _default_sleeper_map():
+    if not config.SLEEPER_ID_MAP.exists():
+        return pd.DataFrame(columns=["sleeper_id", "espn_player_id", "source"])
+    return pd.read_csv(config.SLEEPER_ID_MAP)
+
+
+def resolve_props(props_points_df, espn_players_df=None, xwalk_df=None, sleeper_map_df=None):
+    """Attach `espn_player_id` and `match_source` to consensus prop rows.
+
+    Read-time, not capture-time: player_props.parquet stays an unaltered
+    archive keyed on PROPS_DEDUPE_KEYS, and a later crosswalk improvement
+    re-resolves captures already written. `consensus_line` groups on
+    (event_id, player_name, team, market) and so preserves both columns
+    ids.resolve needs.
+
+    Unmatched rows are KEPT, never dropped -- a prop on a just-signed
+    player is exactly the signal this layer exists to surface.
+    """
+    xwalk_df = _default_xwalk() if xwalk_df is None else xwalk_df
+    sleeper_map_df = _default_sleeper_map() if sleeper_map_df is None else sleeper_map_df
+    return ids.resolve(
+        props_points_df, xwalk_df=xwalk_df, sleeper_map_df=sleeper_map_df, espn_players_df=espn_players_df
+    )
 
 
 def build(week=None):

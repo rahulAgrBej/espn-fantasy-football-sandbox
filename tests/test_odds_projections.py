@@ -137,3 +137,66 @@ def test_build_returns_empty_frames_with_nothing_on_disk(tmp_path, monkeypatch):
     props_points, team_totals_points = projections.build(week=3)
     assert props_points.empty
     assert team_totals_points.empty
+
+
+# ---- resolve_props -------------------------------------------------------
+
+def _props_points_df():
+    return pd.DataFrame(
+        [
+            {"event_id": "e1", "player_name": "Jayden Reed", "team": None, "market": "player_receptions",
+             "point": 4.75, "fantasy_points": 2.375},
+            {"event_id": "e1", "player_name": "Some Rookie Nobody Has Heard Of", "team": None,
+             "market": "player_receptions", "point": 2.0, "fantasy_points": 1.0},
+        ]
+    )
+
+
+def _isolate_from_disk(monkeypatch, tmp_path):
+    """This repo's real data/nflverse/player_xwalk.csv and
+    data/sleeper/player_id_map.csv may carry a real "Jayden Reed" row of
+    their own, which would outrank the espn_pool path these tests mean to
+    exercise (xwalk is tried first). Point both at nonexistent tmp paths so
+    resolve_props's disk defaults degrade to empty, same contract
+    test_resolve_props_missing_crosswalk_files_degrade_to_empty_index below
+    pins directly."""
+    monkeypatch.setattr(projections.config, "NFLVERSE_XWALK", tmp_path / "player_xwalk.csv")
+    monkeypatch.setattr(projections.config, "SLEEPER_ID_MAP", tmp_path / "player_id_map.csv")
+
+
+def test_resolve_props_attaches_espn_id_and_match_source_columns(tmp_path, monkeypatch):
+    _isolate_from_disk(monkeypatch, tmp_path)
+    espn_players_df = pd.DataFrame([{"player_id": 4361741, "player_name": "Jayden Reed", "pro_team": "GB"}])
+    out, unmatched = projections.resolve_props(_props_points_df(), espn_players_df=espn_players_df)
+    assert {"espn_player_id", "match_source"} <= set(out.columns)
+    row = out[out["player_name"] == "Jayden Reed"].iloc[0]
+    assert row["espn_player_id"] == 4361741
+    assert row["match_source"] == "espn_pool"
+
+
+def test_resolve_props_keeps_unmatched_rows_rather_than_dropping_them(tmp_path, monkeypatch):
+    _isolate_from_disk(monkeypatch, tmp_path)
+    espn_players_df = pd.DataFrame([{"player_id": 4361741, "player_name": "Jayden Reed", "pro_team": "GB"}])
+    out, unmatched = projections.resolve_props(_props_points_df(), espn_players_df=espn_players_df)
+    assert len(out) == len(_props_points_df())  # nothing dropped
+
+    ghost = out[out["player_name"] == "Some Rookie Nobody Has Heard Of"].iloc[0]
+    assert ghost["match_source"] == "unmatched"
+    assert pd.isna(ghost["espn_player_id"])
+    assert len(unmatched) == 1
+
+
+def test_resolve_props_missing_crosswalk_files_degrade_to_empty_index(tmp_path, monkeypatch):
+    """No player_xwalk.csv / player_id_map.csv on disk must never raise --
+    the espn_pool path (the caller-supplied espn_players_df) still resolves
+    what it can, same "degrade gracefully" contract as
+    report/availability.py's _xwalk()/_id_map()."""
+    monkeypatch.setattr(projections.config, "NFLVERSE_XWALK", tmp_path / "player_xwalk.csv")
+    monkeypatch.setattr(projections.config, "SLEEPER_ID_MAP", tmp_path / "player_id_map.csv")
+
+    espn_players_df = pd.DataFrame([{"player_id": 4361741, "player_name": "Jayden Reed", "pro_team": "GB"}])
+    out, unmatched = projections.resolve_props(_props_points_df(), espn_players_df=espn_players_df)
+
+    row = out[out["player_name"] == "Jayden Reed"].iloc[0]
+    assert row["espn_player_id"] == 4361741
+    assert row["match_source"] == "espn_pool"

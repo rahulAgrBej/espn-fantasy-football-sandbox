@@ -208,7 +208,7 @@ def system_instruction(facts, column_dictionary, report_semantics, day):
     """Assemble the six sections into one instruction.
 
     `day` is a REPORTS key ("monday", "tuesday", "tuesday-waivers",
-    "wednesday"). It is named rather than used to select a subset of the
+    "wednesday", "thursday"). It is named rather than used to select a subset of the
     material: the report-semantics document covers every day, and telling
     the model which day it is reading is cheaper and less brittle than
     slicing that document by heading.

@@ -20,6 +20,7 @@ INDEX = {
     ("tuesday", "week-in-review"): "tuesday",
     ("tuesday", "waiver-wire"): "tuesday-waivers",
     ("wednesday", "availability-watchlist"): "wednesday",
+    ("thursday", "usage-and-market"): "thursday",
 }
 
 

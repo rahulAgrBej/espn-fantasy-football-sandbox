@@ -16,19 +16,23 @@ collection run takes, which is minutes. The 37–82 minutes below are ample,
 and the reason the times still look offset rather than aligned is that
 they are anchored to the collection slots.
 
-**Monday, Tuesday's week-in-review, Tuesday's waiver wire, and Wednesday
-are implemented; the rest of the week is still a specification.**
+**Monday, Tuesday's week-in-review, Tuesday's waiver wire, Wednesday, and
+Thursday are implemented; the rest of the week is still a specification.**
 `espn_ff/report/` is the report engine. `python -m espn_ff report --day
 monday` renders the Monday-night call from data already on disk
 *(Observed)*, `python -m espn_ff report --day tuesday` renders the
 week-in-review, `python -m espn_ff report --day tuesday-waivers` renders
-the waiver wire and opening market, and `python -m espn_ff report --day
-wednesday` renders the availability watchlist. `espn_ff/cli.py`'s
-`REPORTS` dict has no `thursday`, etc. entries yet -- calling `report
---day` with any other value exits with a clear "not implemented" rather
-than an empty file. This document is still the specification for the
-remaining four reports, not a description of them, which is why no claim
-in those sections is tagged **Observed**.
+the waiver wire and opening market, `python -m espn_ff report --day
+wednesday` renders the availability watchlist, and `python -m espn_ff
+report --day thursday` renders the usage and market report. `thursday` is
+built and its tests pass, but -- same footing Wednesday was on until its
+first real run -- no claim in that section below is tagged **Observed**
+yet; see the known-gaps entry. `espn_ff/cli.py`'s `REPORTS` dict has no
+`friday`, etc. entries yet -- calling `report --day` with any other value
+exits with a clear "not implemented" rather than an empty file. This
+document is still the specification for the remaining three reports, not a
+description of them, which is why no claim in those sections is tagged
+**Observed**.
 
 ## Overview
 
@@ -462,6 +466,16 @@ already contain the 10:00 commit. **Wednesday is dispatched.**
 10:00 ET, 37 minutes after nflverse's routine pull — the tightest report
 margin of the week. It shares the `ReportScheduleState` flag and
 `report.yml`'s `report` concurrency group with the other three.
+**Thursday is dispatched.** `infra/scheduler.yaml`'s `report-thursday`
+fires `report.yml` at Thu 11:00 ET, 52 minutes after Odds `props`' 10:08 ET
+slot and 67 after nflverse's forced 09:53 read — both feeds this report
+reads, and odds is the tighter margin, the same relationship
+`report-tuesday-waivers` has to its own metered input. It shares the
+`ReportScheduleState` flag and `report.yml`'s `report` concurrency group
+with the other four, and, because `ReportScheduleState` was already
+`ENABLED` on the deployed stack before this schedule was added, it goes
+live the moment the change set executes rather than needing a separate
+rollout step.
 
 **Reports read state and own none of it, except the reports themselves.**
 `report.yml` restores every state subtree it needs and pushes none of
@@ -517,11 +531,15 @@ key-to-function map, and was previously undocumented here.
   filed under week 2, visible in the body's `**Covers**`/`**Week 1**`
   lines now, still not in the path.
 - **Monday, Tuesday's week-in-review, and Tuesday's waiver wire are the
-  only reports that have been Observed running.** Wednesday is built but
-  not yet Observed — `report --day wednesday` exists and its tests pass,
-  but no scheduled or dispatched run has produced a real artifact from it.
-  The other four report slots are still intent, not description — every
-  time, threshold, and behavior in those sections is a specification
+  only reports that have been Observed running.** Wednesday and Thursday
+  are built but not yet Observed — `report --day wednesday` and `report
+  --day thursday` both exist and their tests pass, but no scheduled or
+  dispatched run has produced a real artifact from either. Thursday
+  additionally depends on a path never yet exercised end-to-end: props ->
+  `odds.projections.resolve_props` -> the market and divergence sections,
+  which has only ever run against fixtures, never a real `player_props.parquet`
+  capture. The other three report slots are still intent, not description —
+  every time, threshold, and behavior in those sections is a specification
   until something has run a real NFL week.
 - **`practice_trajectory` reads `— / — / —` for every row on Wednesday's
   first run.** This is the standing gap noted throughout
