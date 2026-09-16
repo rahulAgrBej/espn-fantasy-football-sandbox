@@ -312,6 +312,49 @@ def test_gate_failure_returns_insufficient_rather_than_zeros():
     assert result["claimed_by_others"] == []
 
 
+def test_since_scopes_outcomes_to_this_weeks_run_not_the_whole_period_window():
+    """Once the transaction store became cumulative, `{week-1, week}`
+    legitimately held last week's moves too -- and a week-old free-agent add
+    rendered under "claimed last night" misstates when it happened."""
+    df = pd.DataFrame([
+        _txn_row(1, "FREEAGENT", "ADD", player_id=10, acting_team_id=8,
+                 proposed_date="2026-09-08 15:14:57"),   # last week
+        _txn_row(2, "WAIVER", "ADD", player_id=11, acting_team_id=8,
+                 proposed_date="2026-09-16 07:02:58"),   # this week's run
+    ])
+    pool_df = pd.DataFrame([
+        _pool_row(10, "Last Week Add", "TE", "PIT", "TE,Bench,IR", 8.0),
+        _pool_row(11, "Last Night Claim", "WR", "NO", "WR,Bench,IR", 9.0),
+    ])
+    fa = pd.DataFrame(columns=["player_id"])
+
+    unscoped = waivers.waiver_outcomes(df, pool_df, fa, week=2, team_id=5)
+    assert len(unscoped["claimed_by_others"]) == 2
+
+    since = datetime(2026, 9, 15, 3, 0, tzinfo=ET)
+    scoped = waivers.waiver_outcomes(df, pool_df, fa, week=2, team_id=5, since=since)
+    assert [r["player_name"] for r in scoped["claimed_by_others"]] == ["Last Night Claim"]
+
+
+def test_since_keeps_a_tuesday_evening_submission_with_its_wednesday_processing():
+    """The boundary is the league week start, not the run's clock time, so a
+    claim submitted Tuesday evening and processed Wednesday morning stays in
+    one section rather than being split across two reports."""
+    df = pd.DataFrame([
+        _txn_row(2, "WAIVER", "ADD", player_id=10, acting_team_id=5,
+                 is_pending=True, status="PENDING", proposed_date="2026-09-15 22:59:26"),
+        _txn_row(2, "WAIVER", "ADD", player_id=10, acting_team_id=8,
+                 status="EXECUTED", proposed_date="2026-09-16 07:02:58", transaction_id=201),
+    ])
+    pool_df = pd.DataFrame([_pool_row(10, "Contested", "WR", "NO", "WR,Bench,IR", 9.0)])
+    result = waivers.waiver_outcomes(
+        df, pool_df, pd.DataFrame(columns=["player_id"]), week=2, team_id=5,
+        since=datetime(2026, 9, 15, 3, 0, tzinfo=ET),
+    )
+    assert result["pending_count"] == 1
+    assert [r["player_name"] for r in result["claimed_by_others"]] == ["Contested"]
+
+
 def test_gate_pass_does_not_suppress_real_outcomes():
     df = pd.DataFrame([_txn_row(2, "WAIVER", "ADD", player_id=10, acting_team_id=8)])
     pool_df = pd.DataFrame([_pool_row(10, "Someone", "WR", "NO", "WR,Bench,IR", 9.0)])

@@ -558,8 +558,14 @@ def build(season, week, team_id=None):
     settled_read = waiver_read_is_settled(
         espn_view_freshness(_TRANSACTION_VIEWS, season=season), rendered_at
     )
+    week_window = weeks.week_window(season, week)
     outcomes = waiver_outcomes(
-        transactions_df, pool_df, free_agents_df, week, team_id, settled_read=settled_read
+        transactions_df, pool_df, free_agents_df, week, team_id,
+        settled_read=settled_read,
+        # This week's start (Tue 03:00 ET) -- the transaction store is
+        # cumulative now, so the section must be scoped to this week's run
+        # rather than to everything the {week-1, week} period window holds.
+        since=week_window[0] if week_window else None,
     )
     alternates_by_player, alt_fallback_names, alt_nan_names = {}, set(), set()
     if not outcomes["insufficient"]:
@@ -628,5 +634,5 @@ def build(season, week, team_id=None):
     return render(
         season, week, team_id, watch_rows, signals_df, avail_df, starters, moves,
         outcomes, alternates_by_player, footer_notes,
-        window=weeks.week_window(season, week), rendered_at=rendered_at,
+        window=week_window, rendered_at=rendered_at,
     )

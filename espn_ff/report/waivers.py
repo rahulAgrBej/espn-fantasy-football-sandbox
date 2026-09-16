@@ -153,7 +153,8 @@ def waiver_read_is_settled(fetched_at, rendered_at):
     return True, None
 
 
-def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id, settled_read=None):
+def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id,
+                    settled_read=None, since=None):
     """Successful (`status == EXECUTED`) FREEAGENT/WAIVER ADD/DROP rows in
     the same `{week - 1, week}` window `settlements()` uses, split three
     ways: what we claimed, what another team claimed (so an alternate can be
@@ -196,6 +197,26 @@ def waiver_outcomes(transactions_df, pool_df, free_agents_df, week, team_id, set
 
     window = {w for w in (week - 1, week) if w >= 1}
     windowed = transactions_df[transactions_df["scoring_period"].isin(window)]
+
+    # `since` is the current league week's start (Tue 03:00 ET). The
+    # scoring_period window alone stopped being enough once the transaction
+    # store became cumulative: `{week - 1, week}` legitimately contains last
+    # week's moves, and rendering a week-old free-agent add under "claimed
+    # last night" misstates when it happened. The period window stays as the
+    # cheap pre-filter and as insurance against the scoring_period stamping
+    # (only one run has ever been Observed); this narrows it to the run the
+    # section actually reports on. Anchoring to the league week boundary
+    # rather than the run's clock time is deliberate -- it captures both a
+    # Tuesday-evening submission and its Wednesday-morning processing without
+    # depending on when ESPN runs the batch.
+    if since is not None and "proposed_date" in windowed.columns:
+        proposed = pd.to_datetime(windowed["proposed_date"], errors="coerce")
+        if proposed.dt.tz is None:
+            proposed = proposed.dt.tz_localize(
+                weeks.ET, ambiguous=True, nonexistent="shift_forward"
+            )
+        windowed = windowed[proposed >= pd.Timestamp(since)]
+
     included = windowed[windowed["type"].isin(_SETTLEMENT_TYPES)]
     excluded_count = len(windowed) - len(included)
 
