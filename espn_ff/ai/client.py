@@ -28,6 +28,19 @@ Three differences from the Sleeper client:
   it can leak through in the first place, so no redaction layer exists and
   none is needed. Nothing below ever interpolates `response.url`.
 - `timeout=120`, not 30 -- a generation is not a CSV fetch.
+
+`generate` serves two callers with opposite contracts, on one code path:
+
+  the summary   (`ai/prompt.py`)  no tools, no schema -- forbidden outside
+                knowledge, so grounding would defeat the point.
+  the news      (`ai/news.py`)    Google Search grounding plus a response
+                schema -- it exists to fetch outside knowledge.
+
+`tools` and `response_format` both default to None and are omitted from the
+body entirely when falsy, so the summary request stays byte-identical to
+what it was before the news layer existed. `tests/test_ai_client.py` pins
+that, because a stray `tools` key on the summary call would silently
+invalidate HOUSE_RULES #8.
 """
 
 import time
@@ -57,6 +70,26 @@ TIMEOUT = 120
 # billing indefinitely. `usage.thoughtsTokenCount` in every envelope is what
 # makes the real figure visible rather than guessed at.
 MAX_OUTPUT_TOKENS = 4000
+
+# Grounding with Google Search. Snake_case is the spelling the grounding
+# docs use; the structured-output page writes the same field `googleSearch`,
+# and proto JSON accepts either.
+#
+# **This tool is metered, and the meter counts queries, not requests.** The
+# vendor bills "each search query that the model decides to execute", so one
+# call that searches nine players is nine billable uses. 5,000 free per
+# month shared across all Gemini 3.x models, then $14/1,000 (Documented --
+# Google). `ai/news.py`'s rule 7 asks the model for restraint; nothing
+# enforces it, which is why every envelope records the count it actually
+# spent. See docs/ai-summaries.md's "The grounding budget".
+GOOGLE_SEARCH = [{"google_search": {}}]
+
+# A grounded call retrieves search results INTO the prompt and reasons over
+# them, so it spends far more thinking than a summary does. Inferred, not
+# Observed -- the same position MAX_OUTPUT_TOKENS was in before it failed in
+# production at 700. The finishReason != STOP refusal below means a bad
+# guess costs a news block rather than storing a truncated one.
+NEWS_MAX_OUTPUT_TOKENS = 8000
 
 # Deterministic-leaning on purpose: two runs over the same report should not
 # disagree about what the week's decision is.
@@ -105,24 +138,41 @@ class GeminiClient:
         return f"GeminiClient(model={self.model!r})"
 
     def generate(self, system_instruction, user_text,
-                 max_output_tokens=MAX_OUTPUT_TOKENS, temperature=TEMPERATURE):
+                 max_output_tokens=MAX_OUTPUT_TOKENS, temperature=TEMPERATURE,
+                 tools=None, response_format=None):
         """One turn: a system instruction plus a single user message.
 
-        Returns {"text": str, "usage": {...}}. Raises GeminiError on a
-        non-retryable HTTP status, on a prompt blocked before generation,
-        and on any `finishReason` other than STOP -- a MAX_TOKENS or safety
-        stop returns a truncated summary that reads as complete, which is
-        worse than no summary at all.
+        Returns {"text": str, "usage": {...}, "grounding": {...} | None}.
+        `grounding` is None unless `tools` requested it. Raises GeminiError
+        on a non-retryable HTTP status, on a prompt blocked before
+        generation, and on any `finishReason` other than STOP -- a
+        MAX_TOKENS or safety stop returns a truncated answer that reads as
+        complete, which is worse than no answer at all.
+
+        `tools` and `response_format` are omitted from the body when falsy,
+        so the summary call's request is unchanged by their existence.
+        `response_format` is the `generationConfig.responseFormat` shape --
+        {"text": {"mimeType": ..., "schema": ...}} -- and combining it with
+        a built-in tool is a **Preview** feature of the Gemini 3 series
+        (Documented -- Google). A model outside that series silently loses
+        the schema guarantee, which is why `ai/news.py` validates the
+        response rather than trusting it.
         """
         url = f"{self.base}/models/{self.model}:generateContent"
+        generation_config = {
+            "maxOutputTokens": max_output_tokens,
+            "temperature": temperature,
+        }
+        if response_format:
+            generation_config["responseFormat"] = response_format
+
         body = {
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "contents": [{"role": "user", "parts": [{"text": user_text}]}],
-            "generationConfig": {
-                "maxOutputTokens": max_output_tokens,
-                "temperature": temperature,
-            },
+            "generationConfig": generation_config,
         }
+        if tools:
+            body["tools"] = tools
 
         last_error = None
         for attempt in range(MAX_ATTEMPTS):
@@ -181,4 +231,47 @@ class GeminiClient:
             raise GeminiError("response carried no text")
 
         usage = payload.get("usageMetadata") or {}
-        return {"text": text, "usage": {field: usage.get(field, 0) for field in USAGE_FIELDS}}
+        return {
+            "text": text,
+            "usage": {field: usage.get(field, 0) for field in USAGE_FIELDS},
+            "grounding": _grounding(candidate),
+        }
+
+
+def _grounding(candidate):
+    """The citation trail for a grounded call, or None for an ungrounded one.
+
+    Everything here comes from the API's own `groundingMetadata`, never from
+    the model's text. A grounded model cites redirect URIs it cannot
+    reliably reproduce inline, so a URL the model typed into its answer is
+    not evidence that it read anything -- these fields are.
+
+    `search_queries` is the **billable** figure: the vendor bills per query
+    the model chose to execute, not per request. `summarize` stores the
+    count in every envelope so the monthly projection in
+    docs/ai-summaries.md can stop being Inferred.
+
+    `search_entry_point` is the Search Suggestions HTML, carried because
+    Google's terms require displaying it wherever grounded results are
+    shown. Nothing renders these envelopes yet; storing it is what keeps
+    that obligation available to whoever builds the reader.
+    """
+    metadata = candidate.get("groundingMetadata")
+    if not metadata:
+        return None
+
+    sources = []
+    for chunk in metadata.get("groundingChunks") or []:
+        web = chunk.get("web") or {}
+        if web.get("uri"):
+            sources.append({"uri": web["uri"], "title": web.get("title") or ""})
+
+    # Empty queries are ignored for billing (Documented -- Google), so they
+    # are dropped here too rather than inflating the count we record.
+    queries = [q for q in (metadata.get("webSearchQueries") or []) if q]
+
+    return {
+        "sources": sources,
+        "search_queries": queries,
+        "search_entry_point": (metadata.get("searchEntryPoint") or {}).get("renderedContent") or "",
+    }

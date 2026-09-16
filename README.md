@@ -45,11 +45,16 @@ below blocks any staged file containing an `ODDS_API_KEY=<value>` assignment
 or a bare 32-hex-character key.
 
 `summarize` needs a third key, `GEMINI_API_KEY`, from
-[aistudio.google.com](https://aistudio.google.com). It bills, but unlike the
-Odds key it is not metered against a fixed quota — a summary costs roughly
-two cents — so there is no ledger and no guard, only the same pre-commit
-scan. It travels as an `x-goog-api-key` request header and never as a URL
-query parameter, so there is no URL or exception for it to leak through.
+[aistudio.google.com](https://aistudio.google.com). Its token spend is not
+metered against a fixed quota — a summary costs roughly two cents — but its
+**Google Search grounding is**: 5,000 free search queries a month, then $14
+per 1,000, billed per query the model chooses to run rather than per
+request. Projected use is ~600–1,800 a month, so there is still no ledger
+and no guard, but there is now a quota to watch; every envelope records the
+searches it spent. See `docs/ai-summaries.md`. The key travels as an
+`x-goog-api-key` request header and never as a URL query parameter, so there
+is no URL or exception for it to leak through, and the same pre-commit scan
+applies.
 
 ### Keeping secrets out of git
 
@@ -91,7 +96,7 @@ with permissions that stop at a single S3 bucket. See `docs/automation.md`.
 .venv/bin/python -m espn_ff projections      # derived betting-market projections -> data/out/ (no network)
 .venv/bin/python -m espn_ff credits          # credits used / 500 (free, local, reads the ledger only)
 .venv/bin/python -m espn_ff report --day monday   # render one weekly report -> reports/ (no network)
-.venv/bin/python -m espn_ff summarize        # AI summary of every report that has none yet -> summaries/
+.venv/bin/python -m espn_ff summarize        # AI summary + grounded roster news for every report owing either -> summaries/
 ```
 
 Flags: `--season`, `--league-id`, `--team-id`, `--week`, `--weeks 1-18`,
@@ -109,8 +114,16 @@ Wednesday weekday check -- never the credit budget -- for `odds props`),
 issuing anything), `--events` (odds `props`/`pre_lock`: comma-separated
 event ids to restrict the pull to), `--day` (which report to render, or a
 filter for `summarize`), `--limit` / `--reports-dir` / `--summaries-dir` /
-`--summaries-out` (`summarize`; `--force` there re-summarizes what already
-has a summary).
+`--summaries-out` / `--no-news` (`summarize`; `--force` there regenerates
+both layers of an envelope that already has them, and `--no-news` skips the
+metered grounded calls and leaves the news to be backfilled later).
+
+`summarize` produces two things per report, from prompts with opposite
+rules: a prose summary that may use *only* what the report says, and a
+Google-Search-grounded news block that may use *only* what it just searched.
+They share one envelope and fail independently -- a dead grounded call
+stores `news: null`, keeps the summary, and the next run fills in just the
+news.
 
 `summarize` never exits non-zero -- a missing key, a dead model or a dropped
 connection all print to stderr and return 0, because a summary is additive
@@ -135,7 +148,7 @@ Prefer `gh workflow run` over running these commands locally -- see
 | `espn_ff/nflverse/` | nflverse role-feature layer — client, parquet store, ESPN id crosswalk, derived features |
 | `espn_ff/odds/` | The Odds API betting-market layer — credit ledger, metered client, parquet store, name join, derived projections |
 | `espn_ff/report/` | The eight weekly markdown reports and their shared loaders/renderers |
-| `espn_ff/ai/` | Generated report summaries — Gemini client, pure prompt assembly, discovery, JSON envelope |
+| `espn_ff/ai/` | Generated report summaries and grounded roster news — Gemini client, two opposed prompt modules, discovery, JSON envelope |
 | `scripts/probe.py` | Dump key paths from a cached payload |
 | `scripts/practice_coverage.py` | practice_participation coverage report |
 | `scripts/nflverse_coverage.py` | nflverse id-resolution and manifest-freshness coverage report |
@@ -143,7 +156,7 @@ Prefer `gh workflow run` over running these commands locally -- see
 | `docs/odds-budget.md` | The Odds API's credit-budget invariant, cost table, job schedule, and guard runbook |
 | `docs/automation.md` | How the schedule runs unattended: workflows, S3 state/archive split, OIDC, runbook |
 | `docs/aws-scheduling.md` | Why the clock lives in AWS, the EventBridge schedules, and how a failed trigger alarms |
-| `docs/ai-summaries.md` | The generated report summaries: prompt, triggering, envelope, cost, and why the command always exits 0 |
+| `docs/ai-summaries.md` | The generated summaries and grounded roster news: the two prompts, triggering, the v2 envelope, both cost meters, and why the command always exits 0 |
 | `.github/workflows/` | The five collection workflows, the report renderer and its summarizer, plus CI — all dispatched from AWS |
 | `scripts/s3_sync.sh` | Restore/archive/push the `data/` tree against S3 |
 | `scripts/rotate_espn_cookies.sh` | Rotate the ESPN cookies and validate them in CI |
@@ -406,9 +419,11 @@ lineup or waiver decision, and `docs/automation.md` has the workflow/S3 runbook.
 The eight reports render at Mon 10:30, Tue 10:00, Tue 11:00, Wed 10:00,
 Thu 11:00, Fri 11:00, Sat 10:00 and Sun 11:30 ET
 (`docs/report-weekly-schedule.md`).
-Each one's AI summary follows within seconds, off a `workflow_run` event
-rather than a clock, with an EventBridge backstop 20 minutes behind each
-slot — `docs/ai-summaries.md`.
+Each one's AI summary and grounded roster news follow within seconds, off a
+`workflow_run` event rather than a clock, with an EventBridge backstop 20
+minutes behind each slot — `docs/ai-summaries.md`. The news is the only
+thing in this pipeline sourced from the open web rather than from a feed,
+which is why it is stored beside the summary and never merged into it.
 
 ## Tests
 

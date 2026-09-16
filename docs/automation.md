@@ -148,13 +148,23 @@ needs to read but **pushes back only what it owns**:
 | `nflverse.yml` | `nflverse raw raw/nflverse` | `nflverse`, `raw/nflverse` |
 | `odds.yml` | `odds raw raw/odds` | `odds`, `raw/odds` |
 | `report.yml` | `raw sleeper nflverse raw/nflverse odds`, plus `latest/out/{matchups,weekly-rosters,player-pool,roster-slots,teams,transactions}` | none of `data/` — see below |
-| `summary.yml` | nothing under `data/` at all, only `latest/out/{teams,roster-slots}` plus the `reports/` and `summaries/` read caches | `summaries/`, which is outside `data/` and append-only |
+| `summary.yml` | nothing under `data/` at all, only `latest/out/{teams,roster-slots,weekly-rosters}` plus the `reports/` and `summaries/` read caches | `summaries/`, which is outside `data/` and append-only |
 
 `summary.yml` takes `report.yml`'s pattern one step further: it restores no
 `data/` subtree whatsoever and so is not an `ff-run` caller at all (that
 action's whole contract is restore → run → archive → push *state*). It is
 also the only workflow that owns a bucket prefix outside `data/`, which is
 why it gets `sync-summaries` rather than `push-state`.
+
+The three exports it restores serve its two prompts: `teams` and
+`roster-slots` fill the summary prompt's league-facts section, and
+`weekly-rosters` is the grounded news layer's entire input. All three
+degrade rather than failing — the first two render "unavailable in this run"
+and a missing `weekly-rosters` becomes a stored `news_error` naming the
+restore step, with the summary still written. **That degradation is silent
+at the workflow level by design**, so a `restore-out` line that quietly
+loses `weekly-rosters` costs every report its news while the workflow stays
+green; `tests/test_workflow_contract.py` is the only thing that notices.
 
 `report.yml` is the odd one out twice over: it is the first workflow that
 passes an empty `push-paths` and means it (it restores several subtrees
@@ -265,6 +275,13 @@ correspondingly absent from `cli.main`'s except-chain, so the departure
 cannot leak into any other command. `summary.yml` inverts it at the edge: a
 non-zero exit there means something *outside* the command broke, and the
 workflow does fail on it.
+
+That holds for the grounded news layer too, one level down. A failed news
+call does not fail the report it belongs to: the envelope is still written,
+with `news: null` and a `news_error`, and the next trigger backfills only
+the news. So a green `summary` run does **not** imply every envelope has
+news — check `news_error` in the bucket, or the per-report line in the run
+log, which names the search count or says `news FAILED`.
 
 ## Runbook
 

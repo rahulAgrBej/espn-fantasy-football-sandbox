@@ -6,6 +6,7 @@ week's context, or writing an envelope whose provenance fields do not
 describe the report they sit beside.
 """
 
+import json
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -34,11 +35,26 @@ def _write_report(root, season, week, rendered_on, stem_tail, body="body\n"):
     return path
 
 
-def _write_summary(root, report):
+def _write_summary(root, report, news=True):
+    """A *complete* envelope by default -- both layers present.
+
+    Since v2 a file existing is not the same as a report being done: an
+    envelope whose grounded calls failed carries `news: null` and still owes
+    work. `news=False` writes that partial shape.
+    """
     path = reports.summary_path(root, report)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{}\n")
+    payload = {"summary_markdown": "done", "news": {"players": []} if news else None}
+    path.write_text(json.dumps(payload) + "\n")
     return path
+
+
+def _pending(reports_dir, summaries_dirs, **kwargs):
+    """`pending_work` reduced to the reports it selected, so the assertions
+    below stay about *which* reports are owed rather than about the tuple
+    shape the run loop consumes."""
+    scanned = reports.scan(reports_dir, index=INDEX)
+    return [report for report, _, _ in reports.pending_work(scanned, summaries_dirs, **kwargs)]
 
 
 # --- the filename -> report-type mapping ----------------------------------
@@ -93,7 +109,7 @@ def test_discovery_skips_reports_that_already_have_a_summary(tmp_path):
     week_one = reports.scan(reports_dir, index=INDEX)[0]
     _write_summary(summaries_dir, week_one)
 
-    pending = reports.unsummarized(reports.scan(reports_dir, index=INDEX), summaries_dir)
+    pending = _pending(reports_dir, summaries_dir)
 
     assert [r.week for r in pending] == [2]
 
@@ -107,11 +123,11 @@ def test_a_summary_in_either_tree_counts_as_summarized(tmp_path):
     _write_report(reports_dir, 2026, 2, "2026-09-15", "tuesday-waiver-wire")
     report = reports.scan(reports_dir, index=INDEX)[0]
 
-    assert reports.unsummarized(reports.scan(reports_dir, index=INDEX), (cache, out)) == [report]
+    assert _pending(reports_dir, (cache, out)) == [report]
 
     _write_summary(out, report)
-    assert reports.unsummarized(reports.scan(reports_dir, index=INDEX), (cache, out)) == []
-    assert reports.unsummarized(reports.scan(reports_dir, index=INDEX), cache) == [report]
+    assert _pending(reports_dir, (cache, out)) == []
+    assert _pending(reports_dir, cache) == [report]
 
 
 def test_force_re_summarizes_what_already_has_a_summary(tmp_path):
@@ -119,8 +135,8 @@ def test_force_re_summarizes_what_already_has_a_summary(tmp_path):
     _write_report(reports_dir, 2026, 1, "2026-09-08", "tuesday-week-in-review")
     _write_summary(summaries_dir, reports.scan(reports_dir, index=INDEX)[0])
 
-    assert reports.unsummarized(reports.scan(reports_dir, index=INDEX), summaries_dir) == []
-    assert len(reports.unsummarized(reports.scan(reports_dir, index=INDEX), summaries_dir, force=True)) == 1
+    assert _pending(reports_dir, summaries_dir) == []
+    assert len(_pending(reports_dir, summaries_dir, force=True)) == 1
 
 
 def test_day_and_week_narrow_the_candidates(tmp_path):
@@ -129,12 +145,67 @@ def test_day_and_week_narrow_the_candidates(tmp_path):
     _write_report(reports_dir, 2026, 2, "2026-09-15", "tuesday-waiver-wire")
     _write_report(reports_dir, 2026, 1, "2026-09-08", "tuesday-waiver-wire")
 
-    by_day = reports.unsummarized(reports.scan(reports_dir, index=INDEX), summaries_dir, day="tuesday-waivers")
-    by_week = reports.unsummarized(reports.scan(reports_dir, index=INDEX), summaries_dir, week=1)
+    by_day = _pending(reports_dir, summaries_dir, day="tuesday-waivers")
+    by_week = _pending(reports_dir, summaries_dir, week=1)
 
     assert {r.day for r in by_day} == {"tuesday-waivers"}
     assert len(by_day) == 2
     assert [r.stem for r in by_week] == ["2026-09-08-tuesday-waiver-wire"]
+
+
+def test_a_report_owing_only_news_is_pending_as_a_backfill(tmp_path):
+    """The third state. A file existing is no longer the same as a report
+    being done -- an envelope whose grounded calls died still owes news, and
+    must come back as mode "news" so the run regenerates that alone."""
+    reports_dir, summaries_dir = tmp_path / "r", tmp_path / "s"
+    _write_report(reports_dir, 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    report = reports.scan(reports_dir, index=INDEX)[0]
+    _write_summary(summaries_dir, report, news=False)
+
+    work = reports.pending_work(reports.scan(reports_dir, index=INDEX), summaries_dir)
+
+    assert [(r.stem, mode) for r, _, mode in work] == [("2026-09-15-tuesday-waiver-wire", "news")]
+
+
+def test_want_news_false_collapses_back_to_two_states(tmp_path):
+    """Without this, every --no-news run would rewrite every summary-only
+    envelope forever, having nothing new to put in it."""
+    reports_dir, summaries_dir = tmp_path / "r", tmp_path / "s"
+    _write_report(reports_dir, 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    _write_summary(summaries_dir, reports.scan(reports_dir, index=INDEX)[0], news=False)
+
+    assert _pending(reports_dir, summaries_dir) != []
+    assert _pending(reports_dir, summaries_dir, want_news=False) == []
+
+
+def test_an_envelope_that_cannot_be_parsed_is_treated_as_missing(tmp_path, capsys):
+    """Regenerating costs one report. Trusting a file we could not read
+    costs silence, which is this repo's documented failure mode."""
+    reports_dir, summaries_dir = tmp_path / "r", tmp_path / "s"
+    _write_report(reports_dir, 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    report = reports.scan(reports_dir, index=INDEX)[0]
+    path = reports.summary_path(summaries_dir, report)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"summary_markdown": "truncated mid-')
+
+    assert reports.existing_envelope(summaries_dir, report) is None
+    assert _pending(reports_dir, summaries_dir) == [report]
+    assert "could not be read as JSON" in capsys.readouterr().out
+
+
+def test_force_returns_the_existing_envelope_alongside_the_work(tmp_path):
+    """So the caller can compare against what it is about to overwrite --
+    the stale-report guard reads `report.sha256` off exactly this."""
+    reports_dir, summaries_dir = tmp_path / "r", tmp_path / "s"
+    _write_report(reports_dir, 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    _write_summary(summaries_dir, reports.scan(reports_dir, index=INDEX)[0])
+
+    (_, envelope, mode), = reports.pending_work(
+        reports.scan(reports_dir, index=INDEX), summaries_dir, force=True
+    )
+
+    assert mode == "full"
+    assert envelope["summary_markdown"] == "done"
 
 
 def test_a_missing_reports_directory_is_empty_not_an_error(tmp_path):

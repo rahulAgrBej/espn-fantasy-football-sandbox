@@ -299,3 +299,121 @@ def test_a_max_tokens_failure_names_thinking_and_the_cap(client):
     message = str(caught.value)
     assert "thinking spent 690 tokens" in message
     assert "maxOutputTokens of 700" in message
+
+
+# --- grounding: the second caller, with the opposite contract -------------
+
+
+def grounded_payload(text='{"players": []}', queries=("caleb williams injury",), chunks=2,
+                     finish="STOP"):
+    payload = ok_payload(text, finish=finish)
+    payload["candidates"][0]["groundingMetadata"] = {
+        "webSearchQueries": list(queries),
+        "groundingChunks": [
+            {"web": {"uri": f"https://example.test/{n}", "title": f"Source {n}"}}
+            for n in range(chunks)
+        ],
+        "searchEntryPoint": {"renderedContent": "<div>suggestions</div>"},
+    }
+    return payload
+
+
+def test_the_summary_request_carries_no_tools_and_no_response_format(client):
+    """The load-bearing negative. `ai/prompt.py`'s HOUSE_RULES #8 forbids
+    outside knowledge, and a stray search tool on this request would let the
+    model satisfy the prompt while quietly violating it -- with no error, no
+    warning, and output that reads exactly the same."""
+    session = _with(client, FakeResponse(payload=ok_payload()))
+
+    client.generate("system", "user")
+
+    body = session.calls[0]["body"]
+    assert "tools" not in body
+    assert "responseFormat" not in body["generationConfig"]
+    assert client.generate.__defaults__[2] is None, "tools no longer defaults to off"
+
+
+def test_a_grounded_request_carries_the_search_tool_and_the_schema(client):
+    session = _with(client, FakeResponse(payload=grounded_payload()))
+
+    client.generate(
+        "system", "user",
+        tools=[{"google_search": {}}],
+        response_format={"text": {"mimeType": "application/json", "schema": {"type": "object"}}},
+    )
+
+    body = session.calls[0]["body"]
+    assert body["tools"] == [{"google_search": {}}]
+    assert body["generationConfig"]["responseFormat"]["text"]["mimeType"] == "application/json"
+
+
+def test_grounding_metadata_is_extracted_from_the_response(client):
+    _with(client, FakeResponse(payload=grounded_payload(queries=("a", "b"), chunks=3)))
+
+    result = client.generate("system", "user", tools=[{"google_search": {}}])
+
+    assert result["grounding"]["search_queries"] == ["a", "b"]
+    assert len(result["grounding"]["sources"]) == 3
+    assert result["grounding"]["sources"][0]["uri"] == "https://example.test/0"
+    assert result["grounding"]["search_entry_point"] == "<div>suggestions</div>"
+
+
+def test_an_ungrounded_response_reports_grounding_as_none(client):
+    """None, not an empty dict. `summarize` treats a missing grounding block
+    on a call that asked for tools as "the search never fired", which is a
+    warning-worthy event -- an empty dict would make it indistinguishable
+    from a search that ran and found nothing."""
+    _with(client, FakeResponse(payload=ok_payload()))
+
+    assert client.generate("system", "user")["grounding"] is None
+
+
+def test_empty_search_queries_are_not_counted(client):
+    """The vendor ignores empty queries when billing, so recording them
+    would overstate the meter the envelope exists to track."""
+    _with(client, FakeResponse(payload=grounded_payload(queries=("real", "", "  also real"))))
+
+    result = client.generate("system", "user", tools=[{"google_search": {}}])
+
+    assert result["grounding"]["search_queries"] == ["real", "  also real"]
+
+
+def test_a_grounding_chunk_with_no_uri_is_dropped(client):
+    payload = grounded_payload(chunks=1)
+    payload["candidates"][0]["groundingMetadata"]["groundingChunks"].append({"web": {"title": "x"}})
+    _with(client, FakeResponse(payload=payload))
+
+    result = client.generate("system", "user", tools=[{"google_search": {}}])
+
+    assert [s["uri"] for s in result["grounding"]["sources"]] == ["https://example.test/0"]
+
+
+def test_the_key_stays_out_of_the_url_on_the_grounded_path_too(client):
+    """The structural guarantee has to hold for both callers, not just the
+    one that existed when it was written."""
+    session = _with(client, FakeResponse(payload=grounded_payload()))
+
+    client.generate("system", "user", tools=[{"google_search": {}}])
+
+    assert KEY not in session.calls[0]["url"]
+    assert session.headers["x-goog-api-key"] == KEY
+
+
+def test_a_grounded_generation_still_refuses_a_truncated_answer(client):
+    """finishReason != STOP must refuse on both paths. A truncated JSON body
+    would fail `parse_players` anyway, but failing here names the real cause
+    instead of reporting a formatting problem."""
+    _with(client, FakeResponse(payload=grounded_payload(finish="MAX_TOKENS")))
+
+    with pytest.raises(GeminiError, match="MAX_TOKENS"):
+        client.generate("system", "user", tools=[{"google_search": {}}])
+
+
+def test_the_news_budget_is_larger_than_the_summary_budget():
+    """A grounded call pulls search results into the prompt and reasons over
+    them, so it spends more thinking than a summary does -- and thinking is
+    charged against this same ceiling. See docs/ai-summaries.md's MAX_TOKENS
+    story for what happens when this is sized for the answer alone."""
+    from espn_ff.ai import client as client_module
+
+    assert client_module.NEWS_MAX_OUTPUT_TOKENS > client_module.MAX_OUTPUT_TOKENS

@@ -20,6 +20,11 @@ Section 4 is hand-written because it has to be: these columns appear as
 table headers in the rendered reports and are defined nowhere under
 `docs/`, only in the docstrings of the modules that compute them. Without
 this section the model invents a definition for each one.
+
+Sibling module `ai/news.py` assembles the **other** prompt in this layer,
+and the two are deliberately opposed: HOUSE_RULES #8 here forbids outside
+knowledge, while that module exists to fetch it from Google Search. They
+share no text and must not be merged.
 """
 
 from .. import constants

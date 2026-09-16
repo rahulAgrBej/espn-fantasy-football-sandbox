@@ -6,6 +6,28 @@ last week* or *what the one decision actually is*. Reading them is the work.
 This layer generates a short prose summary of each one and stores it as its
 own JSON object under the bucket's `summaries/` prefix.
 
+It also answers a question the reports structurally cannot. Every feed they
+are built from — ESPN, Sleeper, nflverse, The Odds API — lags the real world
+by hours to days, so nothing in a rendered report knows that a starter was
+limited in practice this morning. A second set of calls, **grounded in
+Google Search**, takes the full roster and returns the latest news on every
+player, stored as a `news` field on the same envelope.
+
+So one envelope, **two layers with opposite epistemic contracts**:
+
+| | Summary | News |
+|---|---|---|
+| Source | the report, and nothing else | Google Search, and nothing else |
+| Outside knowledge | forbidden (`prompt.HOUSE_RULES` #8) | the entire point (`news.NEWS_HOUSE_RULES` #1) |
+| Grounding | off | on, and metered |
+| Shape | prose, ≤220 words | one structured object per rostered player |
+| Calls per report | 1 | up to 3 — starters, bench, IR |
+
+They share no prompt text, no rules and no provenance, and they fail
+independently. That opposition is the thing to preserve when changing
+either: merging the two prompts would let the summary quietly acquire
+outside knowledge, which nothing downstream could detect.
+
 The report markdown is **never modified**. A summary is a separate artifact
 with a separate lifecycle, so a dead, rate-limited or unconfigured model can
 never corrupt or block the report it describes. Everything below follows
@@ -23,29 +45,78 @@ anywhere).
 
 | Piece | Where | What it does |
 |---|---|---|
-| `espn_ff summarize` | `espn_ff/cli.py` | Summarizes every report with no summary yet. Takes no report input. Always exits 0. |
-| `espn_ff/ai/client.py` | — | `requests`-based Gemini REST client; key in a header, never a URL |
-| `espn_ff/ai/prompt.py` | — | Pure prompt assembly — no disk, no network, no clock |
-| `espn_ff/ai/reports.py` | — | Discovery, prior selection, header parsing |
+| `espn_ff summarize` | `espn_ff/cli.py` | Summarizes and researches every report that still owes either. Takes no report input. Always exits 0. |
+| `espn_ff/ai/client.py` | — | `requests`-based Gemini REST client; key in a header, never a URL. Serves both layers off one `generate`. |
+| `espn_ff/ai/prompt.py` | — | Pure prompt assembly for the **summary** — no disk, no network, no clock |
+| `espn_ff/ai/news.py` | — | Pure prompt assembly for the **news**, plus the response schema and the roster reconciliation |
+| `espn_ff/ai/reports.py` | — | Discovery, prior selection, header parsing, the three-state check |
 | `espn_ff/ai/summarize.py` | — | Orchestration and the JSON envelope |
 | `summary.yml` | `.github/workflows/` | `workflow_run` off `report`, plus dispatch |
 | `SummaryRule` + 8 schedules | `infra/scheduler.yaml` | The AWS backstop, 20 min behind each report slot |
 | `summaries/` | the bucket | One JSON envelope per summarized report, append-only |
 
-Cost is roughly **$0.03 per summary, ~$0.24 a week** at eight summaries
-*(Observed — two real generations on 2026-09-15: 27,313 and 25,529 prompt
-tokens, 292 and 253 answer tokens, plus 1,906 and 1,742 **thinking** tokens,
-against introductory $0.75/1M in and $3.75/1M out)*. Not credit-metered, so
-unlike `docs/odds-budget.md`'s ledger there is no guard, no quota and
-nothing to reconcile. The number is stated here anyway because this repo
-tracks metered spend deliberately and a reader should be able to tell the
-two situations apart.
+## Two meters, and only one of them is new
 
-**Thinking tokens are about a quarter of the cost and all of the risk.**
+The summary layer's cost is settled: roughly **$0.03 per summary, ~$0.24 a
+week** at eight summaries *(Observed — two real generations on 2026-09-15:
+27,313 and 25,529 prompt tokens, 292 and 253 answer tokens, plus 1,906 and
+1,742 **thinking** tokens, against introductory $0.75/1M in and $3.75/1M
+out)*.
+
+**Thinking tokens are about a quarter of that cost and all of its risk.**
 This model reasons before it writes, those tokens are spent against
 `maxOutputTokens` and billed at the output rate, and they outnumber the
 answer roughly 6:1. `client.MAX_OUTPUT_TOKENS` is therefore sized for
 thinking, not for prose — see "The first deployed run failed" below.
+
+The news layer adds a **second, genuinely metered** meter, and this section
+used to say the opposite. Before the news layer existed it read *"Not
+credit-metered, so unlike `docs/odds-budget.md`'s ledger there is no guard,
+no quota and nothing to reconcile."* That is still true of the summary call
+and is **false** of the grounded ones:
+
+| | Allowance | Overage | Unit |
+|---|---|---|---|
+| Tokens | none — pay as you go | $0.75/1M in, $3.75/1M out | a token |
+| Grounded search | 5,000 queries/month, shared across all Gemini 3.x models on the project | $14 per 1,000, i.e. $0.014 each | **a query the model chose to run** |
+
+*(Both rows Documented — Google.)*
+
+The unit is the trap. The vendor bills *"each search query that the model
+decides to execute"* — one call that searches nine players is nine billable
+uses, not one. So the meter is driven by a multiplier we do not control,
+and the projection below is a range rather than a figure:
+
+| Queries per player | Per report (~15–17 players) | Per month (~34 reports) | Share of the free 5,000 |
+|---|---|---|---|
+| 1 | ~17 | ~590 | ~12% |
+| 2 | ~34 | ~1,180 | ~24% |
+| 3 | ~51 | ~1,770 | ~35% |
+
+*(Inferred. Every row is arithmetic on an assumed multiplier, not a
+measurement.)*
+
+Comfortably inside the free allowance in every plausible case. Three
+responses, and deliberately not a fourth:
+
+1. **It is measured from the first run.** Every grounded response carries
+   `groundingMetadata.webSearchQueries`, so every envelope stores
+   `news.search_query_count` and the per-group queries, and every run
+   prints the count per report. One week of real values replaces the table
+   above with an Observed one. Until then it stays Inferred and is labelled
+   as such.
+2. **The prompt asks for restraint.** `NEWS_HOUSE_RULES` rule 7 asks for one
+   search per player and for reusing a result across players on the same NFL
+   team. That is a request to a model, not a cap, and it is written down
+   here as a request so nobody later mistakes it for a guarantee.
+3. **No credit ledger.** `docs/odds-budget.md`'s ledger exists because The
+   Odds API's 500-credit period is small enough that one careless run
+   exhausts it, and because a spent credit does not come back. 5,000/month
+   against a projected ~600–1,800 is a different situation, and `--limit`
+   already bounds a runaway backfill to three grounded calls per report.
+   Building a second ledger for this would be over-engineering. Revisiting
+   the projection against real numbers after the first week is the
+   deliverable instead — see Known gaps.
 
 ## The command takes no input, and that is the design
 
@@ -61,8 +132,8 @@ triggering run's `workflow_dispatch` inputs *(Documented — GitHub)*, so
 across is fragile — an artifact, a marker object inside a `--delete`-mirrored
 prefix, scraping the commit message. So the command does not need it:
 
-> **`espn_ff summarize` summarizes every report on S3 that has no
-> corresponding summary object yet.**
+> **`espn_ff summarize` processes every report on S3 that still owes a
+> summary, a news block, or both.**
 
 That is strictly better than plumbing the day through. It makes the command
 **idempotent**, so the event trigger and the scheduled backstop can both
@@ -71,10 +142,46 @@ summary missed because the model was down gets picked up by the next trigger
 instead of being lost. `--day` / `--week` / `--force` remain as filters for
 debugging and backfill, and the scheduled path passes none of them.
 
-"Has a summary" is checked against **both** the pulled cache of everything
+That check is checked against **both** the pulled cache of everything
 already on S3 *and* the output tree this run is writing into. Checking only
 the first would make idempotency depend on the S3 push having succeeded —
 two runs before a push would summarize the same report twice.
+
+### Three states, not two
+
+Since v2 an envelope can be complete or partial, so "does a file exist" is
+no longer enough to decide what a run owes. `reports.envelope_needs` returns
+one of three answers:
+
+| What is on disk | What the run does | Calls |
+|---|---|---|
+| no envelope | generate the summary **and** the news | 1 + up to 3 |
+| summary present, `news` is null | **backfill the news only** | up to 3 |
+| both present | skip | 0 |
+| anything, with `--force` | regenerate both | 1 + up to 3 |
+
+The middle row is what makes a failed grounded call cheap to recover from.
+Re-running the summary to reach the news would re-bill ~27k prompt tokens
+for an answer already sitting on disk, so `with_news` copies every v1 key —
+`summary_markdown`, `model`, `generated_at`, `prompt_sha256`, `usage`,
+`prior_reports` and the whole `report` block — across **verbatim** and fills
+in only `news`. In particular `generated_at` keeps naming when the *summary*
+was written; the news carries its own.
+
+One guard sits on that path. Before backfilling, the run re-hashes the
+report on disk and compares it against the envelope's stored
+`report.sha256`. If they differ the report was re-rendered after that
+summary was written, so **both** are regenerated rather than bolting fresh
+news onto a summary of a document that no longer exists. This is the exact
+failure `summary.yml`'s `force` input was added for *(Observed 2026-09-16 —
+a Wednesday summary written from a pre-refresh render survived the corrected
+re-render)*, now fixed for free on the one path that was already reading the
+old envelope. It does **not** extend to complete envelopes; see Known gaps.
+
+`--no-news` collapses this back to the original two states. An envelope
+written under that flag carries `news: null` with **no** `news_error` —
+skipping is not failing — and a later run without the flag backfills the
+news without re-billing the summary.
 
 ## S3 is the source of truth; the checkout is a backup
 
@@ -85,6 +192,7 @@ Every input this command reads comes from the bucket first:
 | Rendered reports | `reports/` → `.cache/s3-reports` | the git checkout's `reports/`, only when the mirror is empty |
 | Existing summaries | `summaries/` → `.cache/s3-summaries` | none — `summaries/` is gitignored, so no local history exists |
 | `teams` / `roster-slots` | `latest/out/` → `data/out/` | none — degrades to "unavailable in this run" |
+| `weekly-rosters` | `latest/out/` → `data/out/` | none — degrades to a stored `news_error` naming the restore step |
 
 The reports fallback is a **strict fallback, never a merge**
 (`ai/summarize.py:resolve_source`). Merging would let a report that exists
@@ -240,15 +348,98 @@ Most are ordinary care. Three are not:
   recommendation is the single most plausible-sounding mistake available
   here.
 
+## Roster news, and why it is a separate prompt
+
+Three calls per report, not one and not seventeen. One call per **lineup
+group** — starters, bench, IR — because that is the unit at which the
+question changes:
+
+| Group | What it asks for |
+|---|---|
+| `starters` | the single most recent item each — injury, practice, usage, matchup |
+| `bench` | one line each, and only where something actually changed |
+| `ir` | designation and return timeline only |
+
+A group with nobody in it is **skipped, not prompted**: an empty IR is the
+normal case for most of a season, and a billed grounded call to be told so
+is waste. The skip is recorded (`groups.ir.skipped`) rather than left as an
+absence, so a reader can tell "nobody on IR" from "the IR call never ran".
+
+Per-player calls were considered and rejected. They would sharpen recency
+slightly and multiply the billed meter by the roster size — and, because
+grounding is billed per query rather than per request, the group call does
+not actually save searches when the model behaves. It saves them when the
+model over-searches, which is the case worth defending against.
+
+### The rules are the inverse of the summary's
+
+`prompt.HOUSE_RULES` #8 says *"do not supply outside knowledge about a
+player, a team, or an injury."* `news.NEWS_HOUSE_RULES` #1 says the reverse,
+and then spends its length defending the one failure that reversal opens up:
+
+> Every claim must come from a search result you retrieved in this turn. If
+> the search returns nothing for a player, set `found` to false and say so.
+> **Never** fall back on what you already know about the player from
+> training.
+
+That is the load-bearing rule. A model answering from recall produces
+confident, fluent, months-stale news that is **indistinguishable from a real
+finding** by anything downstream — no hash catches it, no schema catches it,
+and the reader has no reason to doubt it. Everything else in the list is
+supporting work: date every item or leave the date empty (never default to
+today), report a designation in the source's own words rather than
+re-expressing it as this repo's `tier`, and confirm the NFL team so a
+namesake is rejected rather than reported.
+
+Two more are worth naming:
+
+- **Never turn news into a start/sit call.** The lineup decision belongs to
+  the report, and the report cannot see this news. A recommendation here
+  would contradict the summary sitting in the same JSON file, and a reader
+  would have no way to tell which of the two to believe.
+- **The roster row is not news.** Handed a table that includes ESPN's
+  `injury_status`, a model will happily hand it back. The table labels that
+  column as possibly-days-old context for exactly this reason.
+
+### Coverage is guaranteed in code, not asked for in the prompt
+
+`news.parse_players` reconciles whatever comes back against the roster it
+was given, and that reconciliation is the entire reason this field is
+structured rather than prose:
+
+- **Every rostered player appears.** One the model skipped is materialised
+  with `found: false` and a note. Absence and "no news" are different
+  findings, and a prose blob renders them identically.
+- **Nobody appears who is not on the roster.** An unrecognised `player_id`
+  is dropped and named in the run log.
+- **Identity comes from the roster row**, never from the model — name,
+  position, team and slot are taken from the DataFrame. The model supplies
+  only `player_id` and the news, so a wrong id cannot silently rename one
+  player into another.
+
+The response is schema-constrained: `generationConfig.responseFormat`
+carries a JSON Schema, and combining that with a built-in tool is a
+**Preview** feature of the Gemini 3 series *(Documented — Google)*. It
+constrains the shape, not the truth, and a model outside that series loses
+the guarantee with no error — so `parse_players` still validates, still
+tolerates a stray fenced block, and still raises `NewsFormatError` rather
+than storing something partial. That path stays tested.
+
 ## The envelope
 
 One object per summarized report, at
 `summaries/<season>/week-NN/<YYYY-MM-DD>-<day_label>-<slug>.json` — the
 report tree's own shape, one prefix over.
 
-```json
+`schema_version` is **2**. The change from 1 is strictly additive: every v1
+key keeps its name, position and meaning, and two new ones join them at top
+level. That is not cosmetic — the news-only backfill path copies the v1 keys
+off an existing envelope verbatim, which only works because none of them
+moved.
+
+```jsonc
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "season": 2026, "week": 2, "day": "tuesday-waivers",
   "report": {
     "path": "reports/2026/week-02/2026-09-15-tuesday-waiver-wire.md",
@@ -259,6 +450,8 @@ report tree's own shape, one prefix over.
     "source": "s3",
     "sha256": "<64 hex chars of the report text>"
   },
+
+  // --- the summary layer, unchanged from v1 ---
   "summary_markdown": "...",
   "model": "gemini-3.8-flash",
   "generated_at": "2026-09-15T21:20:11-04:00",
@@ -268,9 +461,64 @@ report tree's own shape, one prefix over.
     "promptTokenCount": 27313, "candidatesTokenCount": 292,
     "thoughtsTokenCount": 1906, "cachedContentTokenCount": 0,
     "totalTokenCount": 29511
-  }
+  },
+
+  // --- the news layer, new in v2. null when it failed; see news_error ---
+  "news": {
+    "model": "gemini-3.8-flash",
+    "grounded": true,
+    "generated_at": "2026-09-16T10:22:04-04:00",
+    "roster_week": 2,
+    "roster_export": "15-09-2026-weekly-rosters.csv",
+    "prompt_sha256": "<64 hex chars of every group prompt concatenated>",
+    "search_query_count": 19,
+    "players": [
+      { "player_id": 4431611, "player_name": "Caleb Williams",
+        "position": "QB", "pro_team": "CHI", "lineup_slot": "QB",
+        "group": "starters", "espn_injury_status": "ACTIVE",
+        "found": true,
+        "headline": "Limited in Wednesday practice.",
+        "detail": "...", "as_of": "2026-09-16" },
+      { "player_id": 4429025, "player_name": "Tre Tucker",
+        "position": "WR", "pro_team": "LV", "lineup_slot": "Bench",
+        "group": "bench", "espn_injury_status": "ACTIVE",
+        "found": false, "headline": null, "detail": null, "as_of": null,
+        "note": "the grounded search returned nothing for this player" }
+    ],
+    "groups": {
+      "starters": { "players": 9, "search_queries": ["..."],
+                    "sources": [{ "uri": "...", "title": "..." }],
+                    "search_entry_point": "<html>",
+                    "usage": { "...": "the five USAGE_FIELDS" } },
+      "bench":    { "players": 6, "search_queries": ["..."], "sources": ["..."],
+                    "search_entry_point": "<html>", "usage": { "...": "..." } },
+      "ir":       { "skipped": "no players in the ir group for week 2" }
+    },
+    "usage": { "...": "the five USAGE_FIELDS, summed across groups" }
+  },
+  "news_error": null
 }
 ```
+
+When the news fails, the two new keys invert and nothing else changes:
+
+```jsonc
+"news": null,
+"news_error": "bench: HTTP 503 from gemini-3.8-flash:generateContent after 4 attempts"
+```
+
+The error lives in a **sibling** key rather than inside `news` on purpose.
+It is what makes the completeness test trivially `news is not None`; an
+error object stored under `news` would make a failed report look finished to
+the next run's three-state check, and the self-healing property would die
+silently.
+
+`news.search_query_count` is a **billing** figure, not a quality one. A
+report with 40 searches is not better-researched than one with 12; it is
+more expensive. `sources` and `search_entry_point` come from the API's own
+`groundingMetadata` and never from the model's text — a grounded model cites
+redirect URIs it cannot reliably reproduce inline, so a URL it typed into
+its answer is not evidence it read anything.
 
 `report.sha256` and `prompt_sha256` are the point of the envelope. They are
 what lets a later reader tell whether a summary still describes the report
@@ -347,9 +595,19 @@ Failure is also per report, not per run: a model that dies on the third of
 five reports still leaves the first two on disk, and writes no envelope for
 the third, so the next trigger retries exactly that one.
 
+**And per layer, not per report.** A dead grounded call does not cost the
+summary beside it: the envelope is still written, with `news: null` and a
+`news_error` naming the cause, and the three-state check picks up the news
+next time. The asymmetry is deliberate and runs one way only — a failed
+*summary* writes no envelope at all, because there is nothing to attach the
+news to. Additivity stacks: the report is additive to the data, the summary
+is additive to the report, and the news is additive to the summary.
+
 `summary.yml` inverts this at the edge: because the command is built to exit
 0 on everything it anticipates, a **non-zero** exit means something outside
-the command broke, and the workflow does fail on it.
+the command broke, and the workflow does fail on it. A report with
+`news_error` set is not that — it is the design working, and the workflow
+stays green.
 
 ## Storage and the two directories
 
@@ -399,6 +657,10 @@ that across every error path.
 `.githooks/pre-commit` scans staged additions for `GEMINI_API_KEY=<value>`
 on the same pattern it already used for `ODDS_API_KEY`.
 
+The news layer adds **no new credential**. It is the same key on the same
+endpoint with a `tools` array attached, which is why the grounding budget
+above is a quota question rather than a secrets question.
+
 ## Why this workflow is not an `ff-run` wrapper
 
 `ff-run`'s contract is "restore state → run → archive → push state →
@@ -424,15 +686,75 @@ for r in all_r:
     s, u = summarize.build_prompt(r, reports.priors(all_r, r), Path("docs"))
     print(f"{r.stem}  system={len(s):,}  user={len(u):,}")
 PY
+
+# The same for the news prompts, and a preview of how many grounded calls
+# this week's roster would actually cost.
+python - <<'PY'
+from datetime import date
+from espn_ff import config
+from espn_ff.ai import news
+from espn_ff.report.loaders import latest_export
+groups = news.roster_groups(latest_export("weekly-rosters"), week=2, team_id=config.TEAM_ID)
+for name, df in groups.items():
+    if df.empty:
+        print(f"{name:<9} empty, would be skipped"); continue
+    s = news.system_instruction(name, 2026, 2, date(2026, 9, 16))
+    u = news.user_message(df, 2026, 2, date(2026, 9, 16))
+    print(f"{name:<9} {len(df):>2} players  system={len(s):,}  user={len(u):,}")
+PY
 ```
+
+*(Observed 2026-09-16 against week 2: `starters` 9 players / 3,809 / 982
+chars, `bench` 6 players / 3,769 / 788, `ir` empty and skipped — 15 players
+across 2 grounded calls. The news prompts are roughly a seventh the size of
+a summary prompt; the cost of this layer is searches, not tokens.)*
+
+**One live call before wiring anything new**, because two spellings in the
+request body are the highest-risk unknowns here and a silently-ignored
+`responseFormat` produces plausible output with no guarantee behind it:
+
+```bash
+python - <<'PY'
+from espn_ff.ai.client import GeminiClient, GOOGLE_SEARCH
+r = GeminiClient().generate("Answer only from search results.",
+                            "Latest injury news on Caleb Williams, Chicago Bears.",
+                            tools=GOOGLE_SEARCH)
+g = r["grounding"]
+print(len(g["search_queries"]), "searches:", g["search_queries"])
+print(len(g["sources"]), "sources")
+PY
+```
+
+A `grounding` of `None` there means the tool never fired and the answer came
+from recall.
 
 End to end, **dispatched not local** per `CLAUDE.md`:
 
 ```bash
 gh workflow run summary.yml && gh run watch --exit-status
 aws s3 ls "s3://$S3_BUCKET/summaries/" --recursive
+aws s3 cp "s3://$S3_BUCKET/summaries/2026/week-02/<stem>.json" - \
+  | jq '.schema_version, .news.search_query_count, .news.groups, (.news.players | length)'
 gh workflow run summary.yml   # must find nothing to do, and spend nothing
 ```
+
+Four checks on that envelope, one per guarantee the shape exists for:
+
+1. `.news.players | length` equals the roster size for that week. Every
+   player present, `found: false` where the search came up empty.
+2. `.news.groups.*.sources` is non-empty on every group that ran, and no
+   `headline` cites a URL the model typed rather than one the API returned.
+3. `.summary_markdown` still obeys the 220-word cap and still carries no
+   outside knowledge. The two layers must not have bled into each other.
+4. `.news.search_query_count` against the projection above. Multiply by ~34
+   reports a month and compare to the free 5,000. **A single report issuing
+   more than ~50 searches means rule 7 is not landing**, and the prompt needs
+   tightening before this runs for a month.
+
+To exercise the backfill for real, hand-edit one envelope in the bucket to
+`"news": null`, dispatch, and confirm the run regenerates only the news:
+`generated_at` and `prompt_sha256` unchanged, `news.generated_at` fresh, and
+the log line reading `backfilled news for …`.
 
 Then the real chain: `gh workflow run report.yml -f day=wednesday`, and
 confirm a `summary` run appears on its own within a minute of the report run
@@ -451,14 +773,52 @@ the whole AWS path — a hand-fired `dispatch.summary` event reached
 To exercise the failure path for real rather than in unit tests, point
 `GeminiClient`'s injectable `base` at an unreachable host: the run must exit
 0 with a warning, write no envelope, and leave the next run free to pick the
-summary up.
+summary up. For the news half specifically, fail only the grounded call: the
+run must still write the envelope with its summary, `news: null`, a
+populated `news_error`, and exit 0.
 
 ## Known gaps
 
-- **No summary is ever scored against the report it describes.** Nothing
-  checks that the prose is true, that it obeyed the word cap, or that it
-  respected the house rules. `prompt_sha256` records which prompt produced
-  it; nothing records whether the output was any good.
+- **The monthly grounded-query projection is Inferred, and nothing enforces
+  the allowance.** The multiplier is chosen by the model, `NEWS_HOUSE_RULES`
+  rule 7 is a request rather than a cap, and there is no ledger. Revisit the
+  table in "Two meters" against real `search_query_count` values after one
+  week of runs — that revisit is the deliverable this layer shipped owing.
+- **Tier 1 rate limits are third-party figures, not Google-published ones.**
+  ~300 RPM / 1M TPM / 1,000 RPD against a peak of ~16 requests per run is
+  ample headroom on every row, but Google's own docs publish no table and
+  direct you to the AI Studio dashboard. RPD is the only row a full-season
+  `--force` backfill could plausibly approach.
+- **No summary is ever scored against the report it describes**, and no news
+  item is ever scored against the source that backed it. Nothing checks that
+  the prose is true, that it obeyed the word cap, that it respected the
+  house rules, or that a `found: true` headline is actually supported by the
+  chunk beside it. `prompt_sha256` records which prompt produced it; nothing
+  records whether the output was any good.
+- **No per-player source attribution.** `sources` is group-level. The API
+  returns `groundingSupports` (`startIndex` / `endIndex` /
+  `groundingChunkIndices`) which maps response spans back to chunks, so this
+  is deferred rather than impossible — the mapping into a structured JSON
+  response is just fiddly and was not worth it for the first version.
+- **`search_entry_point` is stored but never displayed.** Google's terms
+  require showing Search Suggestions wherever grounded results are shown.
+  Nothing renders these envelopes yet, so the obligation is recorded here
+  and lands on whoever builds the reader.
+- **The stale-report guard runs only on the backfill path.** A *complete*
+  envelope whose report was later re-rendered is still only fixable with
+  `--force`; extending the check to every report would re-hash every report
+  on every run and re-bill on any re-render.
+- **A permanently failing news call retries on every trigger**, bounded only
+  by `--limit`, which counts a cheap news backfill the same as a full
+  summary.
+- **`NEWS_MAX_OUTPUT_TOKENS = 8000` is Inferred**, not Observed — precisely
+  the position `MAX_OUTPUT_TOKENS` was in before it failed in production at
+  700. A grounded call spends more thinking than a summary does; how much
+  more is unmeasured.
+- **Structured-output-with-tools is a Preview feature of the Gemini 3
+  series.** It can change or be withdrawn, and a model swap outside that
+  series loses the schema guarantee with no error. `NewsFormatError` is the
+  fallback and must stay tested.
 - **A dropped `workflow_run` event is invisible until the backstop fires.**
   That is a 20-minute window in which nothing knows the summary is late,
   which is the same class of blindness that moved the clock to AWS in the
@@ -481,9 +841,16 @@ summary up.
 - **Prior selection orders by filename date, not by week.** For the normal
   weekly cadence these agree. A backfilled re-render of an old week carries
   today's date and would sort as the newest prior, which is wrong.
-- **The cost and token figures above are Inferred, not Observed.** They come
-  from character counts at ~4 chars/token. The `usage` block in each
-  envelope is what will settle them, once runs exist to read.
+- **The summary's token and cost figures are now Observed; the news layer's
+  are not.** This bullet used to say all of them were Inferred from
+  character counts at ~4 chars/token, which the two real generations on
+  2026-09-15 settled for the summary. The news layer starts where the
+  summary did: prompt sizes are Observed (see the verification recipe),
+  everything downstream of "how many searches does the model choose to run"
+  is not.
 - **Nothing reads the summaries.** They land in the bucket and stop there —
   no digest, no notification, no rendering beside the report. That is the
-  next thing worth building, and deliberately not part of this change.
+  next thing worth building, and deliberately not part of this change. The
+  news layer raises the stakes: `search_entry_point` is stored specifically
+  for a reader that does not exist yet, and a per-player news block is worth
+  more rendered beside its report than sitting in JSON.

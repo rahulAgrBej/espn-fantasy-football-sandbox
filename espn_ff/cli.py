@@ -588,8 +588,16 @@ def cmd_summarize(client, args):
     was down is picked up by the next trigger). `--day`/`--week`/`--force`
     are debugging and backfill filters, not part of the scheduled path.
 
-    **No ESPN call at all.** It reads two markdown caches plus two data/out/
-    exports and nothing else -- in particular it never recomputes
+    Two layers per report, with opposite contracts: a prose summary of the
+    report (no outside knowledge, see ai/prompt.py) and a Google-Search
+    grounded news block for every rostered player (outside knowledge is the
+    whole point, see ai/news.py). They share one envelope and fail
+    independently -- a dead grounded call stores `news: null` and the next
+    trigger backfills it without re-billing the summary. `--no-news` skips
+    the grounded calls entirely.
+
+    **No ESPN call at all.** It reads two markdown caches plus three
+    data/out/ exports and nothing else -- in particular it never recomputes
     `client.current_scoring_period()`, which would otherwise let a scoring
     period rolling over between the report run and the summary run put the
     two on different weeks.
@@ -614,6 +622,7 @@ def cmd_summarize(client, args):
             week=args.week,
             limit=args.limit,
             force=args.force,
+            with_news_layer=not args.no_news,
         )
     except (GeminiError, requests.RequestException) as exc:
         print(f"\nsummarize: {exc}", file=sys.stderr)
@@ -736,6 +745,13 @@ def main(argv=None):
         "scripts/s3_sync.sh sync-summaries). Deliberately not --summaries-dir: that tree "
         "holds the full history and this one holds only what this run produced, which is "
         "what keeps the push append-only.",
+    )
+    ap.add_argument(
+        "--no-news", action="store_true",
+        help="summarize: skip the grounded roster-news calls and write the summary alone. "
+        "Those calls are metered per search query, so this is the cheap path for "
+        "debugging the summary prompt. An envelope written this way carries news=null, "
+        "so a later run without this flag backfills the news without re-billing the summary.",
     )
     args = ap.parse_args(argv)
 

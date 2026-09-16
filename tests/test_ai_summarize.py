@@ -7,11 +7,13 @@ argument precisely so it does not have to.
 """
 
 import json
+import re
 
 import pandas as pd
 import pytest
 import requests
 
+from espn_ff import config
 from espn_ff.ai import reports, summarize
 from espn_ff.ai.client import GeminiError
 
@@ -26,34 +28,99 @@ REPORT_BODY = """\
 - espn: 2026-09-15 14:10:04 ET
 """
 
+# The player_id column of `news.user_message`'s table: right-aligned digits
+# followed by the two-space gutter. Pulling the ids back out of the real
+# prompt rather than hard-coding them means the stub can only answer for
+# players the prompt actually carried.
+PROMPTED_IDS = re.compile(r"^\s*(\d+)\s{2,}", re.MULTILINE)
+
+
+def roster_frame(weeks=(1, 2)):
+    """One starter, one bench player and one on IR for our team, plus a
+    rival's player that every group filter must exclude."""
+    rows = []
+    for week in weeks:
+        rows += [
+            {"season": 2026, "week": week, "team_id": config.TEAM_ID, "player_id": 11,
+             "player_name": "Starter One", "position": "QB", "pro_team": "CHI",
+             "lineup_slot": "QB", "started": True, "injury_status": "ACTIVE"},
+            {"season": 2026, "week": week, "team_id": config.TEAM_ID, "player_id": 22,
+             "player_name": "Bench Two", "position": "WR", "pro_team": "DAL",
+             "lineup_slot": "Bench", "started": False, "injury_status": "ACTIVE"},
+            {"season": 2026, "week": week, "team_id": config.TEAM_ID, "player_id": 33,
+             "player_name": "Injured Three", "position": "RB", "pro_team": "NYG",
+             "lineup_slot": "IR", "started": False, "injury_status": "OUT"},
+            {"season": 2026, "week": week, "team_id": config.TEAM_ID + 1, "player_id": 44,
+             "player_name": "Rival Four", "position": "TE", "pro_team": "BAL",
+             "lineup_slot": "TE", "started": True, "injury_status": "ACTIVE"},
+        ]
+    return pd.DataFrame(rows)
+
 
 class StubClient:
     """Records every call so a test can count generations rather than infer
-    them from what landed on disk."""
+    them from what landed on disk.
+
+    Serves both layers off one method, the way the real client does: a call
+    carrying `tools` is a grounded news call and answers with the news
+    schema, anything else is the summary call. `grounded_calls` counts the
+    former, which is the billed one.
+    """
 
     model = "stub-model"
 
-    def __init__(self, text="A summary.", raises=None):
+    def __init__(self, text="A summary.", raises=None, news_raises=None, queries=2):
         self.text = text
         self.raises = raises
+        self.news_raises = news_raises
+        self.queries = queries
         self.calls = []
+        self.grounded_calls = []
 
-    def generate(self, system, user, **kwargs):
+    def generate(self, system, user, tools=None, response_format=None, **kwargs):
+        if tools:
+            self.grounded_calls.append((system, user, tools, response_format))
+            if self.news_raises is not None:
+                raise self.news_raises
+            return self._news(user)
+
         self.calls.append((system, user))
         if self.raises is not None:
             raise self.raises
         return {
             "text": self.text,
             "usage": {"promptTokenCount": 10, "candidatesTokenCount": 2, "totalTokenCount": 12},
+            "grounding": None,
+        }
+
+    def _news(self, user):
+        players = [
+            {"player_id": int(pid), "found": True, "headline": "A headline.",
+             "detail": "Some detail.", "as_of": "2026-09-16"}
+            for pid in PROMPTED_IDS.findall(user)
+        ]
+        return {
+            "text": json.dumps({"players": players}),
+            "usage": {"promptTokenCount": 5, "candidatesTokenCount": 3, "totalTokenCount": 8},
+            "grounding": {
+                "sources": [{"uri": "https://example.test/a", "title": "A"}],
+                "search_queries": [f"query {n}" for n in range(self.queries)],
+                "search_entry_point": "<div>suggestions</div>",
+            },
         }
 
 
 @pytest.fixture(autouse=True)
-def no_exports_on_disk(monkeypatch):
-    """data/ is gitignored but may exist locally. Pin the prompt's league
-    facts to "unavailable" so these tests read the same on a laptop and on a
-    cold runner."""
-    monkeypatch.setattr(summarize, "latest_export", lambda name: pd.DataFrame())
+def exports_on_disk(monkeypatch):
+    """data/ is gitignored but may exist locally. Pin both exports these
+    tests read so they behave the same on a laptop and on a cold runner:
+    the prompt's league facts degrade to "unavailable", and the news layer
+    gets a small, known roster."""
+    monkeypatch.setattr(
+        summarize, "latest_export",
+        lambda name: roster_frame() if name == "weekly-rosters" else pd.DataFrame(),
+    )
+    monkeypatch.setattr(summarize, "_roster_export_name", lambda: "01-01-2026-weekly-rosters.csv")
 
 
 def write_report(root, season, week, rendered_on, stem_tail):
@@ -102,7 +169,10 @@ def test_the_existing_summary_check_reads_the_cache_not_the_output_tree(tmp_path
 
     cached = reports.summary_path(paths["summaries_dir"], report)
     cached.parent.mkdir(parents=True, exist_ok=True)
-    cached.write_text("{}\n")
+    # A *complete* envelope: both layers present. A file that merely exists
+    # is no longer enough -- since v2 an envelope can owe news, and the
+    # three-state check has to see that this one does not.
+    cached.write_text(json.dumps({"summary_markdown": "done", "news": {"players": []}}) + "\n")
 
     client = StubClient()
     result = summarize.run(**paths, client=client)
@@ -401,3 +471,282 @@ def test_no_fallback_configured_still_works(tmp_path):
 
     assert result["source"] == "s3"
     assert result["summarized"] == ["2026-09-15-tuesday-waiver-wire"]
+
+
+# --- the news layer -------------------------------------------------------
+
+
+def envelope_at(paths, stem="2026-09-15-tuesday-waiver-wire", week=2):
+    return json.loads((paths["out_dir"] / "2026" / f"week-{week:02d}" / f"{stem}.json").read_text())
+
+
+def test_the_envelope_carries_both_layers_and_is_version_2(tmp_path):
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    summarize.run(**paths, client=StubClient())
+    record = envelope_at(paths)
+
+    assert record["schema_version"] == 2
+    assert record["summary_markdown"] == "A summary."
+    assert record["news_error"] is None
+    assert record["news"]["grounded"] is True
+    assert record["news"]["roster_week"] == 2
+    assert record["news"]["roster_export"] == "01-01-2026-weekly-rosters.csv"
+
+
+def test_the_news_block_covers_every_rostered_player_exactly_once(tmp_path):
+    """The guarantee the structured shape exists for. One starter, one bench
+    player and one on IR go in; three entries come out, and the rival's
+    player does not."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    summarize.run(**paths, client=StubClient())
+    players = envelope_at(paths)["news"]["players"]
+
+    assert [p["player_id"] for p in players] == [11, 22, 33]
+    assert {p["group"] for p in players} == {"starters", "bench", "ir"}
+    assert all(p["found"] for p in players)
+
+
+def test_one_grounded_call_per_non_empty_group(tmp_path):
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    client = StubClient()
+    summarize.run(**paths, client=client)
+
+    assert len(client.calls) == 1, "more than one summary call"
+    assert len(client.grounded_calls) == 3, "expected one grounded call per group"
+
+
+def test_an_empty_group_is_recorded_as_skipped_and_costs_no_call(tmp_path, monkeypatch):
+    """An empty IR is the normal case for most of a season. Paying a billed
+    grounded call to be told so is waste the reader funds."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    no_ir = roster_frame()[lambda df: df["lineup_slot"] != "IR"]
+    monkeypatch.setattr(
+        summarize, "latest_export",
+        lambda name: no_ir if name == "weekly-rosters" else pd.DataFrame(),
+    )
+
+    client = StubClient()
+    summarize.run(**paths, client=client)
+
+    assert len(client.grounded_calls) == 2
+    assert "no players in the ir group" in envelope_at(paths)["news"]["groups"]["ir"]["skipped"]
+
+
+def test_the_billed_query_count_is_summed_across_groups(tmp_path, capsys):
+    """The one number that turns the monthly projection in
+    docs/ai-summaries.md from Inferred into Observed -- and the vendor bills
+    per query, not per request, so it is not derivable from the call count."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    summarize.run(**paths, client=StubClient(queries=4))
+    record = envelope_at(paths)
+
+    assert record["news"]["search_query_count"] == 12, "3 groups x 4 queries"
+    assert sum(len(g.get("search_queries", [])) for g in record["news"]["groups"].values()) == 12
+    assert "12 searches" in capsys.readouterr().out, "the meter is invisible in the run log"
+
+
+def test_the_news_usage_sums_the_groups(tmp_path):
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    summarize.run(**paths, client=StubClient())
+
+    assert envelope_at(paths)["news"]["usage"]["totalTokenCount"] == 24, "3 groups x 8"
+
+
+def test_a_grounded_call_that_returned_no_metadata_is_called_out(tmp_path, capsys):
+    """No grounding metadata means the search never fired, so whatever came
+    back is recall -- rule 1 violated, with output that looks identical to a
+    real finding."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    class UngroundedClient(StubClient):
+        def _news(self, user):
+            return {**super()._news(user), "grounding": None}
+
+    summarize.run(**paths, client=UngroundedClient())
+
+    assert "the search tool did not fire" in capsys.readouterr().out
+
+
+# --- news fails, the summary still lands ---------------------------------
+
+
+def test_a_dead_news_call_still_writes_the_summary(tmp_path, capsys):
+    """A summary is additive and a news block is additive to that. Losing
+    the summary to a failed grounded call would be the tail wagging the
+    dog."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    result = summarize.run(**paths, client=StubClient(news_raises=GeminiError("HTTP 503")))
+    record = envelope_at(paths)
+
+    assert result["summarized"] == ["2026-09-15-tuesday-waiver-wire"]
+    assert record["summary_markdown"] == "A summary."
+    assert record["news"] is None
+    assert "HTTP 503" in record["news_error"]
+    assert "news unavailable" in capsys.readouterr().out
+
+
+def test_a_missing_roster_export_names_the_step_that_should_have_restored_it(tmp_path, monkeypatch):
+    """A restore-out problem, not a model problem. Saying so in the stored
+    artifact is what stops the next reader debugging the prompt."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    monkeypatch.setattr(summarize, "latest_export", lambda name: pd.DataFrame())
+
+    client = StubClient()
+    summarize.run(**paths, client=client)
+
+    assert client.grounded_calls == [], "prompted with no roster"
+    assert "restore-out" in envelope_at(paths)["news_error"]
+
+
+def test_an_unreadable_news_answer_leaves_news_null_rather_than_partial(tmp_path):
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    class GarbageClient(StubClient):
+        def _news(self, user):
+            return {"text": "sorry, I cannot help with that", "usage": {}, "grounding": None}
+
+    summarize.run(**paths, client=GarbageClient())
+    record = envelope_at(paths)
+
+    assert record["news"] is None
+    assert "not valid JSON" in record["news_error"]
+
+
+# --- the backfill ---------------------------------------------------------
+
+
+def test_a_report_owing_only_news_regenerates_only_the_news(tmp_path):
+    """The point of the three-state check. Re-running the summary to reach
+    the news would re-bill ~27k prompt tokens for an answer already on
+    disk."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    summarize.run(**paths, client=StubClient(news_raises=GeminiError("dead")))
+    before = envelope_at(paths)
+
+    client = StubClient()
+    result = summarize.run(**paths, client=client)
+    after = envelope_at(paths)
+
+    assert result["summarized"] == ["2026-09-15-tuesday-waiver-wire"]
+    assert client.calls == [], "the backfill regenerated the summary"
+    assert len(client.grounded_calls) == 3
+    assert after["news"] is not None and after["news_error"] is None
+    # Every v1 key carried across verbatim: the summary's provenance still
+    # describes when the summary was written, not when the news was.
+    for key in ("summary_markdown", "generated_at", "prompt_sha256", "usage", "report"):
+        assert after[key] == before[key], f"the backfill rewrote {key}"
+
+
+def test_the_backfill_logs_itself_as_a_backfill(tmp_path, capsys):
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    summarize.run(**paths, client=StubClient(news_raises=GeminiError("dead")))
+    capsys.readouterr()
+
+    summarize.run(**paths, client=StubClient())
+
+    assert "backfilled news for" in capsys.readouterr().out
+
+
+def test_a_re_rendered_report_regenerates_both_rather_than_backfilling(tmp_path, capsys):
+    """Observed 2026-09-16: a Wednesday summary written from a pre-refresh
+    render survived the corrected re-render. Bolting fresh news onto it
+    would produce an envelope whose two halves describe different
+    documents."""
+    paths = dirs(tmp_path)
+    path = write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    summarize.run(**paths, client=StubClient(news_raises=GeminiError("dead")))
+
+    path.write_text(path.read_text() + "\n## A corrected section\n")
+
+    client = StubClient(text="A corrected summary.")
+    summarize.run(**paths, client=client)
+
+    assert len(client.calls) == 1, "the stale summary was kept"
+    assert envelope_at(paths)["summary_markdown"] == "A corrected summary."
+    assert "regenerating both" in capsys.readouterr().out
+
+
+def test_a_complete_envelope_is_skipped_by_both_layers(tmp_path):
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    summarize.run(**paths, client=StubClient())
+
+    client = StubClient()
+    result = summarize.run(**paths, client=client)
+
+    assert result["summarized"] == []
+    assert client.calls == [] and client.grounded_calls == []
+
+
+def test_force_regenerates_both_layers(tmp_path):
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    summarize.run(**paths, client=StubClient())
+
+    client = StubClient(text="Regenerated.")
+    summarize.run(**paths, client=client, force=True)
+
+    assert len(client.calls) == 1 and len(client.grounded_calls) == 3
+    assert envelope_at(paths)["summary_markdown"] == "Regenerated."
+
+
+# --- --no-news ------------------------------------------------------------
+
+
+def test_no_news_skips_the_grounded_calls_entirely(tmp_path):
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+
+    client = StubClient()
+    summarize.run(**paths, client=client, with_news_layer=False)
+    record = envelope_at(paths)
+
+    assert client.grounded_calls == []
+    assert record["news"] is None
+    assert record["news_error"] is None, "skipping is not failing"
+
+
+def test_no_news_leaves_the_news_to_be_backfilled_later(tmp_path):
+    """A --no-news envelope owes news, so a normal run picks it up -- and
+    still does not re-bill the summary."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    summarize.run(**paths, client=StubClient(), with_news_layer=False)
+
+    client = StubClient()
+    summarize.run(**paths, client=client)
+
+    assert client.calls == []
+    assert envelope_at(paths)["news"] is not None
+
+
+def test_no_news_does_not_rewrite_an_envelope_it_has_nothing_to_add_to(tmp_path):
+    """Without collapsing back to two states, every --no-news run would
+    rewrite every summary-only envelope forever."""
+    paths = dirs(tmp_path)
+    write_report(paths["reports_dir"], 2026, 2, "2026-09-15", "tuesday-waiver-wire")
+    summarize.run(**paths, client=StubClient(), with_news_layer=False)
+
+    client = StubClient()
+    result = summarize.run(**paths, client=client, with_news_layer=False)
+
+    assert result["summarized"] == []
+    assert client.calls == []

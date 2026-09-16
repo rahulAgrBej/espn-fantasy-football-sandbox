@@ -95,14 +95,21 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      # The prompt's league-facts section: our team name and the legal
-      # lineup shape. Both degrade to an explicit "unavailable in this run"
-      # line rather than failing, matching report.yml's restore-out
-      # discipline.
-      - name: Restore the exports the prompt reads
+      # Three exports, for the two prompts:
+      #
+      #   teams, roster-slots   the summary prompt's league-facts section --
+      #                         our team name and the legal lineup shape.
+      #   weekly-rosters        the news prompt's entire input: who is
+      #                         starting, benched and on IR this week.
+      #
+      # All three degrade rather than failing, matching report.yml's
+      # restore-out discipline: the first two render "unavailable in this
+      # run" in the prompt, and a missing weekly-rosters becomes a stored
+      # news_error naming this step, with the summary still written.
+      - name: Restore the exports the prompts read
         env:
           S3_BUCKET: ${{ vars.S3_BUCKET }}
-        run: ./scripts/s3_sync.sh restore-out teams roster-slots
+        run: ./scripts/s3_sync.sh restore-out teams roster-slots weekly-rosters
 
       # **S3 is the source of truth**, not the checkout above. report.yml
       # mirrors reports/ there as its last step, the envelope's report.path

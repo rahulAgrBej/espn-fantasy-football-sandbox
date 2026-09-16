@@ -9,6 +9,7 @@ weeks old, so mtime here would be actively wrong rather than merely
 unreliable.
 """
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -137,40 +138,70 @@ def summary_path(summaries_dir, report):
     return Path(summaries_dir) / str(report.season) / f"week-{report.week:02d}" / f"{report.stem}.json"
 
 
-def has_summary(summaries_dirs, report):
-    """True if a summary for `report` exists in ANY of the given trees.
+def existing_envelope(summaries_dirs, report):
+    """The parsed envelope for `report` from the first tree that has one.
 
-    Plural on purpose. A run consults two: the pulled cache of everything
-    already on S3, and the output tree holding what this run has written so
-    far. Checking only the first makes idempotency depend on the S3
-    round-trip having succeeded -- two runs before a push would summarise
-    the same report twice. Checking both makes it a property of the command
-    instead of a property of the bucket.
+    `summaries_dirs` is plural on purpose. A run consults two: the pulled
+    cache of everything already on S3, and the output tree holding what this
+    run has written so far. Checking only the first makes idempotency depend
+    on the S3 round-trip having succeeded -- two runs before a push would
+    summarise the same report twice. Checking both makes it a property of
+    the command instead of a property of the bucket.
+
+    This returns the *content* rather than a boolean, because since v2 an
+    envelope can be complete (summary and news) or partial (summary written,
+    news failed) -- so "does a file exist" is no longer enough to decide
+    what a run owes.
+
+    An unreadable envelope -- truncated by a killed run, hand-edited badly --
+    is treated as absent. Regenerating costs one report; trusting a file we
+    could not parse costs silence, and silence is this repo's documented
+    failure mode.
     """
-    return any(summary_path(directory, report).exists() for directory in summaries_dirs)
+    if isinstance(summaries_dirs, (str, Path)):
+        summaries_dirs = (summaries_dirs,)
+
+    for directory in summaries_dirs:
+        path = summary_path(directory, report)
+        if not path.exists():
+            continue
+        try:
+            envelope = json.loads(path.read_text())
+        except (OSError, ValueError):
+            print(f"  [warning] {path} could not be read as JSON -- treating it as missing")
+            return None
+        return envelope if isinstance(envelope, dict) else None
+    return None
 
 
-def unsummarized(candidates, summaries_dirs, day=None, week=None, force=False):
-    """The reports with no summary object anywhere, oldest-first.
+def envelope_needs(envelope, want_news=True):
+    """What an envelope still owes: `"full"`, `"news"`, or None.
 
-    Takes an already-scanned list rather than a directory. The caller picks
-    which tree to read -- the S3 mirror normally, the local checkout as a
-    fallback -- and scanning there and filtering here keeps that choice in
-    one place instead of being re-made, possibly differently, on a second
-    scan.
+    Three states rather than two, which is what makes a failed news call
+    recoverable. A report whose summary landed but whose grounded calls died
+    owes only the news, and regenerating the summary to get it would re-bill
+    ~27k prompt tokens for an answer already sitting on disk.
 
-    This is what makes the command input-free, and therefore idempotent and
-    self-healing: the event trigger and the scheduled backstop both land
-    here and neither can double-summarise, and a summary missed because the
-    model was down is picked up by the next trigger rather than being lost.
+    `want_news=False` (the `--no-news` path) collapses this back to the
+    original two states, so that flag can never make a run rewrite envelopes
+    it has nothing new to put in.
+    """
+    if not isinstance(envelope, dict) or not envelope.get("summary_markdown"):
+        return "full"
+    if want_news and envelope.get("news") is None:
+        return "news"
+    return None
 
-    `summaries_dirs` takes a single path or an iterable of them; see
-    `has_summary`. `--force` keeps the filters but drops the has-a-summary
-    test, which is the only way to re-render an existing summary (after a
-    prompt change, say). `--day`/`--week` are debugging and backfill filters;
-    the scheduled path passes neither. There is deliberately no season
-    filter: "every report with no summary" is the whole contract, and
-    `priors` already refuses to hand one season's report another's context.
+
+def pending_work(candidates, summaries_dirs, day=None, week=None, force=False, want_news=True):
+    """`[(report, existing_envelope, mode)]` for every report still owing
+    something, oldest-first. `mode` is `"full"` or `"news"`.
+
+    The same filters and the same contract as `unsummarized`, which this
+    supersedes for the run loop: input-free, idempotent and self-healing,
+    now across three states instead of two. `--force` returns every
+    candidate as `"full"` with its existing envelope still attached, so the
+    caller can compare against what it is about to overwrite.
     """
     if isinstance(summaries_dirs, (str, Path)):
         summaries_dirs = (summaries_dirs,)
@@ -179,9 +210,14 @@ def unsummarized(candidates, summaries_dirs, day=None, week=None, force=False):
         candidates = [r for r in candidates if r.day == day]
     if week is not None:
         candidates = [r for r in candidates if r.week == week]
-    if force:
-        return candidates
-    return [r for r in candidates if not has_summary(summaries_dirs, r)]
+
+    work = []
+    for report in candidates:
+        envelope = existing_envelope(summaries_dirs, report)
+        mode = "full" if force else envelope_needs(envelope, want_news=want_news)
+        if mode is not None:
+            work.append((report, envelope, mode))
+    return work
 
 
 def priors(all_reports, report, count=PRIOR_COUNT):

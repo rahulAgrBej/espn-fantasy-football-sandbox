@@ -126,12 +126,25 @@ def test_summary_yml_pulls_its_inputs_from_s3_before_running():
     envelope source=local."""
     text = SUMMARY_YML.read_text()
 
-    for verb in ("restore-out teams roster-slots", "pull-reports", "pull-summaries"):
+    for verb in ("restore-out teams roster-slots weekly-rosters", "pull-reports", "pull-summaries"):
         assert f"s3_sync.sh {verb}" in text, f"summary.yml no longer runs {verb}"
 
     run_step = text.index("name: Summarize")
     for verb in ("pull-reports", "pull-summaries"):
         assert text.index(f"s3_sync.sh {verb}") < run_step, f"{verb} must precede the Python run"
+
+
+def test_summary_yml_restores_the_export_the_news_prompt_reads():
+    """weekly-rosters is the news layer's entire input. Drop it from
+    restore-out and every grounded call is skipped with a news_error, on
+    every report, forever -- while the workflow still goes green and the
+    summaries still land. Nothing else would notice."""
+    text = SUMMARY_YML.read_text()
+
+    restore = next(
+        line for line in text.splitlines() if "s3_sync.sh restore-out" in line
+    )
+    assert "weekly-rosters" in restore
 
 
 def test_summary_yml_pushes_summaries_append_only():
