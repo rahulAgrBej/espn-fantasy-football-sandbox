@@ -2,12 +2,12 @@
 
 **Covers** Wed 2026-09-16 -- the first of week 2's three practice days
 **Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET
-**Rendered** Wed 2026-09-16 10:48 ET
+**Rendered** Wed 2026-09-16 11:03 ET
 
 ## Freshness
 - sleeper: 2026-09-16 08:11:31 ET
 - nflverse: 2026-09-16 09:24:08 ET
-- espn: 2026-09-16 10:43:14 ET
+- espn: 2026-09-16 11:02:09 ET
 - odds: 2026-09-15 18:42:00 ET
 
 ## Decisions due
@@ -16,15 +16,29 @@
 _Waiver-deadline note: this league's deadline was last night (Tuesday into Wednesday), not tonight -- this morning's ESPN pull is the first settled read of last night's run._
 
 ## Waiver outcomes
-0 claimed by us, 1 claimed by other teams, 0 newly available.
+0 claimed by us, 6 claimed by other teams, 4 newly available.
 _2 row(s) in this window are still pending -- excluded above._
 _3 claim(s) in this window failed or were canceled (`FAILED_*`/`CANCELED`) and are excluded above -- a losing claim on a contested player is recorded for every team that attempted it, not just the winner._
-_10 other transaction(s) in this window were DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._
+_215 other transaction(s) in this window were DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._
 
 ### Claimed by us
 _(none)_
 
 ### Claimed by other teams
+#### Chris Boswell (K) -- claimed by BYE WEEK
+| player | position | pro_team | week_projected |
+|---|---|---|---|
+| Cairo Santos | K | CHI | 9.1 |
+| Chase McLaughlin | K | TB | 8.8 |
+| Tyler Bass | K | BUF | 8.7 |
+
+#### Chris Brooks (RB) -- claimed by Cheek clappers
+| player | position | pro_team | week_projected |
+|---|---|---|---|
+| Adonai Mitchell | WR | NYJ | 9.0 |
+| Denzel Boston | WR | CLE | 9.0 |
+| Caleb Douglas | WR | MIA | 8.9 |
+
 #### Devaughn Vele (WR) -- claimed by Rashee Rice Krispies
 | player | position | pro_team | week_projected |
 |---|---|---|---|
@@ -32,8 +46,34 @@ _(none)_
 | Denzel Boston | WR | CLE | 9.0 |
 | Caleb Douglas | WR | MIA | 8.9 |
 
+#### Hunter Henry (TE) -- claimed by Foreign Expansion
+| player | position | pro_team | week_projected |
+|---|---|---|---|
+| Pat Freiermuth | TE | PIT | 8.5 |
+| Kenyon Sadiq | TE | NYJ | 8.1 |
+| Dalton Schultz | TE | HOU | 8.1 |
+
+#### Jaguars D/ST (D/ST) -- claimed by BYE WEEK
+| player | position | pro_team | week_projected |
+|---|---|---|---|
+| Buccaneers D/ST | D/ST | TB | 8.0 |
+| 49ers D/ST | D/ST | SF | 6.6 |
+| Bears D/ST | D/ST | CHI | 6.4 |
+
+#### Michael Mayer (TE) -- claimed by BYE WEEK
+| player | position | pro_team | week_projected |
+|---|---|---|---|
+| Pat Freiermuth | TE | PIT | 8.5 |
+| Kenyon Sadiq | TE | NYJ | 8.1 |
+| Dalton Schultz | TE | HOU | 8.1 |
+
 ### Newly available
-_(none)_
+| player | position | pro_team | dropped by | period | date |
+|---|---|---|---|---|---|
+| Browns D/ST | D/ST | CLE | BYE WEEK | 1 | 2026-09-09 01:07:27.303 |
+| Pat Freiermuth | TE | PIT | Foreign Expansion | 1 | 2026-09-08 15:14:57.959 |
+| Tyler Shough | QB | NO | BYE WEEK | 1 | 2026-09-10 01:03:58.903 |
+| Wil Lutz | K | DEN | BYE WEEK | 1 | 2026-09-09 00:49:15.881 |
 
 ## Watchlist
 No starter is OUT, HIGH_RISK or COIN_FLIP on today's read.
@@ -72,7 +112,7 @@ _None by design._ Dropping on one day of practice data discards a player before 
 - `pos_rank` is deliberately absent. It comes from nflverse `depth_charts`, an append-only log with no week column, so reading it as this week's depth is wrong.
 - `report_status` is null both when the nflverse injuries feed is unavailable and when a player carries no designation; those two are indistinguishable in that column.
 - No drop candidates today. Dropping on one day of practice data discards a player before the signal that would justify it exists.
-- This league's waiver deadline was last night (Documented -- league setting, per the league manager), not tonight. This morning's ESPN pull captures transactions.csv in its settled state, though this report does not itself render waiver rows -- see Tuesday's waiver report.
+- This league's waiver deadline was last night (Documented -- league setting, per the league manager), not tonight. Whether this run actually read a post-settlement transactions.csv is stated in the waiver-outcomes section rather than assumed here -- the ESPN pull that makes it settled is a separate scheduled job and can fail or be skipped independently of this report.
 - "Newly available" below is a render-time snapshot of this week's free-agent pool, not a guarantee -- a listed player can be claimed before this report is read.
 - Waiver outcomes below share the same {week - 1, week} transactions.csv window waivers.settlements() uses.
 - 2 transaction(s) in the waiver-outcomes window are still pending and excluded from the outcomes section.
