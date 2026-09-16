@@ -2,9 +2,14 @@
 path, slot-eligibility intersection, and the no-legal-swap message.
 Fixtures only, no network, no disk."""
 
+from datetime import datetime
+
 import pandas as pd
 
 from espn_ff.report import monday
+from espn_ff.weeks import ET
+
+_FIXED_RENDERED_AT = 1789504260  # Tue 2026-09-15 16:31 ET
 
 
 def _matchups_df(our_live, their_live, team_id=5, opponent_id=7):
@@ -168,3 +173,47 @@ def test_players_in_game_empty_when_no_monday_teams():
     rosters = pd.DataFrame([{"week": 2, "team_id": 5, "player_id": 1, "started": True, "pro_team": "NYG"}])
     result = monday.players_in_game(rosters, week=2, team_id=5, opponent_id=7, monday_teams=set())
     assert result.empty
+
+
+# ---- header: covered dates -------------------------------------------------
+
+_EMPTY_MARGIN = {"insufficient": True, "reason": "no matchups export on disk"}
+_EMPTY_AT_RISK = pd.DataFrame(columns=["side", "player_name", "position", "pro_team", "player_id"])
+_EMPTY_AVAIL = pd.DataFrame(columns=["player_name", "tier", "espn_injury_status", "sleeper_tier", "nflverse_report_status"])
+
+
+def test_render_header_names_the_games_own_gameday_not_the_week_window():
+    """The plan this implements: rendering off-slot on Tue 09/15 for a
+    Monday game six days later must say so, not just carry a week label."""
+    monday_games = pd.DataFrame(
+        [{"away_team": "NYG", "home_team": "LAR", "gametime": "20:15", "gameday": "2026-09-21"}]
+    )
+    window = (datetime(2026, 9, 15, 3, 0, tzinfo=ET), datetime(2026, 9, 22, 3, 0, tzinfo=ET))
+    text = monday.render(
+        2026, 2, 5, monday_games, _EMPTY_MARGIN, _EMPTY_AT_RISK, _EMPTY_AVAIL, {}, monday.FOOTER_NOTES,
+        window=window, rendered_at=_FIXED_RENDERED_AT,
+    )
+    assert "**Covers** Mon 2026-09-21 -- week 2's Monday-night game" in text
+    assert "**Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET" in text
+    assert "**Rendered** Tue 2026-09-15 16:31 ET" in text
+    assert "Rendered 2026-09-15, not 2026-09-21" in text
+
+
+def test_render_header_on_the_correct_slot_day_carries_no_mismatch_note():
+    monday_games = pd.DataFrame(
+        [{"away_team": "NYG", "home_team": "LAR", "gametime": "20:15", "gameday": "2026-09-15"}]
+    )
+    text = monday.render(
+        2026, 2, 5, monday_games, _EMPTY_MARGIN, _EMPTY_AT_RISK, _EMPTY_AVAIL, {}, monday.FOOTER_NOTES,
+        rendered_at=_FIXED_RENDERED_AT,
+    )
+    assert "not tonight's" not in text
+
+
+def test_render_header_shows_insufficient_data_for_no_monday_game_week():
+    text = monday.render(
+        2026, 18, 5, pd.DataFrame(), _EMPTY_MARGIN, _EMPTY_AT_RISK, _EMPTY_AVAIL, {}, monday.FOOTER_NOTES,
+        rendered_at=_FIXED_RENDERED_AT,
+    )
+    assert "**Week 18** insufficient data" in text
+    assert "No Monday-night game in week 18" in text

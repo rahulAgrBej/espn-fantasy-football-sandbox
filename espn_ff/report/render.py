@@ -4,6 +4,8 @@ access here -- keeps this module unit-testable with no fixtures.
 
 import pandas as pd
 
+from ..weeks import ET, format_window
+
 INSUFFICIENT_DATA = "insufficient data"
 
 
@@ -30,9 +32,37 @@ def num(value, places=1):
 
 
 def _fmt_ts(ts):
+    """Epoch seconds -> ET wall-clock, labelled. `pd.Timestamp(ts,
+    unit="s")` alone is naive UTC printed with no zone suffix -- a UTC
+    freshness block directly under an ET dateline is a worse trap than the
+    one this fixes."""
     if ts is None:
         return "never"
-    return pd.Timestamp(ts, unit="s").strftime("%Y-%m-%d %H:%M:%S")
+    return pd.Timestamp(ts, unit="s", tz="UTC").tz_convert(ET).strftime("%Y-%m-%d %H:%M:%S ET")
+
+
+def _fmt_rendered_at(ts):
+    return pd.Timestamp(ts, unit="s", tz="UTC").tz_convert(ET).strftime("%a %Y-%m-%d %H:%M ET")
+
+
+def header_lines(title, week, covers, window, rendered_at):
+    """The dateline every report opens with: an H1 title, the dates this
+    render actually covers, the calendar week window it was rendered
+    against (`espn_ff/weeks.week_window`), and when it was generated. See
+    docs/report-weekly-schedule.md's "What every report contains".
+
+    `window` is `(start_et, end_et)` or None -- when the calendar isn't
+    available, the `**Week N**` line renders INSUFFICIENT_DATA rather than
+    being omitted, since a missing line is indistinguishable from a report
+    that had nothing to say."""
+    week_text = format_window(*window) if window is not None else INSUFFICIENT_DATA
+    return [
+        f"# {title}",
+        "",
+        f"**Covers** {covers}",
+        f"**Week {week}** {week_text}",
+        f"**Rendered** {_fmt_rendered_at(rendered_at)}",
+    ]
 
 
 def freshness_lines(fresh):

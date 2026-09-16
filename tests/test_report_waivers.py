@@ -2,10 +2,13 @@
 gate, opening-market degradation ladder, and per-slot add candidates.
 Fixtures only, no network, no disk."""
 
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
 from espn_ff.report import loaders, pool, tuesday, waivers
+from espn_ff.weeks import ET
 
 
 # ---- fixture builders -------------------------------------------------
@@ -357,16 +360,48 @@ def test_pair_drops_with_no_legal_drop_leaves_rows_undropped():
 # ---- render assembly -------------------------------------------------------
 
 
+_FIXED_RENDERED_AT = 1789504260  # Tue 2026-09-15 16:31 ET
+
+
 def test_render_never_emits_a_32_hex_event_id():
     settle = {"insufficient": True, "reason": "no transactions export on disk"}
     order = {"insufficient": True, "reason": "no usable waiver_rank column"}
     totals = {"insufficient": True, "reason": "no team_totals.parquet on disk", "by_team": {}}
-    text = waivers.render(2026, 2, 5, settle, order, [], totals, [], list(waivers.FOOTER_NOTES))
+    text = waivers.render(
+        2026, 2, 5, settle, order, [], totals, [], list(waivers.FOOTER_NOTES),
+        rendered_at=_FIXED_RENDERED_AT,
+    )
     import re
     assert not re.search(r"(^|[^0-9a-fA-F])[0-9a-fA-F]{32}([^0-9a-fA-F]|$)", text)
     assert "# Waiver wire and opening market -- 2026 week 2" in text
     assert text.index("## Decisions due") < text.index("## Waiver settlements")
     assert text.index("## What this report cannot see") > text.index("## Add candidates")
+
+
+def test_render_header_states_the_covered_window_and_render_time():
+    settle = {"insufficient": True, "reason": "no transactions export on disk"}
+    order = {"insufficient": True, "reason": "no usable waiver_rank column"}
+    totals = {"insufficient": True, "reason": "no team_totals.parquet on disk", "by_team": {}}
+    window = (datetime(2026, 9, 15, 3, 0, tzinfo=ET), datetime(2026, 9, 22, 3, 0, tzinfo=ET))
+    prev_window = (datetime(2026, 9, 8, 3, 0, tzinfo=ET), datetime(2026, 9, 15, 3, 0, tzinfo=ET))
+    text = waivers.render(
+        2026, 2, 5, settle, order, [], totals, [], list(waivers.FOOTER_NOTES),
+        window=window, prev_window=prev_window, rendered_at=_FIXED_RENDERED_AT,
+    )
+    assert "**Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET" in text
+    assert "**Rendered** Tue 2026-09-15 16:31 ET" in text
+    assert "week 1" in text.split("**Covers**")[1].splitlines()[0]
+
+
+def test_render_header_shows_insufficient_data_when_the_calendar_is_absent():
+    settle = {"insufficient": True, "reason": "no transactions export on disk"}
+    order = {"insufficient": True, "reason": "no usable waiver_rank column"}
+    totals = {"insufficient": True, "reason": "no team_totals.parquet on disk", "by_team": {}}
+    text = waivers.render(
+        2026, 2, 5, settle, order, [], totals, [], list(waivers.FOOTER_NOTES),
+        rendered_at=_FIXED_RENDERED_AT,
+    )
+    assert "**Week 2** insufficient data" in text
 
 
 # ---- loaders: odds freshness -----------------------------------------------

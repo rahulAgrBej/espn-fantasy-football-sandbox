@@ -17,14 +17,15 @@ See docs/report-weekly-schedule.md's "Tuesday -- week in review" section
 for the full spec this module implements.
 """
 
+import time
 from functools import lru_cache
 
 import pandas as pd
 
-from .. import config
+from .. import config, weeks
 from . import monday
 from .loaders import freshness, latest_export
-from .render import freshness_lines, num, table
+from .render import freshness_lines, header_lines, num, table
 
 _VALID_RESULTS = {"W", "L", "T"}
 
@@ -425,8 +426,19 @@ FOOTER_NOTES = [
 ]
 
 
-def render(season, review_week, closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe, footer_notes):
-    lines = [f"# Week {review_week} in review -- {season}", ""]
+def render(
+    season, review_week, closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe, footer_notes,
+    window=None, rendered_at=None,
+):
+    """`window` is `(start_et, end_et)` for `review_week`, from
+    `espn_ff.weeks.week_window` -- passed in rather than looked up here so
+    this stays a pure function over its fixtures, with no disk access."""
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Week {review_week} in review -- {season}"
+    covers = f"week {review_week}, the completed week this report reviews"
+
+    lines = header_lines(title, review_week, covers, window, rendered_at)
+    lines.append("")
 
     lines.append("## Freshness")
     lines.extend(freshness_lines(freshness(season=season)))
@@ -528,9 +540,12 @@ def build(season, week, team_id=None):
     review_week = week - 1
 
     if review_week < 1:
-        lines = [
-            f"# Week {review_week} in review -- {season}", "",
-            "No completed week yet -- there is no prior week to review.", "",
+        lines = header_lines(
+            f"Week {review_week} in review -- {season}", review_week,
+            "nothing -- there is no prior week to review", None, time.time(),
+        )
+        lines += [
+            "", "No completed week yet -- there is no prior week to review.", "",
             "## What this report cannot see",
         ]
         lines.extend(f"- {n}" for n in FOOTER_NOTES)
@@ -580,5 +595,6 @@ def build(season, week, team_id=None):
         )
 
     return render(
-        season, review_week, closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe, footer_notes
+        season, review_week, closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe, footer_notes,
+        window=weeks.week_window(season, review_week),
     )

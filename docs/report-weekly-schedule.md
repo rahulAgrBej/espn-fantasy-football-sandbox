@@ -69,7 +69,29 @@ auto-retry (`docs/aws-scheduling.md`).
 
 ## What every report contains
 
-Three parts, in this order, in all eight.
+Four parts, in this order, in all eight.
+
+**The dateline.** Each report leads with an H1 title, a `**Covers**` line
+naming the specific date(s) the body actually speaks to, a `**Week N**`
+line giving that week's calendar window, and a `**Rendered**` line giving
+the generation timestamp — all four in ET. `espn_ff/weeks.py` is the
+source for the week window: it reads ESPN's own published season
+calendar (`chui_default_platformsettings`'s `scoringPeriods`, the same
+cache `EspnClient.current_scoring_period` resolves against) and maps a
+week number back to the dates it covers, which nothing else in this repo
+did before. *(Observed — `espn_ff/weeks.py`, verified against
+`data/raw/2026/chui-default-platformsettings-*.json`'s 18 regular-season
+periods.)* The window is the league's own boundary, Tue 03:00 ET → Tue
+03:00 ET, pinned to ET **wall-clock** rather than a fixed UTC offset:
+period 8 → 9 crosses the Nov 1 DST fallback and both endpoints still land
+on Tue 03:00 ET, so the boundary does not drift in November. Two edges in
+that calendar are handled explicitly: period 1 is a catch-all offseason
+window (Wed 2026-03-25 → Tue 2026-09-15), so week 1's displayed start is
+clamped to one week before period 2's start (Tue 2026-09-08) rather than
+showing the offseason span; and period 18 ends Mon 2027-01-11, not a
+Tuesday, which is reported as ESPN's actual endpoint rather than assumed
+to be a Tuesday. When the calendar isn't on disk, the `**Week N**` line
+renders `insufficient data` rather than being omitted or guessed.
 
 **The freshness header.** Each report opens by stating, per feed, the
 artifact's own timestamp and staleness flag: `fetched_at` from
@@ -439,6 +461,13 @@ key-to-function map, and was previously undocumented here.
 
 ## Known gaps
 
+- **Filenames still carry the *render* date, not the covered date.** The
+  dateline above puts the covered week and date in the body, but
+  `reports/<season>/week-<NN>/<YYYY-MM-DD>-<day>-<slug>.md`'s date and
+  `<NN>` are still keyed on when the report ran, not what it reviews —
+  e.g. `week-02/2026-09-15-tuesday-week-in-review.md` is a week-1 report
+  filed under week 2, visible in the body's `**Covers**`/`**Week 1**`
+  lines now, still not in the path.
 - **Monday, Tuesday's week-in-review, and Tuesday's waiver wire are the
   only reports that have been Observed running.** The other five report
   slots are still intent, not description — every time, threshold, and

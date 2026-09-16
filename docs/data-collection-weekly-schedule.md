@@ -94,7 +94,11 @@ processes officiating/scoring corrections from the weekend.
 
 **Implications of the data.** Tuesday is the first day matchup outcomes
 and season-long stat lines can actually be treated as final — this is the
-point the week actually closes, not Monday. Tuesday's opening lines are
+point the week actually closes, not Monday. The week itself runs
+Tue 03:00 ET → Tue 03:00 ET, the league's own boundary per ESPN's
+published calendar; see `docs/report-weekly-schedule.md`'s "What every
+report contains" for how `espn_ff/weeks.py` derives that window (and its
+two calendar edges) rather than restating it here. Tuesday's opening lines are
 the earliest, least-informed number of the week — before any
 practice-participation signal or Wednesday/Thursday injury news has moved
 them. Waiver results seen Tuesday reflect whatever your league's

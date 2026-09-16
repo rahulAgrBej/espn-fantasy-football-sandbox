@@ -1,13 +1,17 @@
 # Waiver wire and opening market -- 2026 week 2
 
+**Covers** week 2's waiver window; settlements also span week 1 (Tue 2026-09-08 03:00 - Tue 2026-09-15 03:00 ET)
+**Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET
+**Rendered** Tue 2026-09-15 20:38 ET
+
 ## Freshness
-- sleeper: 2026-09-15 04:14:28
-- nflverse: 2026-09-15 22:24:07
-- espn: 2026-09-15 18:10:04
-- odds: 2026-09-15 22:42:00
+- sleeper: 2026-09-14 15:13:41 ET
+- nflverse: 2026-09-15 00:46:47 ET
+- espn: 2026-09-15 12:31:36 ET
+- odds: 2026-09-15 18:25:03 ET
 
 ## Decisions due
-Our waiver rank: 11 of 12.
+Our waiver rank: 4 of 12.
 8 of 21 add candidates below project to clear their slot's bench floor.
 5 legal drop(s) exist; the pairings below are alternatives to one another beyond that count, not simultaneously-available moves.
 _Claim-deadline guidance: this league's waiver-processing night is recorded in no artifact here, so treat any processing-night assumption as unconfirmed._
@@ -15,25 +19,35 @@ _Claim-deadline guidance: this league's waiver-processing night is recorded in n
 ## Waiver settlements
 _No `WAIVER`-type transaction has ever been observed in this league's export; rows below are `FREEAGENT` claims only._
 _This league shows no FAAB bids in any observed transaction -- not "0 spent"._
-_(none)_
+| period | team | player | type | item | execution | pending | bid | date |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Foreign Expansion | Hunter Henry | FREEAGENT | ADD | EXECUTE | False | 0 | 2026-09-08 15:14:57.959 |
+| 1 | Foreign Expansion | -- | FREEAGENT | DROP | EXECUTE | False | 0 | 2026-09-08 15:14:57.959 |
+| 1 | BYE WEEK | Chris Boswell | FREEAGENT | ADD | EXECUTE | False | 0 | 2026-09-09 00:49:15.881 |
+| 1 | BYE WEEK | -- | FREEAGENT | DROP | EXECUTE | False | 0 | 2026-09-09 00:49:15.881 |
+| 1 | BYE WEEK | Jaguars D/ST | FREEAGENT | ADD | EXECUTE | False | 0 | 2026-09-09 01:07:27.303 |
+| 1 | BYE WEEK | -- | FREEAGENT | DROP | EXECUTE | False | 0 | 2026-09-09 01:07:27.303 |
+| 1 | Cheek clappers | Chris Brooks | FREEAGENT | ADD | EXECUTE | False | 0 | 2026-09-09 18:00:12.431 |
+| 1 | BYE WEEK | Michael Mayer | FREEAGENT | ADD | EXECUTE | False | 0 | 2026-09-10 01:03:58.903 |
+| 1 | BYE WEEK | -- | FREEAGENT | DROP | EXECUTE | False | 0 | 2026-09-10 01:03:58.903 |
 
-_2 other transaction(s) in this window were DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._
+_205 other transaction(s) in this window were DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._
 
 ## Waiver order
 | rank | team | waiver_rank | ours |
 |---|---|---|---|
-| 1 | Cheek clappers | 1 |  |
-| 2 | BYE WEEK | 2 |  |
-| 3 | eMekaladon | 3 |  |
-| 4 | Rocco | 4 |  |
-| 5 | Rashee Rice Krispies | 5 |  |
-| 6 | Daddy Dan Campbell | 6 |  |
-| 7 | Roster? I hardly know her | 7 |  |
-| 8 | Costco Blitz Krieg | 8 |  |
-| 9 | Jaxon Smith-Kachigga | 9 |  |
-| 10 | Foreign Expansion | 10 |  |
-| 11 | Caleb Williams' Baby Mamas | 11 | <-- |
-| 12 | Farmer Jack | 12 |  |
+| 1 | Jaxon Smith-Kachigga | 1 |  |
+| 2 | eMekaladon | 2 |  |
+| 3 | Costco Blitz Krieg | 3 |  |
+| 4 | Caleb Williams' Baby Mamas | 4 | <-- |
+| 5 | Daddy Dan Campbell | 5 |  |
+| 6 | Foreign Expansion | 6 |  |
+| 7 | Rashee Rice Krispies | 7 |  |
+| 8 | Rocco | 8 |  |
+| 9 | BYE WEEK | 9 |  |
+| 10 | Roster? I hardly know her | 10 |  |
+| 11 | Farmer Jack | 11 |  |
+| 12 | Cheek clappers | 12 |  |
 
 ## Opening market
 | team | implied_team_total |
@@ -78,9 +92,9 @@ _Current starter for context: Seahawks D/ST (7.6 proj)._
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Buccaneers D/ST | D/ST | TB | 8.1 | insufficient data | 13.0 | 23.8 | -- | De'Zhaun Stribling |
+| Buccaneers D/ST | D/ST | TB | 8.0 | insufficient data | 12.8 | 23.8 | -- | De'Zhaun Stribling |
 | Bears D/ST | D/ST | CHI | 6.5 | insufficient data | 9.7 | 24.8 | -- | Tre Tucker |
-| 49ers D/ST | D/ST | SF | 6.4 | insufficient data | 7.6 | 28.2 | -- | RJ Harvey |
+| 49ers D/ST | D/ST | SF | 6.4 | insufficient data | 7.3 | 28.2 | -- | RJ Harvey |
 
 ### K
 _insufficient data -- no eligible bench player at this slot to set a floor._
@@ -88,7 +102,7 @@ _Current starter for context: Tyler Loop (8.9 proj)._
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Cairo Santos | K | CHI | 9.0 | insufficient data | 33.8 | 24.8 | -- | De'Zhaun Stribling |
+| Cairo Santos | K | CHI | 9.0 | insufficient data | 33.7 | 24.8 | -- | De'Zhaun Stribling |
 | Nick Folk | K | ATL | 8.8 | insufficient data | 4.6 | 20.0 | -- | Tre Tucker |
 | Chase McLaughlin | K | TB | 8.6 | insufficient data | 16.0 | 23.8 | -- | RJ Harvey |
 
@@ -98,7 +112,7 @@ _Bench floor: Jordan Love (15.8 proj, source=pool)._
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
 | Carson Wentz | QB | MIN | 16.5 | 0.8 | 0.1 | 22.2 | -- | De'Zhaun Stribling |
-| Bryce Young | QB | CAR | 16.2 | 0.5 | 11.3 | 23.0 | -- | Tre Tucker |
+| Bryce Young | QB | CAR | 16.2 | 0.5 | 11.2 | 23.0 | -- | Tre Tucker |
 | Drew Lock | QB | SEA | 15.6 | -0.1 | 0.1 | 23.0 | -- | RJ Harvey |
 
 ### TE
@@ -108,17 +122,17 @@ _Current starter for context: Mark Andrews (10.1 proj)._
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
 | Pat Freiermuth | TE | PIT | 8.5 | insufficient data | 14.6 | 18.2 | -- | De'Zhaun Stribling |
-| Dalton Schultz | TE | HOU | 8.3 | insufficient data | 19.7 | 24.5 | -- | Tre Tucker |
-| Kenyon Sadiq | TE | NYJ | 8.2 | insufficient data | 34.8 | 20.5 | -- | RJ Harvey |
+| Dalton Schultz | TE | HOU | 8.3 | insufficient data | 19.8 | 24.5 | -- | Tre Tucker |
+| Kenyon Sadiq | TE | NYJ | 8.1 | insufficient data | 34.8 | 20.5 | -- | RJ Harvey |
 
 ### RB
-_Bench floor: RJ Harvey (10.4 proj, source=pool)._
+_Bench floor: RJ Harvey (8.9 proj, source=pool)._
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Braelon Allen | RB | NYJ | 8.2 | -2.3 | 12.4 | 20.5 | -- | De'Zhaun Stribling |
-| Kaelon Black | RB | SF | 8.2 | -2.3 | 15.5 | 28.2 | -- | Tre Tucker |
-| George Holani | RB | SEA | 8.0 | -2.4 | 4.1 | 23.0 | -- | RJ Harvey |
+| Kaelon Black | RB | SF | 8.2 | -0.8 | 15.3 | 28.2 | -- | De'Zhaun Stribling |
+| Braelon Allen | RB | NYJ | 8.2 | -0.8 | 12.4 | 20.5 | -- | Tre Tucker |
+| George Holani | RB | SEA | 8.0 | -0.9 | 4.2 | 23.0 | -- | RJ Harvey |
 
 ### WR
 _Bench floor: De'Zhaun Stribling (0.0 proj, source=pool)._
@@ -126,9 +140,9 @@ _WR and RB/WR share eligible candidates -- this block may repeat the other's row
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Devaughn Vele | WR | NO | 9.4 | 9.4 | 13.0 | 24.0 | -- | De'Zhaun Stribling |
-| Caleb Douglas | WR | MIA | 8.9 | 8.9 | 15.6 | 16.0 | -- | Tre Tucker |
-| Denzel Boston | WR | CLE | 8.9 | 8.9 | 25.1 | 18.6 | -- | RJ Harvey |
+| Devaughn Vele | WR | NO | 9.4 | 9.4 | 12.8 | 24.0 | -- | De'Zhaun Stribling |
+| Caleb Douglas | WR | MIA | 8.9 | 8.9 | 15.5 | 16.0 | -- | Tre Tucker |
+| Denzel Boston | WR | CLE | 8.9 | 8.9 | 25.2 | 18.6 | -- | RJ Harvey |
 
 ### RB/WR
 _Bench floor: De'Zhaun Stribling (0.0 proj, source=pool)._
@@ -136,9 +150,9 @@ _WR and RB/WR share eligible candidates -- this block may repeat the other's row
 
 | player | position | pro_team | week_projected | gap | percent_owned | implied_team_total | trending_add | drop |
 |---|---|---|---|---|---|---|---|---|
-| Devaughn Vele | WR | NO | 9.4 | 9.4 | 13.0 | 24.0 | -- | De'Zhaun Stribling |
-| Caleb Douglas | WR | MIA | 8.9 | 8.9 | 15.6 | 16.0 | -- | Tre Tucker |
-| Denzel Boston | WR | CLE | 8.9 | 8.9 | 25.1 | 18.6 | -- | RJ Harvey |
+| Devaughn Vele | WR | NO | 9.4 | 9.4 | 12.8 | 24.0 | -- | De'Zhaun Stribling |
+| Caleb Douglas | WR | MIA | 8.9 | 8.9 | 15.5 | 16.0 | -- | Tre Tucker |
+| Denzel Boston | WR | CLE | 8.9 | 8.9 | 25.2 | 18.6 | -- | RJ Harvey |
 
 ## Drop candidates
 5 legal drop(s), ranked weakest ROS projection first -- named per add row above; reused across slot blocks, not simultaneously available.

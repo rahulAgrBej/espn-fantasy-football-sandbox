@@ -2,10 +2,15 @@
 optimal-lineup DP, slot-eligibility fallback, and standings. Fixtures
 only, no network, no disk."""
 
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
 from espn_ff.report import monday, tuesday
+from espn_ff.weeks import ET
+
+_FIXED_RENDERED_AT = 1789504260  # Tue 2026-09-15 16:31 ET
 
 
 def _game(week, matchup_id, away_id, away_name, home_id, home_name, winner, away_final, home_final):
@@ -372,3 +377,35 @@ def test_sole_backup_at_a_one_deep_position_is_never_a_drop_candidate():
 def test_week_one_has_no_prior_week_to_review():
     text = tuesday.build(2026, week=1, team_id=5)
     assert "no prior week to review" in text.lower()
+
+
+# ---- header: covered dates ------------------------------------------------
+
+
+def _empty_render_args():
+    closure = {"insufficient": True, "state": "missing", "reason": "no matchups export on disk"}
+    standings_result = {"insufficient": True, "reason": "no teams export on disk"}
+    ir_now = pd.DataFrame(columns=["player_name", "position"])
+    ir_maybe = pd.DataFrame(columns=["player_name", "position", "injury_status"])
+    return closure, standings_result, [], None, [], ir_now, ir_maybe
+
+
+def test_render_header_states_the_reviewed_weeks_own_window():
+    closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe = _empty_render_args()
+    window = (datetime(2026, 9, 8, 3, 0, tzinfo=ET), datetime(2026, 9, 15, 3, 0, tzinfo=ET))
+    text = tuesday.render(
+        2026, 1, closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe,
+        list(tuesday.FOOTER_NOTES), window=window, rendered_at=_FIXED_RENDERED_AT,
+    )
+    assert "# Week 1 in review -- 2026" in text
+    assert "**Week 1** Tue 2026-09-08 03:00 - Tue 2026-09-15 03:00 ET" in text
+    assert "**Rendered** Tue 2026-09-15 16:31 ET" in text
+
+
+def test_render_header_shows_insufficient_data_when_the_calendar_is_absent():
+    closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe = _empty_render_args()
+    text = tuesday.render(
+        2026, 1, closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe,
+        list(tuesday.FOOTER_NOTES), rendered_at=_FIXED_RENDERED_AT,
+    )
+    assert "**Week 1** insufficient data" in text

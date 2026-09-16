@@ -10,14 +10,24 @@ Assembled in the mandated three-part order: freshness header, body
 decisions-first, "what this report cannot see" footer.
 """
 
+import time
+
 import pandas as pd
 
-from .. import config
+from .. import config, weeks
 from . import availability, pool, schedule
 from .loaders import freshness, latest_export
-from .render import freshness_lines
+from .render import freshness_lines, header_lines
 
 INSUFFICIENT_DATA = "insufficient data"
+
+
+def _fmt_rendered_date(rendered_at):
+    """`rendered_at` (epoch seconds) as an ET calendar date, in the same
+    `YYYY-MM-DD` shape as nflverse's `gameday` -- so the two are directly
+    comparable without a separate parse step."""
+    return pd.Timestamp(rendered_at, unit="s", tz="UTC").tz_convert(weeks.ET).strftime("%Y-%m-%d")
+
 
 # eligible_slots on player-pool.csv lists FLEX/OP -- slots this league does
 # not roster. Only slots this league actually has (roster-slots.csv) are
@@ -169,21 +179,47 @@ def find_alternatives(starter, bench_df, free_agents_df, pool_df, allowed_slots,
     }
 
 
-def render(season, week, team_id, monday_games, margin, at_risk, avail_df, alternatives_by_player, footer_notes):
+def render(
+    season, week, team_id, monday_games, margin, at_risk, avail_df, alternatives_by_player, footer_notes,
+    window=None, rendered_at=None,
+):
+    """`window` is `(start_et, end_et)` for `week`, from
+    `espn_ff.weeks.week_window` -- passed in rather than looked up here so
+    this stays a pure function over its fixtures, with no disk access."""
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Monday night call -- {season} week {week}"
+
     lines = []
-    lines.append(f"# Monday night call -- {season} week {week}")
+    if monday_games.empty:
+        covers = f"nothing -- no Monday-night game in week {week}"
+        lines.extend(header_lines(title, week, covers, window, rendered_at))
+        lines.append("")
+        lines.append("## Freshness")
+        lines.extend(freshness_lines(freshness(season=season)))
+        lines.append("")
+
+        lines.append("## Tonight's game")
+        lines.append(
+            f"No Monday-night game in week {week}, as of this report's {_fmt_rendered_date(rendered_at)} render. "
+            "This report has nothing to add tonight."
+        )
+        lines.append("")
+        lines.extend(["## What this report cannot see"] + [f"- {n}" for n in footer_notes])
+        return "\n".join(lines) + "\n"
+
+    gameday = monday_games.iloc[0].get("gameday")
+    covers = f"Mon {gameday} -- week {week}'s Monday-night game"
+    lines.extend(header_lines(title, week, covers, window, rendered_at))
     lines.append("")
+
     lines.append("## Freshness")
     lines.extend(freshness_lines(freshness(season=season)))
     lines.append("")
 
     lines.append("## Tonight's game")
-    if monday_games.empty:
-        lines.append(f"No Monday-night game in week {week}. This report has nothing to add tonight.")
-        lines.append("")
-        lines.extend(["## What this report cannot see"] + [f"- {n}" for n in footer_notes])
-        return "\n".join(lines) + "\n"
-
+    rendered_date = _fmt_rendered_date(rendered_at)
+    if gameday and rendered_date != gameday:
+        lines.append(f"_Rendered {rendered_date}, not {gameday} -- this game is not tonight's._")
     for _, game in monday_games.iterrows():
         lines.append(f"- {game['away_team']} @ {game['home_team']}, {game.get('gametime', '')} ET")
     lines.append("")
@@ -295,5 +331,6 @@ def build(season, week, team_id=None):
             )
 
     return render(
-        season, week, team_id, monday_games, margin, at_risk, avail_df, alternatives_by_player, FOOTER_NOTES
+        season, week, team_id, monday_games, margin, at_risk, avail_df, alternatives_by_player, FOOTER_NOTES,
+        window=weeks.week_window(season, week),
     )

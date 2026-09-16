@@ -21,15 +21,17 @@ or Inferred (deduced from how the code behaves, not published anywhere),
 per CLAUDE.md's sourcing discipline.
 """
 
+import time
+
 import pandas as pd
 
-from .. import config
+from .. import config, weeks
 from ..names import normalize_team
 from ..odds import projections as odds_projections
 from ..odds import store as odds_store
 from . import monday, pool, tuesday
 from .loaders import freshness, latest_export
-from .render import INSUFFICIENT_DATA, freshness_lines, num, table
+from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 
 _SETTLEMENT_TYPES = {"WAIVER", "FREEAGENT"}
 
@@ -300,8 +302,23 @@ FOOTER_NOTES = [
 ]
 
 
-def render(season, week, team_id, settle, order, blocks, totals, drop_list, footer_notes):
-    lines = [f"# Waiver wire and opening market -- {season} week {week}", ""]
+def render(
+    season, week, team_id, settle, order, blocks, totals, drop_list, footer_notes,
+    window=None, prev_window=None, rendered_at=None,
+):
+    """`window`/`prev_window` are `(start_et, end_et)` for `week`/`week -
+    1`, from `espn_ff.weeks.week_window` -- passed in rather than looked
+    up here so this stays a pure function over its fixtures, with no disk
+    access."""
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Waiver wire and opening market -- {season} week {week}"
+
+    covers = f"week {week}'s waiver window"
+    if prev_window:
+        covers += f"; settlements also span week {week - 1} ({weeks.format_window(*prev_window)})"
+
+    lines = header_lines(title, week, covers, window, rendered_at)
+    lines.append("")
 
     lines.append("## Freshness")
     lines.extend(freshness_lines(freshness(season=season)))
@@ -479,4 +496,8 @@ def build(season, week, team_id=None):
             "the position-fallback map -- the fallback path may be wrong for them specifically."
         )
 
-    return render(season, week, team_id, settle, order, blocks, totals, drop_list, footer_notes)
+    return render(
+        season, week, team_id, settle, order, blocks, totals, drop_list, footer_notes,
+        window=weeks.week_window(season, week),
+        prev_window=weeks.week_window(season, week - 1) if week - 1 >= 1 else None,
+    )

@@ -1,10 +1,14 @@
 # Week 1 in review -- 2026
 
+**Covers** week 1, the completed week this report reviews
+**Week 1** Tue 2026-09-08 03:00 - Tue 2026-09-15 03:00 ET
+**Rendered** Tue 2026-09-15 20:38 ET
+
 ## Freshness
-- sleeper: 2026-09-14 19:13:41
-- nflverse: 2026-09-15 04:46:47
-- espn: 2026-09-15 16:31:36
-- odds: never (STALE)
+- sleeper: 2026-09-14 15:13:41 ET
+- nflverse: 2026-09-15 00:46:47 ET
+- espn: 2026-09-15 12:31:36 ET
+- odds: 2026-09-15 18:25:03 ET
 
 ## Decisions due
 None binding today. This report seeds the shortlist for the 11:00 waiver-wire report.
@@ -43,4 +47,3 @@ _Per-slot gaps below are independent counterfactuals and do not add; for the one
 - Per-slot regret gaps are independent counterfactuals and do not add; see "points left on the table" for the one number that does.
 - A 0.0 in points does not distinguish played-and-scored-zero from a bye from inactive.
 - This league's waiver-processing night is recorded in no artifact here, so the IR-eligibility guidance above is stated as an assumption, not a confirmed rule.
-- The odds feed is stale as of this report's generation.

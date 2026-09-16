@@ -52,6 +52,16 @@ def resolve_scoring_period(scoring_periods, now_ms):
     return None
 
 
+def platform_settings_cache_path(season, league_id=config.LEAGUE_ID):
+    """Where `get_platform_settings`'s payload lives on disk -- the one
+    place that knows this, so nothing re-derives cache_key/cache_path for
+    this view a second way. `espn_ff/weeks.py` reads it with no client
+    instance and no network, via this same function."""
+    views = ["chui_default_platformsettings"]
+    key = cache.cache_key(season, league_id, views, {}, None)
+    return cache.cache_path(season, views, key)
+
+
 class EspnClient:
     def __init__(
         self, season=config.SEASON, league_id=config.LEAGUE_ID, refresh=False, refresh_weeks=None
@@ -156,9 +166,7 @@ class EspnClient:
         return data[0] if isinstance(data, list) else data
 
     def _platform_settings_cache_path(self):
-        views = ["chui_default_platformsettings"]
-        key = cache.cache_key(self.season, self.league_id, views, {}, None)
-        return cache.cache_path(self.season, views, key)
+        return platform_settings_cache_path(self.season, self.league_id)
 
     def current_scoring_period(self):
         """Resolve the live scoring period from the cached season calendar.
