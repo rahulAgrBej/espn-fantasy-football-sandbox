@@ -20,10 +20,13 @@ TEAMS = pd.DataFrame(
     }
 )
 
+# `slot` carries the literals `constants.slot()` emits, which is what the
+# roster-slots export actually contains. Slot 20 is **"Bench"**, not "BE" --
+# "BE" is the Sleeper/Yahoo convention and appears nowhere in ESPN's data.
 ROSTER_SLOTS = pd.DataFrame(
     {
         "slot_id": [0, 2, 4, 6, 16, 17, 20, 21],
-        "slot": ["QB", "RB", "WR", "TE", "D/ST", "K", "BE", "IR"],
+        "slot": ["QB", "RB", "WR", "TE", "D/ST", "K", "Bench", "IR"],
         "count": [1, 2, 2, 1, 1, 1, 6, 1],
     }
 )
@@ -42,13 +45,31 @@ def test_league_facts_name_the_reader_and_the_lineup_shape():
 
 
 def test_league_facts_separate_the_bench_from_the_starting_slots():
-    """A summary that treats BE or IR as a startable slot recommends an
-    illegal lineup, and nothing downstream would catch it."""
+    """A summary that treats Bench or IR as a startable slot recommends an
+    illegal lineup, and nothing downstream would catch it.
+
+    This failed in production against real data until 2026-09-16: the filter
+    matched "BE", the export says "Bench", so the six bench spots were
+    reported as part of the starting lineup and the bench line read
+    "Bench: 3x IR". The slot literals come from `constants` now, so the
+    filter and the data cannot disagree again.
+    """
     facts = prompt.league_facts(TEAMS, ROSTER_SLOTS, season=2026, league_id=1, team_id=5)
 
     starting_line = next(line for line in facts.splitlines() if line.startswith("Starting lineup:"))
-    assert "BE" not in starting_line and "IR" not in starting_line
-    assert "Bench: 6x BE, 1x IR." in facts
+    assert "Bench" not in starting_line and "IR" not in starting_line
+    assert "Bench: 6x Bench, 1x IR." in facts
+
+
+def test_the_bench_filter_uses_the_slot_names_espn_actually_emits():
+    """Pins the filter to `constants`, not to a literal retyped here. A
+    fixture and a filter that agree on a spelling the exporter never
+    produces will pass every test and be wrong on every real run."""
+    from espn_ff import constants
+
+    assert constants.LINEUP_SLOTS[20] == "Bench"
+    assert constants.LINEUP_SLOTS[21] == "IR"
+    assert set(ROSTER_SLOTS["slot"]) >= {"Bench", "IR"}
 
 
 @pytest.mark.parametrize("missing", ["teams", "slots", "both"])

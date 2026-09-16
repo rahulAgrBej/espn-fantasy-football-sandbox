@@ -22,6 +22,8 @@ table headers in the rendered reports and are defined nowhere under
 this section the model invents a definition for each one.
 """
 
+from .. import constants
+
 # Hard cap stated to the model and pinned by a test, so the two cannot
 # drift. `client.MAX_OUTPUT_TOKENS` is set generously against this.
 WORD_CAP = 220
@@ -193,9 +195,15 @@ def league_facts(teams_df, roster_slots_df, season, league_id, team_id):
     if roster_slots_df is None or roster_slots_df.empty:
         lines.append("Starting lineup: unavailable in this run (no roster-slots export on disk).")
     else:
-        starters = roster_slots_df[~roster_slots_df["slot"].isin(("BE", "IR"))]
+        # "Bench", not "BE". `constants.LINEUP_SLOTS[20]` is "Bench" and the
+        # roster-slots export carries that literal; "BE" is the
+        # Sleeper/Yahoo convention and matches nothing here. Filtering on it
+        # put the 6 bench spots in the starting lineup and left "Bench: 3x
+        # IR" -- two wrong facts, stated confidently, in section 1.
+        non_starting = (constants.LINEUP_SLOTS[20], constants.LINEUP_SLOTS[21])
+        starters = roster_slots_df[~roster_slots_df["slot"].isin(non_starting)]
         shape = ", ".join(f"{int(r['count'])}x {r['slot']}" for _, r in starters.iterrows())
-        bench = roster_slots_df[roster_slots_df["slot"].isin(("BE", "IR"))]
+        bench = roster_slots_df[roster_slots_df["slot"].isin(non_starting)]
         bench_shape = ", ".join(f"{int(r['count'])}x {r['slot']}" for _, r in bench.iterrows())
         lines.append(f"Starting lineup: {shape}.")
         if bench_shape:
