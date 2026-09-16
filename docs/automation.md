@@ -307,11 +307,14 @@ Every workflow restores its state from S3 and runs ESPN pulls with
 `--refresh` before it does anything else *(Documented —
 `.github/workflows/espn.yml:5-9`)*. A local clone does neither: its `data/`
 tree reflects whatever it last happened to fetch, which goes stale the
-moment a scheduled run lands elsewhere. That staleness is silent —
-`cmd_export` fetches `["mSettings", "mTeam", "mStandings"]` and
-`["mMatchupScore", "mTeam"]` with no TTL (`espn_ff/cli.py:175,180`), so
-`cache.read(path, ttl=None)` (`espn_ff/cache.py:47`) serves whatever was
-cached the first time, forever, with no error and no warning.
+moment a scheduled run lands elsewhere. `cmd_export`'s league-wide fetches
+(`mSettings/mTeam/mStandings`, `mMatchupScore/mTeam`, and the rest listed in
+`docs/data-sources.md`'s "Freshness mechanism") now carry a real 300-second
+TTL (`ttl_for(None, current)`, `espn_ff/cache.py:75`), so a *long-idle*
+local clone no longer serves an arbitrarily old snapshot forever — but a
+clone that ran even one command in the last 5 minutes still reads its own
+cache, and every other vendor's state (`sleeper`, `nflverse`, `odds`) has
+no such TTL at all and depends entirely on the S3 restore below.
 
 A local run is the debugging fallback, never the way a report or export
 gets made.
@@ -332,7 +335,8 @@ unlike `espn_ff/config.py`, which loads `.env` itself, sourcing here is not
 automatic. See `.env.example` for both variables.
 
 Then run `export --refresh` (never a bare `export`) before anything reads
-its output, for the same no-TTL reason above. And never commit an artifact
+its output — the 300s TTL above bounds the damage, but it doesn't guarantee
+freshness at the moment you actually need it. And never commit an artifact
 produced from unsynced local data over one a workflow already produced —
 if a local render and a bot render disagree, the bot render is the one that
 ran against fresh state.

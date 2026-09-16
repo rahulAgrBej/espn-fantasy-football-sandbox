@@ -54,22 +54,26 @@ session cookies from a logged-in browser; `kona_player_info` (via
 are undocumented. Retries with backoff on `429`/`5xx`, four attempts.
 
 **Freshness mechanism.** `cache.ttl_for` (`espn_ff/cache.py:75`) says a closed
-scoring period should be cached forever and the live week should get
-`LIVE_TTL = 300` seconds. *Inferred*, from reading `espn_ff/cli.py`: that TTL is
-only actually wired into the weekly-roster fetch (`mRoster`, backing
-`weekly-rosters.csv` and the `team` command) via `ttl_for(week, current)`. Every
-other view — `mTeam`/`mStandings` (`teams.csv`), `mMatchupScore` (`matchups.csv`),
-`mDraftDetail` (`draft.csv`), `mTransactions2` (`transactions.csv`), and
-`kona_player_info` (`player-pool.csv`) — is fetched with no `ttl` argument at all,
-which means `cache.read` skips its staleness check entirely and serves whatever
-is on disk forever, live week or not. In practice: a live matchup's score, an
-in-flight transaction, or a nudge in `percent_owned` will **not** update on its
-own once cached, even mid-week — only `--refresh` (or a first-time fetch) pulls a
-new copy. **Nothing about the ESPN layer expires on its own**; freshness is
-exactly whatever the last `pull`/`export` wrote. `.github/workflows/espn.yml`
-therefore passes `--refresh` on every slot, including the Sunday live-scoring
-runs — a scheduled pull without it would re-read the same cached
-`points_live`/`winner` all afternoon (see `docs/automation.md`).
+scoring period should be cached forever and anything else — the live week, or a
+view with no single week at all — should get `LIVE_TTL = 300` seconds
+(`ttl_for(scoring_period=None, ...)` returns `LIVE_TTL` unconditionally). Every
+`get_league`/`get_player_pool` call site in `cli.py` and `odds/jobs.py` now
+passes an explicit `ttl` — the weekly-roster fetch (`mRoster`, backing
+`weekly-rosters.csv` and the `team` command) via `ttl_for(week, current)`, and
+every league-wide view — `mTeam`/`mStandings` (`teams.csv`), `mMatchupScore`
+(`matchups.csv`), `mDraftDetail` (`draft.csv`), `mTransactions2`
+(`transactions.csv`), and `kona_player_info` (`player-pool.csv`) — via
+`ttl_for(None, current)` *(Documented — the fetch sites themselves)*. A closed
+week's own cache never expires either way; what changed is that a league-wide
+view can no longer be served indefinitely once it's more than 5 minutes stale.
+In practice: a live matchup's score, an in-flight transaction, or a nudge in
+`percent_owned` refreshes itself on the next call more than `LIVE_TTL` seconds
+after the last one, with no `--refresh` needed. `--refresh` still exists and is
+still what every scheduled workflow passes (`.github/workflows/espn.yml`,
+`docs/automation.md`) — it forces an immediate re-fetch regardless of TTL,
+which matters for Sunday's 30-minute live-scoring cadence (comfortably past 300
+seconds anyway, so this is now belt-and-suspenders there) and for anyone who
+wants guaranteed-fresh data sooner than the TTL would otherwise allow.
 
 The one exception is `current_scoring_period()` itself (`espn_ff/client.py`),
 which every `--week`-defaulting command depends on. Its underlying fetch
@@ -86,13 +90,15 @@ only once per `LIVE_TTL` (300s) window, so a boundary ESPN hasn't honoured yet
 doesn't trigger a refetch on every single call. A failed refetch warns and
 falls back to the stale calendar's answer rather than raising. Targeted re-pull
 for one suspect week is `--refresh-weeks` (e.g. `--refresh-weeks 3` or `1-4`),
-which bypasses the cache for week-scoped fetches only — the league-wide views
-above still need plain `--refresh`.
+which bypasses the cache for week-scoped fetches only — a league-wide view
+older than `LIVE_TTL` refetches on its own, but forcing it sooner still needs
+plain `--refresh`.
 
 ### `teams.csv` — `teams.teams_frame` (13 fields)
 
-Written by `export`, refetched only on `--refresh`; standings fields (`wins`,
-`losses`, `points_for`, …) reflect ESPN's own running total as of that fetch.
+Written by `export`; standings fields (`wins`, `losses`, `points_for`, …)
+reflect ESPN's own running total, refetched automatically once the cached
+copy is more than `LIVE_TTL` (300s) old, or immediately with `--refresh`.
 
 | Field | Meaning | Upstream release cadence | Our ingest |
 |---|---|---|---|
@@ -151,21 +157,22 @@ re-fetches them.
 
 ### `matchups.csv` — `matchups.matchups_frame` (16 fields)
 
-One row per (week, matchup, side). Fetched via `mMatchupScore`, **not** wired to
-`ttl_for` — see the freshness-mechanism note above. Once cached, a live
-matchup's score is frozen until you pass `--refresh`.
+One row per (week, matchup, side). Fetched via `mMatchupScore`, wired to
+`ttl_for(None, current)` — see the freshness-mechanism note above. Once
+cached, a live matchup's score refreshes on its own after `LIVE_TTL` (300s);
+`--refresh` still forces it sooner.
 
 | Field | Meaning | Upstream release cadence | Our ingest |
 |---|---|---|---|
 | `season` / `week` / `matchup_id` / `playoff_tier` / `side` | Identifiers | — | — |
 | `team_id` / `team_name` | Team on this side | — | — |
 | `points` | `points_live` while the week is open, else `points_final` (the safe field to read) | — | — |
-| `points_final` | `totalPoints`; **`0.0` while the week is in progress** — not yet a real number | Closes when the week does | Cache-forever after first fetch; needs `--refresh` mid-week |
-| `points_live` | `totalPointsLive`; the actual running score during a live week | Updates continuously server-side, undocumented cadence *(Inferred)* | Cache-forever after first fetch; needs `--refresh` to see a newer live number |
+| `points_final` | `totalPoints`; **`0.0` while the week is in progress** — not yet a real number | Closes when the week does | `LIVE_TTL` (300s); `--refresh` for sooner |
+| `points_live` | `totalPointsLive`; the actual running score during a live week | Updates continuously server-side, undocumented cadence *(Inferred)* | `LIVE_TTL` (300s); `--refresh` for sooner |
 | `projected` | ESPN's own week projection | — | — |
 | `opponent_id` / `opponent_name` / `opponent_points` | Mirror of the above for the other side | — | — |
-| `winner` | `HOME`/`AWAY`/`TIE`/**`UNDECIDED`** while the week is open — authoritative, not inferred from the two point totals | Closes when the week does | Cache-forever after first fetch; needs `--refresh` mid-week |
-| `result` | `W`/`L`/`T` derived from `winner`; `None` while `winner` is `UNDECIDED` | Closes when the week does | Cache-forever after first fetch; needs `--refresh` mid-week |
+| `winner` | `HOME`/`AWAY`/`TIE`/**`UNDECIDED`** while the week is open — authoritative, not inferred from the two point totals | Closes when the week does | `LIVE_TTL` (300s); `--refresh` for sooner |
+| `result` | `W`/`L`/`T` derived from `winner`; `None` while `winner` is `UNDECIDED` | Closes when the week does | `LIVE_TTL` (300s); `--refresh` for sooner |
 
 ### `draft.csv` — `draft.draft_frame` (15 fields)
 
@@ -187,9 +194,10 @@ Written once, on draft day; frozen after.
 
 One row per transaction *item* (a trade moving several players becomes several
 rows). Appends in near-real-time as managers act; existing rows never change,
-but — like matchups — the *fetch* itself is not wired to `ttl_for`, so a
-transaction that posted after your last `pull`/`export` won't appear until you
-refetch.
+and — like matchups — the *fetch* is wired to `ttl_for(None, current)`, so a
+transaction that posted after your last `pull`/`export` appears on its own
+once the cached copy is more than `LIVE_TTL` (300s) old, sooner with
+`--refresh`.
 
 | Field | Meaning | Upstream release cadence | Our ingest |
 |---|---|---|---|
@@ -207,8 +215,10 @@ refetch.
 
 ### `player-pool.csv` — `players.players_frame` (16 fields)
 
-Built from the public `kona_player_info` view. Same non-`ttl_for` caching as
-above: cached forever from first fetch, refreshed only via `--refresh`.
+Built from the public `kona_player_info` view, via `get_player_pool`, wired to
+`ttl_for(None, current)` like the other league-wide views above: refetches on
+its own once the cached copy is more than `LIVE_TTL` (300s) old, sooner with
+`--refresh`.
 
 | Field | Meaning | Upstream release cadence | Our ingest |
 |---|---|---|---|
@@ -216,7 +226,7 @@ above: cached forever from first fetch, refreshed only via `--refresh`.
 | `position` / `pro_team` | Resolved position and NFL team | — | — |
 | `active` / `injured` / `injury_status` | ESPN's own player-status fields as of the fetch | — | — |
 | `on_team_id` | Fantasy team that owns this player, if any | — | — |
-| `percent_owned` | League-wide rostered percentage | Moves continuously, vendor-side, undocumented cadence *(Inferred)*; **has no "final" state, unlike everything else in this file** | Cache-forever after first fetch; only as fresh as the last `--refresh` |
+| `percent_owned` | League-wide rostered percentage | Moves continuously, vendor-side, undocumented cadence *(Inferred)*; **has no "final" state, unlike everything else in this file** | `LIVE_TTL` (300s); only as fresh as the last fetch within that window |
 | `percent_started` | League-wide started percentage | Same as `percent_owned` | Same as `percent_owned` |
 | `eligible_slots` | Comma-joined list of slots this player is eligible for | — | — |
 | `season_points` / `season_projected` | Season-to-date actual/projected points (see the `stats[]` trap) | — | — |
@@ -585,14 +595,17 @@ codebase today.
 - **No cadence here has been re-measured against the automated schedule.** The
   Observed figures below were taken from manual runs; nothing has yet run a full
   NFL week unattended.
-- Only the weekly-roster ESPN fetch (`weekly-rosters.csv` / `team`) actually
-  applies `cache.ttl_for`'s live-week short TTL. `teams.csv`, `matchups.csv`,
-  `draft.csv`, `transactions.csv`, and `player-pool.csv` are all fetched without
-  a `ttl` argument, so once cached they're served forever — a live matchup score
-  or a fresh transaction won't appear until `--refresh` is passed, even mid-week.
-  (`current_scoring_period()` used to have this same cache-forever bug on its
-  own underlying fetch; it's now resolved from the on-disk season calendar
-  instead — see "Freshness mechanism" above.)
+- Every ESPN fetch site now applies `cache.ttl_for` — the weekly-roster fetch
+  via `ttl_for(week, current)`, and `teams.csv`, `matchups.csv`, `draft.csv`,
+  `transactions.csv`, and `player-pool.csv` via `ttl_for(None, current)` — so
+  none of them are served forever any more; `--refresh` remains for forcing an
+  immediate re-fetch sooner than `LIVE_TTL` (300s) would on its own. This
+  closes a real incident: a local `export` cached a pre-week-1 standings
+  snapshot and a pre-Monday-Night matchup schedule with no expiry, and every
+  local render since built on that stale snapshot until the underlying fetch
+  sites were fixed. (`current_scoring_period()` had this same cache-forever
+  bug on its own underlying fetch even earlier; it's resolved from the
+  on-disk season calendar instead — see "Freshness mechanism" above.)
 - Historical `depth_charts` snapshots are not retained — `store.load` always
   collapses to the latest `dt`, so there is currently no way to ask "what was
   the depth chart in week 3" after week 4 has landed.

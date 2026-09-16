@@ -2,11 +2,13 @@ name: espn
 
 # Weekly close-the-book pulls plus Sunday live scoring.
 #
-# --refresh is required on every slot, not optional. cmd_export fetches
-# ["mMatchupScore", "mTeam"] with no ttl, so matchups.csv -- and with it
-# points_live and winner -- is cached forever once written. Without
-# --refresh a Sunday run would keep reporting 0.0 / UNDECIDED for games
-# that already finished. See docs/data-sources.md's ESPN section.
+# --refresh is kept on every slot as belt-and-suspenders, not because it's
+# the only thing standing between this and stale data. cmd_export's
+# ["mMatchupScore", "mTeam"] fetch (matchups.csv -- points_live, winner) now
+# carries a real 300s ttl (ttl_for(None, current)), so it refreshes on its
+# own well within the 30-minute Sunday cadence below even without
+# --refresh. --refresh just forces it immediately rather than waiting up to
+# 300s. See docs/data-sources.md's ESPN section, "Freshness mechanism".
 # The clock lives in AWS, not here. EventBridge Scheduler dispatches Mon and
 # Tue 09:08 ET, and the Sunday live-scoring grid every 30 minutes from 13:08
 # ET through 00:38 ET Monday. Sunday in-progress scoring cannot be backfilled,
