@@ -645,6 +645,72 @@ could bound thinking explicitly rather than leaving it to the model's
 default. Adding an untested field to a working request was the worse trade
 once the cap was sized correctly.
 
+## The news layer's first live exercise, and what a green test suite missed
+
+The summary layer's lesson above is *run it for real before believing it*.
+The news layer was therefore exercised against the live API **before** its
+workflow reached the default branch, with 634 tests passing and a complete
+envelope demonstrably being written from mocked calls.
+
+Four defects survived that suite *(all Observed 2026-09-16)*. They are
+recorded together because they share a shape: every one of them is invisible
+to a test whose client is a stub, and three of the four produce output that
+looks completely correct.
+
+| # | Defect | How a mocked suite missed it |
+|---|---|---|
+| 1 | `responseFormat.text.mimeType` sent as `"application/json"` | A fake session accepts any value; only the real API knows it is an enum |
+| 2 | `NEWS_MAX_OUTPUT_TOKENS` at 8000 | A stub reports whatever usage it is told to; real thinking spend is unknowable offline |
+| 3 | `news.grounded` hardcoded `true` | The stub always returned grounding, so the field was never wrong in a test |
+| 4 | ~1 grounded call in 4 ran no search | Needs many real calls to see at all; one call proves nothing |
+
+**1 — the vendor's own example is wrong.** Detailed under "Roster news"
+above. The important property is that it failed with a **400** rather than
+being ignored: a silently-dropped schema would have produced plausible prose
+with no guarantee behind it and nothing to notice. The client test now
+builds its body from `news.response_format()` rather than a literal, so a
+fake session can no longer keep teaching a shape the live API refuses.
+
+**2 — the budget was sized from the wrong intuition.** The natural guess is
+that thinking scales with the work, so the 9-player starters call should
+cost more than the 6-player bench call. It is the other way round: 4,161
+against 6,875. The bench brief asks *has anything changed for each of
+these*, a harder judgment than *report the latest item*, and it produces a
+shorter answer while thinking longer. There is no rule to size this by, only
+headroom over what has been seen.
+
+**3 — the field that could not be wrong.** `news.grounded` was written as a
+literal `true`, which meant the one field a reader would check to tell
+sourced news from recall was the one field guaranteed to say yes. A live
+bench call returned four correct-looking items with no `groundingMetadata`
+behind them and the envelope called them grounded. This is the same class of
+error as the original `MAX_TOKENS` incident — an artifact asserting
+something it had not established — and the same fix applies: measure it,
+store what was measured, and let the reader decide.
+
+**4 — the prompt granted permission it did not mean to.** Covered under "The
+search does not always fire". Worth repeating as a general lesson, because
+it will recur the next time a group brief is written: **any licence to
+report nothing needs pairing with an instruction to look first.** Telling a
+model that "nothing changed" is a valid answer is also telling it that not
+checking is a valid route to that answer.
+
+What went right, and why this reads as a checklist rather than an incident:
+
+- **The one deliberately loud failure was the cheapest to fix.** Defect 1
+  cost minutes because it 400s. Defects 3 and 4 cost real investigation
+  because their output is indistinguishable from success.
+- **The all-or-nothing rule held.** Defect 2 would have refused whole news
+  blocks rather than storing truncated ones, exactly as the `finishReason !=
+  STOP` check is designed to.
+- **Nothing was in production.** The workflow change had not reached the
+  default branch, so `workflow_run` could not fire and no envelope written
+  under any of these defects ever reached the bucket.
+
+The residual risk is stated plainly in Known gaps: grounding is still not
+guaranteed, and the rate at which it silently fails has not been measured
+over a full week of real runs.
+
 ## Why it always exits 0
 
 `cmd_summarize` returns `EXIT_OK` for every failure it knows how to have: a
@@ -809,8 +875,11 @@ Four checks on that envelope, one per guarantee the shape exists for:
 
 1. `.news.players | length` equals the roster size for that week. Every
    player present, `found: false` where the search came up empty.
-2. `.news.groups.*.sources` is non-empty on every group that ran, and no
-   `headline` cites a URL the model typed rather than one the API returned.
+2. **`.news.grounded` is `true`**, and `.news.groups.*.sources` is non-empty
+   on every group that ran. A `false` here is not a crash and not a bug — it
+   is the layer correctly reporting that a search never fired and those
+   claims came from the model's own recall. Treat them accordingly, and see
+   "The search does not always fire" for how often to expect it.
 3. `.summary_markdown` still obeys the 220-word cap and still carries no
    outside knowledge. The two layers must not have bled into each other.
 4. `.news.search_query_count` against the projection above. Multiply by ~34
@@ -830,12 +899,31 @@ rollout still unexercised** — every `summary` run so far was dispatched by
 hand or by a hand-fired EventBridge event, so `workflow_run` has not yet
 fired once.
 
-What *is* Observed as of 2026-09-16: the command itself (runs `35051369201`
-writing both envelopes, `35051473872` and `35051530130` finding nothing to
-do and spending nothing), the append-only push, the run receipts under
-`logs/runs/summary/`, `report.sha256` matching the object in the bucket, and
-the whole AWS path — a hand-fired `dispatch.summary` event reached
-`SummaryRule`, the API destination and GitHub with an empty DLQ.
+What *is* Observed for the **summary layer** as of 2026-09-16: the command
+itself (runs `35051369201` writing both envelopes, `35051473872` and
+`35051530130` finding nothing to do and spending nothing), the append-only
+push, the run receipts under `logs/runs/summary/`, `report.sha256` matching
+the object in the bucket, and the whole AWS path — a hand-fired
+`dispatch.summary` event reached `SummaryRule`, the API destination and
+GitHub with an empty DLQ.
+
+What is Observed for the **news layer**, from local runs against the live
+API on 2026-09-16 (roughly 20 real grounded calls, before the workflow
+change reached the default branch):
+
+| Exercised | Result |
+|---|---|
+| Both request spellings | `tools: [{"google_search": {}}]` accepted; `responseFormat` accepted only with `mimeType: APPLICATION_JSON` |
+| A full two-layer envelope | `schema_version` 2, 15/15 rostered players, IR skipped with a reason, summary inside the word cap |
+| Per-group grounding | starters and bench both ground and cite; `sources` are API-supplied redirect URIs, never model-typed |
+| Search spend | 7–11 per report, ~10 typical |
+| Thinking spend | 4,161 (starters) and 6,875 (bench) against a 16,000 cap |
+| The ungrounded path | Seen repeatedly; retry, warning and `grounded: false` all behave as designed |
+| The bench brief fix | 4/4 grounded after, from roughly half before |
+
+**Not** yet exercised for either layer: `workflow_run` firing on its own,
+the news-only backfill against a real bucket object, and any run at all on
+a runner rather than a laptop.
 
 To exercise the failure path for real rather than in unit tests, point
 `GeminiClient`'s injectable `base` at an unreachable host: the run must exit
