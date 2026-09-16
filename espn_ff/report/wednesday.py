@@ -38,7 +38,7 @@ from .. import config, weeks
 from ..sleeper import signals as sleeper_signals
 from ..sleeper import snapshots as sleeper_snapshots
 from . import availability, monday, pool, tuesday
-from .loaders import espn_view_freshness, freshness, latest_export
+from .loaders import espn_export_warning, espn_view_freshness, freshness, latest_export
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 from .waivers import waiver_outcomes, waiver_read_is_settled, week_projection
 
@@ -573,6 +573,12 @@ def build(season, week, team_id=None):
     for name, (_, stale) in freshness(season=season).items():
         if stale:
             footer_notes.append(f"The {name} feed is stale as of this report's generation.")
+    export_warning = espn_export_warning()
+    if export_warning:
+        footer_notes.append(
+            f"The last ESPN export shrank -- {export_warning}. Waiver history below may be "
+            "incomplete through no fault of this week's data."
+        )
     unmatched = (
         signals_df[~signals_df["matched"]] if not signals_df.empty and "matched" in signals_df else pd.DataFrame()
     )

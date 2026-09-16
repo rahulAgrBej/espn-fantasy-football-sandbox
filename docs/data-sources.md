@@ -193,11 +193,24 @@ Written once, on draft day; frozen after.
 ### `transactions.csv` — `transactions.transactions_frame` (23 fields)
 
 One row per transaction *item* (a trade moving several players becomes several
-rows). Appends in near-real-time as managers act; existing rows never change,
-and — like matchups — the *fetch* is wired to `ttl_for(None, current)`, so a
+rows). Like matchups, the *fetch* is wired to `ttl_for(None, current)`, so a
 transaction that posted after your last `pull`/`export` appears on its own
 once the cached copy is more than `LIVE_TTL` (300s) old, sooner with
 `--refresh`.
+
+> **The response is not cumulative, and a row's absence is not deletion.**
+> *(Observed — 2026-09-15)* `mTransactions2`, called with no
+> `scoringPeriodId`, returned 214 rows all stamped `scoring_period = 1` at a
+> 04:42 ET pull and 2 rows stamped `scoring_period = 2` at 14:10 ET the same
+> day. An earlier version of this section claimed the log "appends in
+> near-real-time … existing rows never change" — both halves are false across
+> a scoring-period rollover. Rows *do* change (`is_pending` True → False and
+> `status` PENDING → EXECUTED/`FAILED_*` as a claim settles), and the
+> response drops prior periods entirely. `espn_ff/espn_store.py` therefore
+> merges every pull into a cumulative parquet keyed on
+> `(season, transaction_id, item_type, player_id)`; that store, not this CSV's
+> latest write, is the durable record. Whether an explicit `scoringPeriodId`
+> recovers a past period is **Inferred, untested**.
 
 | Field | Meaning | Upstream release cadence | Our ingest |
 |---|---|---|---|
@@ -652,8 +665,17 @@ codebase today.
   `probe` (or any other command) — there is no advance warning.
 - **No backfill is possible for the Odds API layer.** `/v4/historical/*` is
   paid-tier and blocked at the client, so this layer's history begins the day
-  the first job runs, with no pre-history, ever — unlike ESPN/Sleeper/nflverse,
-  which can all be re-pulled for a past date.
+  the first job runs, with no pre-history, ever — unlike Sleeper/nflverse,
+  which can be re-pulled for a past date.
+- **ESPN's transaction log is a second no-backfill surface**, and was wrongly
+  grouped with the re-pullable feeds above until 2026-09-16. `mTransactions2`
+  stops returning a scoring period's rows once that period rolls *(Observed —
+  2026-09-15)*, so a transaction not captured while its period was current is
+  gone. `espn_ff/espn_store.py`'s cumulative parquet is the only history this
+  project will have; it must be restored before every `export`, or the merge
+  runs against an empty store and republishes a truncated export. `cmd_export`
+  writes `data/espn/last_export.json` with `stale: true` when that happens,
+  and the reports read it.
 - A budget-aborted odds job leaves the prior snapshot in place, and a stale
   line looks identical to a fresh one on disk — read `captured_at` and
   `last_run.json.stale`, never the parquet file's mtime.

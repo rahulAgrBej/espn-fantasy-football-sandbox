@@ -9,15 +9,26 @@ name: espn
 # own well within the 30-minute Sunday cadence below even without
 # --refresh. --refresh just forces it immediately rather than waiting up to
 # 300s. See docs/data-sources.md's ESPN section, "Freshness mechanism".
-# The clock lives in AWS, not here. EventBridge Scheduler dispatches Mon and
-# Tue 09:08 ET, and the Sunday live-scoring grid every 30 minutes from 13:08
-# ET through 00:38 ET Monday. Sunday in-progress scoring cannot be backfilled,
-# so a dropped trigger is a permanent hole -- which is why GitHub's scheduler
-# is no longer trusted with it. See docs/aws-scheduling.md.
+# The clock lives in AWS, not here. This workflow's header is the only
+# in-repo record of a schedule that lives in EventBridge, so keep this list
+# complete -- an ESPN slot that exists nowhere in the repo is how the
+# 2026-09-16 waiver gap went unnoticed. Five rules dispatch this workflow:
 #
-# The Mon/Tue slots sit 30 minutes ahead of odds.yml's on purpose: the odds
-# jobs read the ESPN cache this workflow owns and must go second. Preserve
-# that gap if either side is ever retimed.
+#   espn-monday         Mon 09:08 ET
+#   espn-tuesday        Tue 09:08 ET
+#   espn-wednesday      Wed 09:08 ET   -- waiver settlements from Tue night
+#   espn-monday-night   Mon 00:08 and 00:38 ET
+#   espn-sunday-live    Sun 13:08 ET -> Mon 00:38 ET, every 30 minutes
+#
+# Sunday in-progress scoring cannot be backfilled, so a dropped trigger is a
+# permanent hole -- which is why GitHub's scheduler is no longer trusted with
+# it. See docs/aws-scheduling.md.
+#
+# The Mon/Tue/Wed slots sit 30 minutes ahead of odds.yml's and ~52 minutes
+# ahead of the report slots on purpose: the odds jobs read the ESPN cache
+# this workflow owns and must go second, and a report rendering before its
+# day's pull lands reads pre-settlement data. Preserve those gaps if either
+# side is ever retimed.
 on:
   workflow_dispatch:
 

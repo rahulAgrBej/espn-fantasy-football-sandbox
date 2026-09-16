@@ -12,9 +12,21 @@ name: report
 # just to S3 -- reports/<season>/week-NN/ is git-tracked and this job needs
 # contents: write to commit its own output.
 #
-# The clock lives in AWS. EventBridge Scheduler dispatches Monday 10:30 ET
-# and Tuesday 10:00/11:00 ET, after that day's ESPN/nflverse/odds exports,
-# all of which some report here reads. See docs/aws-scheduling.md.
+# The clock lives in AWS. EventBridge Scheduler dispatches:
+#
+#   report-monday           Mon 10:30 ET
+#   report-tuesday          Tue 10:00 ET
+#   report-tuesday-waivers  Tue 11:00 ET
+#   report-wednesday        Wed 10:00 ET
+#
+# each after that day's ESPN/nflverse/odds exports, all of which some report
+# here reads. That ordering is an assumption this workflow cannot enforce --
+# it never fetches, it only restores what S3 already has. On 2026-09-16
+# report-wednesday fired on time while espn-wednesday had not run at all, and
+# the report rendered pre-waiver data as fact. The reports themselves now
+# gate on their own inputs' freshness rather than trusting the slot order;
+# see espn_ff/report/waivers.py's waiver_read_is_settled.
+# See docs/aws-scheduling.md.
 on:
   workflow_dispatch:
     inputs:

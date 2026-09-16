@@ -116,3 +116,55 @@ def test_merged_frame_is_sorted_by_period_then_proposed_date(tmp_path):
     merged = espn_store.merge_transactions(pd.DataFrame(), rows)
     merged = espn_store.merge_transactions(merged, rows)
     assert list(merged["transaction_id"]) == ["a", "c", "b"]
+
+
+# ---- the shrink guard, surfaced through loaders ---------------------------
+
+def test_shrunken_export_marks_the_espn_feed_stale(tmp_path, monkeypatch):
+    """A truncated export is the failure mode the store exists to prevent;
+    if it happens anyway the reports must say so. Recency is not the issue --
+    the data can be minutes old and still be missing most of itself."""
+    import json
+    import time as _time
+
+    from espn_ff.report import loaders
+
+    season_dir = tmp_path / "raw" / "2026"
+    season_dir.mkdir(parents=True)
+    (season_dir / "mteam-mtransactions2-aaaa.meta.json").write_text(
+        json.dumps({"fetched_at": _time.time()})  # brand new
+    )
+    espn_dir = tmp_path / "espn"
+    espn_dir.mkdir()
+    (espn_dir / "last_export.json").write_text(json.dumps({
+        "stale": True, "reason": "merged transactions (2) are fewer than the prior export (214)",
+    }))
+
+    monkeypatch.setattr(loaders.config, "RAW_DIR", tmp_path / "raw")
+    monkeypatch.setattr(loaders.config, "ESPN_DIR", espn_dir)
+
+    _, stale = loaders._espn_freshness(season=2026)
+    assert stale is True
+    assert "fewer than the prior export" in loaders.espn_export_warning()
+
+
+def test_healthy_export_leaves_the_feed_fresh(tmp_path, monkeypatch):
+    import json
+    import time as _time
+
+    from espn_ff.report import loaders
+
+    season_dir = tmp_path / "raw" / "2026"
+    season_dir.mkdir(parents=True)
+    (season_dir / "mteam-mtransactions2-aaaa.meta.json").write_text(
+        json.dumps({"fetched_at": _time.time()})
+    )
+    espn_dir = tmp_path / "espn"
+    espn_dir.mkdir()
+    (espn_dir / "last_export.json").write_text(json.dumps({"stale": False, "reason": None}))
+
+    monkeypatch.setattr(loaders.config, "RAW_DIR", tmp_path / "raw")
+    monkeypatch.setattr(loaders.config, "ESPN_DIR", espn_dir)
+
+    assert loaders._espn_freshness(season=2026)[1] is False
+    assert loaders.espn_export_warning() is None

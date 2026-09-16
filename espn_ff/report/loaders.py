@@ -99,12 +99,33 @@ def espn_view_freshness(views, season=None):
     return max(fetched_ats) if fetched_ats else None
 
 
+def espn_export_warning():
+    """`data/espn/last_export.json`'s reason when the last export shrank, else
+    None. `cmd_export` writes it when the merged transaction frame comes out
+    smaller than the prior export -- the signature of a run whose cumulative
+    store was not restored, which is about to republish a truncated
+    `latest/out/transactions.csv`. Surfacing it here makes the guard visible
+    in a report rather than only in a run log."""
+    path = config.ESPN_DIR / "last_export.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data.get("reason") if data.get("stale") else None
+
+
 def _espn_freshness(season=None):
     """Feed-level freshness for the report header: when did *any* ESPN view
     last land. See `espn_view_freshness` for the per-view question, which is
-    what a correctness gate must ask instead."""
+    what a correctness gate must ask instead.
+
+    A shrunken last export also marks the feed stale: the data can be
+    minutes old and still be missing most of itself."""
     season = season or config.SEASON
     season_dir = config.RAW_DIR / str(season)
+    export_warning = espn_export_warning()
     if not season_dir.exists():
         return None, True
     fetched_ats = []
@@ -117,7 +138,8 @@ def _espn_freshness(season=None):
     if not fetched_ats:
         return None, True
     latest = max(fetched_ats)
-    return latest, (time.time() - latest) > ESPN_STALE_HOURS * 3600
+    aged_out = (time.time() - latest) > ESPN_STALE_HOURS * 3600
+    return latest, bool(aged_out or export_warning)
 
 
 def _odds_freshness():

@@ -273,6 +273,21 @@ top-3 same-slot free-agent shortlist), and who is newly available per
 this week's `pool.free_agents` anti-join. Pending rows are excluded and
 counted separately, the same convention Tuesday's waiver report uses.
 
+Two things that section gets right only because they were got wrong first,
+both *(Observed — 2026-09-16, this league's first waiver run ever captured
+on disk)*. **`status` is load-bearing**: ESPN records every team's attempt
+on a contested player — one `EXECUTED` row for the winner and a `FAILED_*`
+row for each loser, at the same processing timestamp — so filtering on
+`type`/`item_type` alone reported a player *we lost* as claimed by us, and
+showed one player claimed by two teams simultaneously. Only `EXECUTED`
+moved a player; `FAILED_*`/`CANCELED` rows are counted and excluded, and a
+row whose status cannot be read is counted separately again rather than
+assumed either way. And **the section gates on its own input's freshness**:
+it renders only when the `mTransactions2` payload was fetched *after* the
+most recent waiver-run boundary. A pre-settlement read renders insufficient
+data naming the actual fetch time — never zeros, which would be a
+misleading figure rather than a finding.
+
 **What to look out for.** A single Wednesday `DNP` is one-third of a
 trajectory, not a call, and `tier` is derived from the current snapshot
 alone so it will move as Thursday and Friday land. Read
@@ -573,25 +588,42 @@ key-to-function map, and was previously undocumented here.
   itself lives in `espn_ff/report/pool.py`, built for Monday's
   alternatives section and now also the basis for Tuesday's waiver
   report's add candidates.
-- **This league's waiver-processing night (Tuesday into Wednesday) is now
-  documented in prose, but no artifact evidences it.** `waivers.py:43-45`
-  records that 214/214 exported transactions to date are
-  `DRAFT`/`ROSTER-LINEUP`/`FREEAGENT`/`TRADE_PROPOSAL` — zero `WAIVER`-type
-  rows have ever been observed on disk. Separately, which `scoring_period`
-  ESPN stamps on a Tuesday-night claim is still **Inferred**, not Observed:
-  the league week boundary (Tue 03:00 ET → Tue 03:00 ET) implies a
-  Tuesday-night claim falls in the *new* week's window, but that is
-  deduction, not measurement. The first `WAIVER`-type row, or a
-  `FREEAGENT` row observed flipping `is_pending` True → False between a
-  Tuesday and the following Wednesday pull, would be the first on-disk
-  confirmation of both.
-- **Wednesday's waiver-outcomes section shares that same not-yet-Observed
-  premise** (no `WAIVER`-type row or `is_pending` flip has been Observed
-  yet), and separately, its "newly available" list is a render-time
-  snapshot of `pool.free_agents(week)`, not a guarantee — a listed player
-  can be claimed before the report is read, and this can't be
-  distinguished from "stays unclaimed" beyond the anti-join's current-week
-  state.
+- **~~This league's waiver-processing night is documented but unevidenced.~~
+  Closed 2026-09-16.** Both halves are now **Observed**: `WAIVER`-type rows
+  exist (6 in the first captured run), and ESPN stamped the
+  Tuesday-night-processed claims `scoring_period = 2` — the *new* week's,
+  exactly as the Tue 03:00 ET → Tue 03:00 ET boundary implied. The
+  `{week - 1, week}` window in `waivers.settlements()` and
+  `waiver_outcomes()` was built to straddle that uncertainty and is now
+  wider than strictly needed; it is kept because one run is one measurement.
+- **The ESPN transactions export is not cumulative, and its history is not
+  re-pullable.** *(Observed — 2026-09-15)* `mTransactions2`, called with no
+  `scoringPeriodId`, returned 214 rows all stamped `scoring_period = 1` at a
+  04:42 ET pull and 2 rows stamped `scoring_period = 2` at 14:10 ET the same
+  day. Because `cmd_export` overwrote the CSV wholesale, week 1 was lost
+  from `latest/out/` and from both `archive/out/transactions/` dailies. The
+  exact scoping rule ESPN applies is **Inferred**, never measured — whether
+  passing an explicit `scoringPeriodId` recovers a past period is untested.
+  `espn_ff/espn_store.py` now keeps a cumulative parquet so the loss cannot
+  recur, but it is an *observation log, not a mirror*: a transaction ESPN
+  legitimately voids is retained, and `last_seen_at` is the only way to tell
+  that apart from one still being served.
+- **"Newly available" is a render-time snapshot** of `pool.free_agents(week)`,
+  not a guarantee — a listed player can be claimed before the report is read,
+  and this cannot be distinguished from "stays unclaimed" beyond the
+  anti-join's current-week state.
+- **The waiver-run clock time is Inferred.** The *night* is Documented
+  (league setting, per the league manager); the 03:00 ET boundary
+  `waivers.WAIVER_RUN_ET_HOUR` compares against is a choice, not a measured
+  ESPN behaviour. The single Observed run processed at 07:02:58 ET, well
+  after it, so the boundary currently errs strict — it can only withhold a
+  section, never admit a pre-settlement read.
+- **A report cannot verify that its upstream collection job ran.**
+  `report.yml` only restores from S3; it never fetches. On 2026-09-16
+  `report-wednesday` fired on schedule while `espn-wednesday` had not run at
+  all, and nothing in the slot ordering surfaced that. The reports now gate
+  on their own inputs' `fetched_at` rather than trusting the schedule, but
+  the ordering itself is still unenforced.
 - **Gameday inactives are in no feed.** The last roughly 90 minutes
   before kickoff are invisible to this pipeline.
 - **No report is ever scored against what happened.** Nothing here
