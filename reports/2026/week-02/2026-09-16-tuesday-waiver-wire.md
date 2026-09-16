@@ -2,7 +2,7 @@
 
 **Covers** week 2's waiver window; settlements also span week 1 (Tue 2026-09-08 03:00 - Tue 2026-09-15 03:00 ET)
 **Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET
-**Rendered** Wed 2026-09-16 09:33 ET
+**Rendered** Wed 2026-09-16 09:35 ET
 
 ## Freshness
 - sleeper: 2026-09-16 08:11:31 ET
@@ -14,7 +14,7 @@
 Our waiver rank: 11 of 12.
 8 of 21 add candidates below project to clear their slot's bench floor.
 5 legal drop(s) exist; the pairings below are alternatives to one another beyond that count, not simultaneously-available moves.
-_Claim-deadline guidance: this league's waiver-processing night is recorded in no artifact here, so treat any processing-night assumption as unconfirmed._
+_Claim-deadline guidance: this league processes waivers tonight (Tuesday into Wednesday) -- submit or adjust claims before then; results land in tomorrow morning's ESPN pull._
 
 ## Waiver settlements
 _No `WAIVER`-type transaction has ever been observed in this league's export; rows below are `FREEAGENT` claims only._
@@ -155,7 +155,7 @@ _WR and RB/WR share eligible candidates -- this block may repeat the other's row
 | DK Metcalf | WR | 187.8 |
 
 ## What this report cannot see
-- This league's waiver-processing night is recorded in no artifact here, so the claim-deadline guidance above is an assumption, not a schedule.
+- This league processes waivers Tuesday night into Wednesday (Documented -- league setting, per the league manager). Claims submitted before tonight's run appear below as pending, not settled.
 - `percent_owned` has no final state -- it moves continuously vendor-side (Inferred) -- so it is a rough ownership signal, not a settled one.
 - `trending_add` is display-only context and never entered any score or sort here.
 - The free-agent pool is `player-pool.csv` anti-joined against all twelve teams' rosters, so "free agent" means unowned **and** inside ESPN's default ~1,041-player pool -- a player outside that pool never appears.
