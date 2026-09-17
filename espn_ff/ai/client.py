@@ -10,7 +10,13 @@ Deliberately `requests`-based rather than `google-genai`: the REST surface
 used here is a single POST, the four clients above already share one retry
 idiom, and a fifth that matches them is more consistent than pulling
 `google-auth`/`pydantic`/`websockets` into the dependency tree for one
-endpoint.
+endpoint. Re-evaluated 2026-09-17 against the SDK's GA release and the
+Interactions API -- both pass every hard parity criterion, but the SDK adds
+20 dependencies, breaks the retry-parity invariant `tests/test_ai_client.py`
+pins against `sleeper/client.py`, and requires mapping httpx exceptions onto
+`GeminiError` to preserve the exit-0 contract. See docs/gemini-transport.md
+for the full matrix, the live-spike evidence, and the triggers that would
+reverse this.
 
 The retry policy mirrors `sleeper/client.py` exactly -- MAX_ATTEMPTS=4,
 BACKOFF_BASE=1.5, the same RETRY_STATUS set -- rather than
