@@ -8,11 +8,12 @@ full spec this module implements.
 **What Sunday can actually read.** Odds `pre_lock` (10:38 ET) -- the only job
 permitted to draw the credit reserve down to zero, and the only one that
 writes both team_totals.parquet and player_props.parquet in a single run;
-Sleeper's daily slim snapshot (08:11 ET); nflverse's routine pull (09:23 ET).
-ESPN's last pull is still Wednesday's -- `espn-sunday-live` does not start
-until 13:08, after the lock -- so the lineup solved below is solved against a
-four-day-old weekly-rosters.csv, one day worse than the gap saturday.py
-already documents.
+Sleeper's daily slim snapshot (08:11 ET); nflverse's routine pull (09:23 ET);
+ESPN's `espn-daily` pull (09:08 ET), plus `cmd_report`'s own refresh at
+render time, so the lineup below is solved against this morning's roster.
+`espn-sunday-live` still does not start until 13:08, after the lock, but it
+no longer has a four-day gap in front of it -- before `espn-daily` existed
+this report read Wednesday's weekly-rosters.csv.
 
 **The one check the spec mandates.** A budget-aborted `pre_lock` writes a
 fresh `ran_at` over unchanged data, leaving Friday's `line_movement` lines on
@@ -44,7 +45,7 @@ from .. import config, weeks
 from ..odds import projections as odds_projections
 from ..odds import store as odds_store
 from . import availability, friday, monday, payload as payload_lib, saturday, schedule, thursday, tuesday, wednesday
-from .loaders import espn_export_warning, freshness, latest_export
+from .loaders import espn_export_warning, freshness, latest_export, roster_staleness_note
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 
 _PRE_LOCK_JOB = "pre_lock"
@@ -449,9 +450,13 @@ FOOTER_NOTES = [
     "Official inactives drop roughly 90 minutes before kickoff and appear in no feed this pipeline "
     "touches -- a report generated at 11:30 ET cannot see them, and nothing above substitutes for "
     "checking them yourself before kickoff.",
-    "ESPN last pulled Wednesday (`espn-wednesday`, 09:08 ET); `espn-sunday-live` does not start until "
-    "13:08, after the lock. Every roster, IR and lineup-slot move made Thursday through this morning "
-    "is invisible, and the lineup above is solved against Wednesday's weekly-rosters.csv.",
+    # The ESPN staleness note that used to sit here unconditionally is gone:
+    # `espn-daily` now pulls Sunday 09:08 ET and cmd_report refreshes again
+    # at 11:30, so the lineup below is solved against this morning's roster,
+    # not Wednesday's. `espn-sunday-live` still does not start until 13:08,
+    # but it no longer has a two-day gap in front of it.
+    # loaders.roster_staleness_note appends the note in build() if that
+    # refresh ever fails to land.
     "The undecided slots above are recomputed against this morning's data by the same "
     "`friday.recommended_lineup`/`friday.held_open_slots` this week's Friday report ran. Nothing "
     "persists Friday's own computation. The two agree whenever no input has moved since Friday; when "
@@ -1012,6 +1017,12 @@ def build(season, week, team_id=None):
     export_warning = espn_export_warning()
     if export_warning:
         footer_notes.append(f"The last ESPN export shrank -- {export_warning}.")
+    # Per-view, not the feed-level `freshness()` loop above: that one reads
+    # max(fetched_at) across every cached ESPN view, so a fresh player-pool
+    # fetch masks a day-old roster. See loaders.roster_read_is_current.
+    roster_note = roster_staleness_note(rendered_at, season=season, week=week)
+    if roster_note:
+        footer_notes.append(roster_note)
     if gate["insufficient"]:
         footer_notes.append(
             f"`pre_lock` could not be verified -- {gate['reason']}. Every market figure above is "

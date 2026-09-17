@@ -75,6 +75,27 @@ which matters for Sunday's 30-minute live-scoring cadence (comfortably past 300
 seconds anyway, so this is now belt-and-suspenders there) and for anyone who
 wants guaranteed-fresh data sooner than the TTL would otherwise allow.
 
+**The reports drive that mechanism themselves.** `cmd_report` runs an export
+before it builds *(Documented — `espn_ff/cli.py`'s
+`_refresh_espn_for_report`)*, deliberately without `--refresh` so `ttl_for`
+does the work: the live week's `mRoster` and every league-wide view are past
+`LIVE_TTL` and refetch, while closed weeks are served from cache. A report's
+ESPN read is therefore at most 300 seconds old on a healthy run, no matter
+when the last collection slot fired. This was not always true — reports used
+to render whatever `latest/out/` happened to hold, which on 2026-09-17 meant
+a Thursday report showing a player traded away the previous Wednesday
+afternoon *(Observed)*.
+
+Because that refresh can fail and must not cost the report,
+`report/loaders.py`'s `roster_read_is_current` asserts on the other side that
+it landed: it reads the `mRoster` sidecar's own `fetched_at` — narrowed to the
+displayed week, since `mRoster` is the only view here cached per scoring
+period — and appends a footer note when the payload predates the render by
+more than `ROSTER_MAX_AGE_SECONDS`. That bound is one hour and is
+**Inferred**: it encodes "this run's own refresh did not land", not a
+tolerance anyone measured, the same way `waivers.WAIVER_RUN_ET_HOUR` is a
+chosen boundary rather than an observed ESPN behaviour.
+
 The one exception is `current_scoring_period()` itself (`espn_ff/client.py`),
 which every `--week`-defaulting command depends on. Its underlying fetch
 (`get_platform_settings`, the `chui_default_platformsettings` view) also has no

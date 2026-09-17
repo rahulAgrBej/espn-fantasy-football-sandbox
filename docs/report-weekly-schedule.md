@@ -46,10 +46,10 @@ plus a margin.)*
 | Tuesday | 10:00 | `cron(0 10 ? * TUE *)` | Week in review | ESPN 09:08 | 52 min |
 | Tuesday | 11:00 | `cron(0 11 ? * TUE *)` | Waiver wire and opening market | ESPN 09:08, Odds `slate` 09:38 | 82 min |
 | Wednesday | 10:00 | `cron(0 10 ? * WED *)` | Availability watchlist | Sleeper 08:11, ESPN 09:08, nflverse 09:23 | 37 min |
-| Thursday | 11:00 | `cron(0 11 ? * THU *)` | Usage and market | nflverse `--force` 09:53, Odds `props` 10:08 | 52 min |
-| Friday | 11:00 | `cron(0 11 ? * FRI *)` | Lineup lock | Sleeper 08:11, Odds `line_movement` 10:08 | 52 min |
-| Saturday | 10:00 | `cron(0 10 ? * SAT *)` | Contingency check | Sleeper 08:11, nflverse 09:23 | 37 min |
-| Sunday | 11:30 | `cron(30 11 ? * SUN *)` | Pre-lock call | Sleeper 08:11, Odds `pre_lock` 10:38 | 52 min |
+| Thursday | 11:00 | `cron(0 11 ? * THU *)` | Usage and market | ESPN 09:08, nflverse `--force` 09:53, Odds `props` 10:08 | 52 min |
+| Friday | 11:00 | `cron(0 11 ? * FRI *)` | Lineup lock | Sleeper 08:11, ESPN 09:08, Odds `line_movement` 10:08 | 52 min |
+| Saturday | 10:00 | `cron(0 10 ? * SAT *)` | Contingency check | Sleeper 08:11, ESPN 09:08, nflverse 09:23 | 37 min |
+| Sunday | 11:30 | `cron(30 11 ? * SUN *)` | Pre-lock call | Sleeper 08:11, ESPN 09:08, Odds `pre_lock` 10:38 | 52 min |
 
 Monday's `Waits on` gains nflverse because `NflverseRoutineSchedule` is
 `cron(23 9,13,18 * * ? *)` — **daily**, not the Tue/Wed/Sat the collection
@@ -119,6 +119,37 @@ blind spots — any feed that came back stale, plus the standing gaps in
 the "Known gaps" section below. A report that silently omits a section
 because its input was missing is indistinguishable from one that found
 nothing worth saying.
+
+**The freshness header is a summary, not a gate.** It reports each *feed's*
+newest timestamp, which is the right thing for a header and the wrong thing
+to decide correctness on. ESPN's entry is `max(fetched_at)` across every
+cached view against a flat 24-hour threshold, so a player-pool fetch from
+minutes ago reports the feed fresh while the `mRoster` payload behind every
+roster table is a day old. That is not hypothetical: the 2026-09-17 Thursday
+report printed `espn: 2026-09-16 11:02:09 ET` unflagged — 23h59m, inside the
+window — and listed a player traded away the previous afternoon as still
+rostered *(Observed)*.
+
+Two per-view gates exist for that reason, and both follow the same shape —
+`(ok: bool, reason: str|None)` measured against a boundary rather than an
+age threshold:
+
+| Gate | Asks | Consumed as |
+|---|---|---|
+| `waivers.waiver_read_is_settled` | Was `mTransactions2` fetched *after* the waiver run it claims to report? | suppresses the waiver-outcomes section |
+| `loaders.roster_read_is_current` | Was `mRoster` fetched *for this render*? | a "what this report cannot see" footer note |
+
+They differ in consequence because they differ in blast radius.
+`weekly-rosters.csv` is the spine of all eight reports, so suppressing on a
+stale roster would blank the whole artifact; a footer note naming the
+payload's absolute timestamp and age is the proportionate answer. The
+transactions gate can suppress because one section depends on it and zeros
+from a pre-settlement read are a misleading figure, not a finding.
+
+Neither gate is a substitute for the data being current: `cmd_report`
+re-pulls ESPN's live views before it builds *(Documented — `espn_ff/cli.py`'s
+`_refresh_espn_for_report`)*, and the roster gate is what makes a *failed*
+refresh visible rather than silent.
 
 The rule that ties those together: **when an input is stale or missing,
 the section that depends on it renders "insufficient data", not a
@@ -430,10 +461,12 @@ make room for a weekend streaming add at D/ST or K, reusing
 ## Saturday — contingency check
 
 A diff against Friday, and deliberately little else. Saturday reads two
-feeds only, both daily: Sleeper (`sleeper-daily`, 08:11 ET) and nflverse
-(`nflverse-routine`, 09:23 ET). ESPN's last pull is still Wednesday's, so
-roster and lineup moves made Thursday through Saturday are invisible, and
-no odds job runs at all — `docs/odds-budget.md` has no Saturday slot
+feeds, all daily: Sleeper (`sleeper-daily`, 08:11 ET), nflverse
+(`nflverse-routine`, 09:23 ET) and ESPN (`espn-daily`, 09:08 ET) — plus
+`cmd_report`'s own ESPN refresh at render time, so the roster is this
+morning's. It did not use to be: ESPN was pulled Mon/Tue/Wed only, and
+roster and lineup moves made Thursday through Saturday were invisible here.
+No odds job runs at all — `docs/odds-budget.md` has no Saturday slot
 because there is no market event between Friday's `line_movement` and
 Sunday's `pre_lock`. The freshness header omits the `odds:` line entirely
 rather than showing a permanently-stale one, so the report never implies a
@@ -480,12 +513,12 @@ line rather than rendering an empty table.
 ## Sunday — pre-lock call
 
 The last report before the lock, and the only one whose value decays by the
-minute. Sunday reads three feeds: odds `pre_lock` (10:38 ET), Sleeper's
-daily slim snapshot (08:11 ET) and nflverse's routine pull (09:23 ET).
-ESPN's last pull is still Wednesday's — `espn-sunday-live` does not start
-until 13:08, after the lock — so the lineup this report solves is solved
-against a four-day-old `weekly-rosters.csv`, one day staler than Saturday's
-already is.
+minute. Sunday reads four feeds: odds `pre_lock` (10:38 ET), Sleeper's
+daily slim snapshot (08:11 ET), nflverse's routine pull (09:23 ET) and
+ESPN (`espn-daily`, 09:08 ET), refreshed again in-process at render time.
+`espn-sunday-live` still does not start until 13:08, after the lock, but it
+no longer has a four-day gap in front of it — before `espn-daily` existed
+the lineup here was solved against Wednesday's `weekly-rosters.csv`.
 
 **Verifying `pre_lock` is the report's own first section.**
 `pre_lock_read` is a reason-string ladder over `data/odds/last_run.json`,
@@ -722,12 +755,17 @@ key-to-function map, and was previously undocumented here.
   cannot prove it is answering the exact slots Friday printed, which is why
   the section is headed "still undecided as of this morning" rather than
   "what Friday held". Same class as the Saturday-replacements gap below.
-- **Sunday's ESPN view is Wednesday's, one day staler than Saturday's.**
-  `espn-sunday-live` starts at 13:08, after this report renders, so every
-  roster, IR and lineup-slot move since Wednesday 09:08 is invisible and
-  the lineup being locked is solved against that snapshot. A player added
-  on waivers Thursday cannot be recommended because he is not in
-  `week_rosters` at all.
+- **Sunday's roster is this render's, and the note fires when it isn't.**
+  This used to read "Sunday's ESPN view is Wednesday's": `espn-sunday-live`
+  starts at 13:08, after this report renders, so every roster, IR and
+  lineup-slot move since Wednesday 09:08 was invisible and a player added on
+  waivers Thursday could not be recommended at all. `espn-daily` (09:08) and
+  `cmd_report`'s in-process refresh closed that. What remains is the
+  refresh's own failure mode: when it does not land, the roster falls back
+  to whatever S3 held and `loaders.roster_read_is_current` says so in the
+  footer with the payload's absolute timestamp and age *(Documented —
+  `espn_ff/report/loaders.py`)*. The residual invisible window is moves made
+  after this render, not before it.
 - **Sunday's props carry the job's undecided boundary, not the report's.**
   `odds/jobs.py:pre_lock` filters `commence_after=now` at roughly 10:38;
   the report renders at 11:30. A game kicking off in that hour is in the
@@ -752,12 +790,13 @@ key-to-function map, and was previously undocumented here.
   `report_status` is unrecoverable by the time Saturday renders. "Today's
   official designations" is therefore an absolute read of today's nflverse
   data, explicitly labelled as such, never a diff against Friday's.
-- **Saturday's ESPN view is Wednesday's.** `espn-wednesday` (09:08 ET) is
-  the last ESPN pull before Saturday renders — there is no `espn-saturday`
-  slot — so any roster or lineup-slot move ESPN would show for Thursday
-  through Saturday (a waiver add, an IR designation, a lineup edit) is
-  invisible to this report. The tier diff and depth-chart moves still work
-  off that same, now-stale `weekly-rosters.csv` snapshot.
+- **Saturday's roster is this render's.** This used to read "Saturday's
+  ESPN view is Wednesday's": there was no `espn-saturday` slot, so any
+  roster or lineup-slot move ESPN would show for Thursday through Saturday
+  (a waiver add, an IR designation, a lineup edit) was invisible here. The
+  daily 09:08 pull plus `cmd_report`'s own refresh closed it; the same
+  footer gate described under Sunday covers the case where the refresh does
+  not land.
 - **Saturday's swap replacements are recomputed, not carried from
   Friday's artifact.** Nothing persists Friday's own `held_open_slots`/
   `recommended_lineup` computation for Saturday to read, so
@@ -866,12 +905,15 @@ key-to-function map, and was previously undocumented here.
   ESPN behaviour. The single Observed run processed at 07:02:58 ET, well
   after it, so the boundary currently errs strict — it can only withhold a
   section, never admit a pre-settlement read.
-- **A report cannot verify that its upstream collection job ran.**
-  `report.yml` only restores from S3; it never fetches. On 2026-09-16
-  `report-wednesday` fired on schedule while `espn-wednesday` had not run at
-  all, and nothing in the slot ordering surfaced that. The reports now gate
-  on their own inputs' `fetched_at` rather than trusting the schedule, but
-  the ordering itself is still unenforced.
+- **A report cannot verify that its upstream collection job ran — except
+  for ESPN.** On 2026-09-16 `report-wednesday` fired on schedule while
+  `espn-wednesday` had not run at all, and nothing in the slot ordering
+  surfaced that. ESPN is no longer exposed to this: `cmd_report` re-pulls
+  its live views before rendering, so the report no longer depends on that
+  slot having run. Sleeper, nflverse and odds still are — a report reads
+  them off disk and cannot re-fetch them. Every report gates on its own
+  inputs' `fetched_at` rather than trusting the schedule, but the ordering
+  itself remains unenforced for those three.
 - **Gameday inactives are in no feed.** The last roughly 90 minutes
   before kickoff are invisible to this pipeline.
 - **No report is ever scored against what happened.** Nothing here

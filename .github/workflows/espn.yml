@@ -12,23 +12,26 @@ name: espn
 # The clock lives in AWS, not here. This workflow's header is the only
 # in-repo record of a schedule that lives in EventBridge, so keep this list
 # complete -- an ESPN slot that exists nowhere in the repo is how the
-# 2026-09-16 waiver gap went unnoticed. Five rules dispatch this workflow:
+# 2026-09-16 waiver gap went unnoticed. Three rules dispatch this workflow:
 #
-#   espn-monday         Mon 09:08 ET
-#   espn-tuesday        Tue 09:08 ET
-#   espn-wednesday      Wed 09:08 ET   -- waiver settlements from Tue night
+#   espn-daily          09:08 ET every day
 #   espn-monday-night   Mon 00:08 and 00:38 ET
 #   espn-sunday-live    Sun 13:08 ET -> Mon 00:38 ET, every 30 minutes
+#
+# espn-daily replaced per-weekday Mon/Tue/Wed slots, which left Thursday
+# through Sunday morning with no ESPN read: every report from Thursday to
+# Sunday rendered against Wednesday 09:08's roster.
 #
 # Sunday in-progress scoring cannot be backfilled, so a dropped trigger is a
 # permanent hole -- which is why GitHub's scheduler is no longer trusted with
 # it. See docs/aws-scheduling.md.
 #
-# The Mon/Tue/Wed slots sit 30 minutes ahead of odds.yml's and ~52 minutes
-# ahead of the report slots on purpose: the odds jobs read the ESPN cache
-# this workflow owns and must go second, and a report rendering before its
-# day's pull lands reads pre-settlement data. Preserve those gaps if either
-# side is ever retimed.
+# The 09:08 slot sits 30 minutes ahead of odds.yml's Mon/Tue jobs and 52
+# minutes or more ahead of every report slot on purpose: the odds jobs read
+# the ESPN cache this workflow owns and must go second, and a report
+# rendering before its day's pull lands reads pre-settlement data. Preserve
+# those gaps if either side is ever retimed -- collapsing the three weekday
+# slots into one daily slot deliberately did not move the time.
 on:
   workflow_dispatch:
 

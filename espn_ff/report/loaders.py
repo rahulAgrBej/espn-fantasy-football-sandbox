@@ -19,6 +19,7 @@ import pandas as pd
 from .. import config
 from ..nflverse import store as nflverse_store
 from ..odds import store as odds_store
+from ..weeks import ET
 
 _DATE_PREFIX = re.compile(r"^(\d{2})-(\d{2})-(\d{4})-")
 
@@ -105,9 +106,19 @@ def nflverse_features_freshness(season=None):
     return max(fetched_ats) if fetched_ats else None
 
 
-def espn_view_freshness(views, season=None):
+def espn_view_freshness(views, season=None, scoring_period=None):
     """`fetched_at` for one specific set of ESPN views, or None when that
     view has never been fetched.
+
+    `scoring_period` narrows further, to the one cached payload fetched for
+    that week. It matters for `mRoster` and nothing else: every other view
+    here is fetched league-wide with no `scoringPeriodId` and so has exactly
+    one cache file, while mRoster has one per week. Without the narrowing,
+    the `max()` below answers "when did any week's roster last land", so a
+    `--refresh-weeks 1` refetch of a completed week would report the live
+    week's roster as current. Matched on the sidecar's recorded `url` rather
+    than by rebuilding the cache key, so this needs no league id and stays
+    correct under a non-default `--league-id`.
 
     `_espn_freshness` deliberately answers a *different* question -- "when
     did the ESPN feed last run at all" -- by taking the max across every
@@ -133,11 +144,94 @@ def espn_view_freshness(views, season=None):
     fetched_ats = []
     for meta_path in season_dir.glob(f"{slug}-*.meta.json"):
         try:
-            fetched_ats.append(json.loads(meta_path.read_text()).get("fetched_at"))
+            meta = json.loads(meta_path.read_text())
         except (json.JSONDecodeError, OSError):
             continue
+        if scoring_period is not None:
+            url = meta.get("url") or ""
+            if f"scoringPeriodId={scoring_period}" not in url:
+                continue
+        fetched_ats.append(meta.get("fetched_at"))
     fetched_ats = [f for f in fetched_ats if f is not None]
     return max(fetched_ats) if fetched_ats else None
+
+
+# The view tuple `cmd_export` fetches rosters with -- NOT `cmd_pull`'s
+# ["mRoster", "mTeam", "mMatchupScore"], which is a different cache key
+# entirely. weekly-rosters.csv is built from the export's fetch, so this is
+# the payload whose age actually answers "is the roster below current".
+_ROSTER_VIEWS = ["mRoster", "mTeam"]
+
+# How old the roster payload may be before a report stops calling it
+# current. **Inferred, not measured**: `cmd_report` refreshes mRoster
+# in-process immediately before building, so a healthy run's payload is
+# seconds old, and an hour is slack for a slow runner rather than a
+# tolerance anyone observed. Anything older means this run's own refresh did
+# not land.
+ROSTER_MAX_AGE_SECONDS = 3600
+
+
+def roster_read_is_current(rendered_at, season=None, week=None):
+    """Whether the `mRoster` payload behind `weekly-rosters.csv` was fetched
+    by (or just before) the run rendering at `rendered_at`.
+
+    `week` is the scoring period whose roster the report actually displays.
+    Pass it: mRoster is cached per week, so without it this answers "did any
+    week's roster land recently", which a refetch of a completed week can
+    satisfy while the displayed week's roster is a day old.
+
+    Returns (current: bool, reason: str|None) -- the same shape
+    `waivers.waiver_read_is_settled` returns, and for the same reason: the
+    question is not "is this data recent" in the abstract but "was it
+    fetched for this render".
+
+    Deliberately NOT `_espn_freshness`. That takes `max(fetched_at)` across
+    every cached view against a flat 24-hour threshold, so any recent fetch
+    of any view reports the roster as fresh. On 2026-09-17 the Thursday
+    report printed `espn: 2026-09-16 11:02 ET` unflagged -- inside the
+    24-hour window, and masking an `mRoster` payload that predated a
+    Wednesday-afternoon trade -- and listed the traded-away player as
+    rostered (Observed). `espn_view_freshness` asks the narrow question;
+    this wraps it in the boundary that makes it a gate.
+
+    The filename date on `weekly-rosters.csv` cannot substitute:
+    `scripts/s3_sync.sh`'s `cmd_restore_out` re-stamps every restored export
+    with today's date, so `latest_export` always sees a file that looks
+    like today's.
+    """
+    fetched_at = espn_view_freshness(_ROSTER_VIEWS, season=season, scoring_period=week)
+    if fetched_at is None:
+        return False, "the ESPN roster payload has never been fetched"
+    age = rendered_at - fetched_at
+    if age > ROSTER_MAX_AGE_SECONDS:
+        fetched = datetime.fromtimestamp(fetched_at, ET)
+        return False, (
+            f"the ESPN roster payload was fetched {fetched:%a %Y-%m-%d %H:%M ET}, "
+            f"{age / 3600:.1f} hours before this render -- any roster, trade or "
+            "lineup move since then is invisible here"
+        )
+    return True, None
+
+
+def roster_staleness_note(rendered_at, season=None, week=None):
+    """The "what this report cannot see" note for a roster that was not
+    re-pulled for this render, or None when it was. One accessor rather than
+    the (bool, reason) pair so each report builder appends one line, matching
+    how `espn_export_warning` is consumed.
+
+    The wording claims only what the threshold actually establishes. An
+    earlier draft opened "The roster above is not this morning's", which is
+    false in the very case this fires most often: the in-process refresh dies
+    at 11:00 but `espn-daily` landed at 09:08, so the payload is 1.9 hours
+    old -- past the bound, and still unambiguously this morning's. A gate
+    that prints a false claim is worse than no gate. `reason` carries the
+    absolute timestamp and the age, which is what lets a reader tell two
+    hours from twenty-six; do not add a second threshold to say it for them.
+    """
+    current, reason = roster_read_is_current(rendered_at, season=season, week=week)
+    if current:
+        return None
+    return f"The roster tables above were not re-pulled for this render -- {reason}."
 
 
 def espn_export_warning():

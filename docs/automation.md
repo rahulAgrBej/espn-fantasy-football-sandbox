@@ -37,7 +37,7 @@ Times are ET and hold year-round: the schedules are pinned to
 | `sleeper.yml` | 08:11 daily | `sleeper`, `status` | no |
 | `nflverse.yml` | 09:23 / 13:23 / 18:23 daily | `nflverse`, `features` | no |
 | `nflverse.yml` | Thu 09:53 | `nflverse --force`, `features` | no |
-| `espn.yml` | Mon 09:08, Tue 09:08, Wed 09:08 | `pull --refresh`, `export --refresh` | no |
+| `espn.yml` | 09:08 daily | `pull --refresh`, `export --refresh` | no |
 | `espn.yml` | Sun 13:08 – Mon 00:38, every 30 min | same | no |
 | `odds.yml` | five slots, see below | `odds <job>`, `projections` | **yes** |
 | `health.yml` | 07:04 / 19:04 daily, Sun 12:04 | `probe` | no |
@@ -162,12 +162,23 @@ needs to read but **pushes back only what it owns**:
 
 | Workflow | Restores | Owns |
 |---|---|---|
-| `espn.yml` | `raw` | `raw` |
+| `espn.yml` | `raw espn` | `raw`, `espn` |
 | `sleeper.yml` | `sleeper raw raw/sleeper` | `sleeper`, `raw/sleeper` |
 | `nflverse.yml` | `nflverse raw raw/nflverse` | `nflverse`, `raw/nflverse` |
 | `odds.yml` | `odds raw raw/odds` | `odds`, `raw/odds` |
-| `report.yml` | `raw sleeper nflverse raw/nflverse odds`, plus `latest/out/{matchups,weekly-rosters,player-pool,roster-slots,teams,transactions}` | none of `data/`; outside it, `reports/` and `reports-json/` — see below |
+| `report.yml` | `raw espn sleeper nflverse raw/nflverse odds`, plus `latest/out/{matchups,weekly-rosters,player-pool,roster-slots,teams,transactions}` | none of `data/`; outside it, `reports/` and `reports-json/` — see below |
 | `summary.yml` | nothing under `data/` at all, only `latest/out/{teams,roster-slots,weekly-rosters}` plus the `reports/` and `summaries/` read caches | `summaries/`, which is outside `data/` and append-only |
+
+`report.yml` restores `espn` without owning it, and that asymmetry is
+load-bearing rather than an oversight. `cmd_report` re-pulls ESPN before it
+renders, which runs an export, and `_export_transactions` merges into the
+cumulative store at `data/espn/transactions.parquet` before exporting the
+*merged* frame — so without that store restored the merge starts from empty
+and writes a truncated `transactions.csv` that every report then reads
+*(Documented — `espn_ff/espn_store.py`)*. Not pushing it back keeps
+`espn.yml` the sole `--delete` writer of `state/espn` and `state/raw`. See
+the known gap on the residual transaction window at the end of this
+document.
 
 `summary.yml` takes `report.yml`'s pattern one step further: it restores no
 `data/` subtree whatsoever and so is not an `ff-run` caller at all (that
@@ -407,6 +418,14 @@ clone that ran even one command in the last 5 minutes still reads its own
 cache, and every other vendor's state (`sleeper`, `nflverse`, `odds`) has
 no such TTL at all and depends entirely on the S3 restore below.
 
+`report` is the one partial exception, and only for ESPN. Since the
+2026-09-17 roster bug it re-pulls ESPN's live views itself before rendering
+*(Documented — `espn_ff/cli.py`'s `_refresh_espn_for_report`)*, so a local
+`report` reads a roster and transaction log at most `LIVE_TTL` old rather
+than whatever the clone last fetched. `--no-espn-refresh` opts out, for
+offline debugging. Nothing about the other three feeds changes, and a local
+`report` still restores nothing on its own.
+
 A local run is the debugging fallback, never the way a report or export
 gets made.
 
@@ -415,10 +434,14 @@ gets made.
 
 ```bash
 set -a; . .env; set +a
-./scripts/s3_sync.sh restore "raw sleeper nflverse raw/nflverse odds"
+./scripts/s3_sync.sh restore "raw espn sleeper nflverse raw/nflverse odds"
 ./scripts/s3_sync.sh restore-out matchups weekly-rosters player-pool \
     roster-slots teams transactions
 ```
+
+`espn` is in that list because `report`'s own refresh runs an export, and an
+export that cannot see the cumulative transaction store publishes a
+truncated one.
 
 `.env` is gitignored and `s3_sync.sh` reads `S3_BUCKET`/`AWS_PROFILE`
 straight from the environment, so it must be exported into the shell —
@@ -446,6 +469,25 @@ spend credits for a value that already exists.
   window between expiry and discovery to at most ~12 hours; it cannot
   prevent it, and a cookie that dies mid-Sunday still costs that afternoon's
   live scoring.
+- **A report's own ESPN pull is not durable.** `cmd_report` refreshes ESPN
+  before rendering, but `report.yml` pushes nothing back, so any transaction
+  that lands between `espn-daily` (09:08 ET) and the report slot is seen by
+  that pull and then discarded with the runner. It is normally re-seen and
+  stored by the next 09:08 pull — `mTransactions2` keeps returning the
+  current scoring period's rows — so the only way to lose one permanently is
+  for the period to roll (Tue ~03:00 ET) before that next pull, which
+  narrows the exposure to a Monday-morning window *(Inferred — from
+  `weeks.py`'s boundary and `espn_store.py`'s measurement of what
+  `mTransactions2` stops returning)*. Closing it would mean adding `espn` to
+  `report.yml`'s `push-paths`, making it a second `--delete` writer on a
+  subtree `espn.yml` owns; deferred deliberately.
+- **`ROSTER_MAX_AGE_SECONDS` is chosen, not measured.** The one-hour bound
+  in `espn_ff/report/loaders.py` encodes "this run's own refresh did not
+  land", not an observed tolerance **(Inferred)**. A report whose refresh
+  fails shortly after a healthy `espn-daily` prints no note and is right not
+  to; a report whose refresh fails *and* whose cookies expired days ago
+  prints one. Between those, the footer note names the payload's absolute
+  timestamp and age so a reader can judge for themselves.
 - **No cadence in this document has been Observed yet.** Every schedule
   here is as-configured, not as-measured — nothing has run on a real NFL
   week at the time of writing. Treat the timings as intent until a few

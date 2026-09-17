@@ -394,6 +394,9 @@ def test_build_swap_row_names_tier_rule_and_never_recommends_ir(monkeypatch):
         "sleeper": (None, True), "nflverse": (None, True), "espn": (None, True), "odds": (None, True),
     })
     monkeypatch.setattr(friday, "espn_export_warning", lambda: None)
+    # Reads the real data/raw/ otherwise, so this build() would say
+    # something different on a developer machine than on CI.
+    monkeypatch.setattr(friday, "roster_staleness_note", lambda *a, **k: None)
 
     result = friday.build(2026, week=3, team_id=5)
     text = result.markdown

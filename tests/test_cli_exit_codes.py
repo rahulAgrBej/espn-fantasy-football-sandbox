@@ -104,6 +104,25 @@ def _report_stub(markdown):
     return stub
 
 
+# Captured before the autouse stub below replaces it, so the tests that
+# exercise the refresh can put the real one back by name rather than by
+# monkeypatch.undo() -- which would also drop whatever else the test had
+# already patched.
+_REAL_REFRESH = cli._refresh_espn_for_report
+
+
+@pytest.fixture(autouse=True)
+def no_espn_refresh(monkeypatch):
+    """`cmd_report` re-pulls ESPN's live views before it builds, which means
+    a bare `cli.main(["report", ...])` in a test reaches the network and
+    rewrites data/out/. Autouse rather than a flag on each call site so a
+    report test added later is protected without anyone remembering to.
+
+    The refresh itself is exercised deliberately, further down, against a
+    stubbed `cmd_export`."""
+    monkeypatch.setattr(cli, "_refresh_espn_for_report", lambda client, args: None)
+
+
 def test_report_day_tuesday_dispatches_to_the_tuesday_builder(monkeypatch, tmp_path):
     """report --day tuesday used to hit cmd_report's "not implemented yet"
     guard, since REPORT_DAYS only ever held "monday". Pins that REPORTS
@@ -298,6 +317,80 @@ def test_report_writes_the_json_twin_beside_the_markdown(monkeypatch, tmp_path):
     assert written[0].stem == md.stem
     # Nothing JSON-shaped may appear under the --delete-mirrored tree.
     assert not list((tmp_path / "reports").rglob("*.json"))
+
+
+# ---- report: the ESPN refresh must never cost us the report ---------------
+#
+# cmd_report fetches before it builds so the roster it reads is this run's,
+# not the last collection slot's (the 2026-09-17 incident: a Wednesday-
+# afternoon trade, still absent from Thursday's 11:01 ET report). That put a
+# network call in front of the one workflow that writes back to the repo --
+# and report.yml's commit step carries no `if: always()`, so any non-zero
+# return here loses the report entirely. A failed refresh must degrade, never
+# abort.
+
+
+def _refreshing_report(monkeypatch, tmp_path, exc):
+    """Run `report` for real -- refresh included -- with `cmd_export` raising."""
+    def boom(client, args):
+        raise exc
+
+    monkeypatch.setattr(cli, "_refresh_espn_for_report", _REAL_REFRESH)
+    monkeypatch.setattr(cli, "cmd_export", boom)
+    monkeypatch.setitem(
+        cli.REPORTS, "tuesday", (_report_stub("stub\n"), "tuesday", "week-in-review")
+    )
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+    return cli.main(["report", "--day", "tuesday", "--week", "2"])
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        EspnError("503 from ESPN after 4 attempts"),
+        requests.ConnectionError("connection reset"),
+    ],
+)
+def test_report_still_renders_when_the_espn_refresh_fails(monkeypatch, tmp_path, exc):
+    assert _refreshing_report(monkeypatch, tmp_path, exc) == cli.EXIT_OK
+    assert len(list(tmp_path.rglob("*-tuesday-week-in-review.md"))) == 1
+    assert len(list(tmp_path.rglob("*-tuesday-week-in-review.json"))) == 1
+
+
+def test_expired_cookies_during_a_report_refresh_do_not_become_exit_auth(monkeypatch, tmp_path):
+    """The one deliberate hole in main()'s except-chain. PrivateLeagueError
+    normally means EXIT_AUTH, because cookies are the one failure a person
+    must act on -- but raised *inside a report's refresh* it must not fail
+    the run, or an expired cookie costs us every report until someone
+    notices. health.yml's probe and espn.yml still surface it as EXIT_AUTH,
+    and the report itself says the roster could not be refreshed via
+    loaders.roster_read_is_current."""
+    code = _refreshing_report(monkeypatch, tmp_path, PrivateLeagueError("401 from ESPN"))
+    assert code == cli.EXIT_OK
+    assert code != cli.EXIT_AUTH
+
+
+def test_the_failed_refresh_is_announced_not_swallowed(monkeypatch, tmp_path, capsys):
+    """Degrading quietly is how the 2026-09-16 waiver gap went unnoticed."""
+    _refreshing_report(monkeypatch, tmp_path, EspnError("503 from ESPN"))
+    assert "::warning::ESPN refresh failed" in capsys.readouterr().err
+
+
+def test_no_espn_refresh_skips_the_fetch_entirely(monkeypatch, tmp_path):
+    """The debugging opt-out must not merely tolerate a failing export -- it
+    must not call it at all."""
+    calls = []
+    monkeypatch.setattr(cli, "_refresh_espn_for_report", _REAL_REFRESH)
+    monkeypatch.setattr(cli, "cmd_export", lambda client, args: calls.append(1))
+    monkeypatch.setitem(
+        cli.REPORTS, "tuesday", (_report_stub("stub\n"), "tuesday", "week-in-review")
+    )
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+
+    assert cli.main(
+        ["report", "--day", "tuesday", "--week", "2", "--no-espn-refresh"]
+    ) == cli.EXIT_OK
+    assert calls == []
 
 
 def test_report_json_embeds_the_markdown_verbatim(monkeypatch, tmp_path):

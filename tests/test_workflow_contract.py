@@ -82,6 +82,94 @@ def test_scheduler_yaml_has_a_summary_backstop_per_report_schedule():
     assert _summary_schedule_names_in_scheduler_yaml() == set(cli.REPORTS)
 
 
+def _espn_morning_schedules():
+    """(name, cron) for every ESPN schedule that is not one of the two
+    evening/live blocks -- i.e. the daily collection slot every report
+    depends on."""
+    text = SCHEDULER_YAML.read_text()
+    pairs = re.findall(
+        r"^\s*Name:\s*(espn-[a-z-]+)\s*$.*?^\s*ScheduleExpression:\s*(cron\([^)]*\))\s*$",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    return [(n, c) for n, c in pairs if n not in ("espn-sunday-live", "espn-monday-night")]
+
+
+def test_espn_is_pulled_every_morning_not_only_on_three_weekdays():
+    """The 2026-09-17 bug, as a contract.
+
+    ESPN used to be pulled on Mon/Tue/Wed only, so the Thursday, Friday,
+    Saturday and Sunday reports each rendered against Wednesday 09:08's
+    weekly-rosters.csv -- and the Thursday report listed a player traded
+    away the previous afternoon as still rostered (Observed). Re-splitting
+    this back into per-weekday slots would silently reopen that gap for
+    whichever days someone forgot.
+    """
+    assert _espn_morning_schedules() == [("espn-daily", "cron(8 9 * * ? *)")]
+
+
+def test_every_report_schedule_is_dispatched_after_the_days_espn_pull():
+    """The 52-minute gap docs/aws-scheduling.md calls load-bearing, as a
+    contract. cmd_report refreshes ESPN for itself, so this is a backstop
+    rather than the correctness guarantee -- but a report slot moved ahead
+    of the pull would mean a failed refresh degrades to yesterday's roster
+    instead of this morning's."""
+    text = SCHEDULER_YAML.read_text()
+    (_, espn_cron), = _espn_morning_schedules()
+    espn_minute, espn_hour = re.match(r"cron\((\d+) (\d+) ", espn_cron).groups()
+    espn_at = int(espn_hour) * 60 + int(espn_minute)
+
+    report_crons = re.findall(
+        r"^\s*Name:\s*report-[a-z-]+\s*$.*?^\s*ScheduleExpression:\s*cron\((\d+) (\d+) ",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert report_crons, "no report-* schedules found in scheduler.yaml"
+    for minute, hour in report_crons:
+        assert int(hour) * 60 + int(minute) >= espn_at + 52
+
+
+def test_report_yml_restores_the_cumulative_transaction_store():
+    """cmd_report's ESPN refresh runs an export, and _export_transactions
+    merges into data/espn/transactions.parquet before exporting the merged
+    frame. Without `espn` restored the merge starts from empty and publishes
+    a truncated transactions.csv -- the exact failure espn_ff/espn_store.py
+    exists to prevent, reintroduced by the fix meant to close a different
+    one."""
+    match = re.search(r'state-paths:\s*"([^"]*)"', REPORT_YML.read_text())
+    assert match, "report.yml: no `state-paths:` found"
+    assert "espn" in match.group(1).split()
+
+
+def test_report_yml_never_disables_its_own_espn_refresh():
+    """`--no-espn-refresh` is the debugging path. Passing it from the
+    scheduled workflow would restore exactly the behaviour this whole change
+    removed -- rendering whatever S3 last held -- and nothing else would
+    notice, because a report built from restored data looks identical."""
+    assert "--no-espn-refresh" not in REPORT_YML.read_text()
+
+
+def test_espn_yml_header_lists_every_espn_schedule():
+    """espn.yml's header states its own invariant: "keep this list complete
+    -- an ESPN slot that exists nowhere in the repo is how the 2026-09-16
+    waiver gap went unnoticed". Nothing enforced it until now."""
+    espn_yml = (WORKFLOWS / "espn.yml").read_text()
+    names = set(re.findall(r"^\s*Name:\s*(espn-[a-z-]+)\s*$", SCHEDULER_YAML.read_text(), re.MULTILINE))
+    assert names, "no espn-* schedules found in scheduler.yaml"
+    for name in names:
+        assert name in espn_yml, f"{name} is scheduled in AWS but named nowhere in espn.yml's header"
+
+
+def test_report_yml_still_owns_and_archives_nothing():
+    """The refresh added a writer's behaviour to a reader's job. It must not
+    have added a writer's *ownership*: espn.yml stays the sole pusher of
+    state/raw and state/espn (its --delete mirror depends on that), and a
+    read-only render must never re-stamp latest/out/ with its own export."""
+    text = REPORT_YML.read_text()
+    assert re.search(r'push-paths:\s*""', text)
+    assert re.search(r'archive:\s*"false"', text)
+
+
 def test_summary_yml_watches_report_yml_by_its_actual_name():
     """The trigger names a workflow, not a file. If report.yml is ever
     renamed, this is the only thing that notices."""

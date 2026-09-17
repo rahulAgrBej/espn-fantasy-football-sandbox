@@ -30,13 +30,22 @@ name: report
 #   report-saturday         Sat 10:00 ET
 #   report-sunday           Sun 11:30 ET
 #
-# each after that day's ESPN/nflverse/odds exports, all of which some report
-# here reads. That ordering is an assumption this workflow cannot enforce --
-# it never fetches, it only restores what S3 already has. On 2026-09-16
-# report-wednesday fired on time while espn-wednesday had not run at all, and
-# the report rendered pre-waiver data as fact. The reports themselves now
-# gate on their own inputs' freshness rather than trusting the slot order;
-# see espn_ff/report/waivers.py's waiver_read_is_settled.
+# each after that day's nflverse/odds exports and after espn-daily's 09:08
+# ET pull, all of which some report here reads.
+#
+# That ordering is no longer what makes the ESPN half correct. `cmd_report`
+# refreshes ESPN's live views in-process before it builds, so the roster and
+# transaction log a report reads are this run's, not the last slot's. It has
+# to be: on 2026-09-16 report-wednesday fired on time while espn-wednesday
+# had not run at all and the report rendered pre-waiver data as fact, and on
+# 2026-09-17 the Thursday report listed a player traded away the previous
+# afternoon -- a slot ordering cannot fix the second one at all, because a
+# trade at 10:00 beats an 09:08 pull no matter how the slots are arranged.
+#
+# The nflverse/odds halves are still ordering-dependent, and every report
+# still gates on its own inputs' freshness rather than trusting the slot
+# order -- see espn_ff/report/waivers.py's waiver_read_is_settled and
+# espn_ff/report/loaders.py's roster_read_is_current.
 # See docs/aws-scheduling.md.
 on:
   workflow_dispatch:
@@ -85,6 +94,20 @@ jobs:
       # restore-out-datasets, and tuesday-waivers additionally reads
       # data/odds/ via state-paths' `odds` subtree.
       #
+      # `espn` is restored but never pushed, and it is not optional.
+      # cmd_report's own ESPN refresh runs an export, and
+      # cli.py's _export_transactions merges the pull into the cumulative
+      # store at data/espn/transactions.parquet before exporting the MERGED
+      # frame. Without that store on disk the merge starts from empty and
+      # writes a truncated transactions.csv that every report then reads --
+      # exactly the failure espn_ff/espn_store.py exists to prevent. Not
+      # pushing it back keeps espn.yml the sole writer of state/espn and
+      # state/raw, so its --delete mirror stays safe; nothing is lost,
+      # because mTransactions2 keeps returning the current scoring period's
+      # rows and the next espn-daily run re-sees and durably stores anything
+      # a report run pulled first, well before the Tue 03:00 ET rollover
+      # that drops them.
+      #
       # Restoring the union unconditionally (rather than per-day) is
       # deliberate: a missing dataset does not fail the run, it degrades the
       # report while still exiting 0 -- so a per-day list is a silent-failure
@@ -94,7 +117,7 @@ jobs:
       - uses: ./.github/actions/ff-run
         with:
           command: "report --day ${{ steps.pick.outputs.day }}"
-          state-paths: "raw sleeper nflverse raw/nflverse odds"
+          state-paths: "raw espn sleeper nflverse raw/nflverse odds"
           restore-out-datasets: "matchups weekly-rosters player-pool roster-slots teams transactions"
           push-paths: ""
           # This job produces no data/out/ export -- it only restores them.

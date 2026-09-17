@@ -8,11 +8,13 @@ Friday, and its correct output on a quiet week is "nothing moved." See
 docs/report-weekly-schedule.md's "Saturday -- contingency check" section for
 the full spec this module implements.
 
-**What Saturday can actually read.** Sleeper (`sleeper-daily`, daily) and
-nflverse (`nflverse-routine`, daily) both run Saturday; ESPN's last pull was
-Wednesday, so roster and lineup moves made Thursday through Saturday are
-invisible; no odds job runs Saturday at all, and this report must not imply
-one did.
+**What Saturday can actually read.** Sleeper (`sleeper-daily`, daily),
+nflverse (`nflverse-routine`, daily) and ESPN (`espn-daily`, 09:08 ET) all
+run Saturday, and `cmd_report` re-pulls ESPN's live views again at render
+time, so the roster below is this morning's. It did not use to be: ESPN was
+pulled Mon/Tue/Wed only, and every roster or lineup move made Thursday
+through Saturday was invisible here. No odds job runs Saturday at all, and
+this report must not imply one did.
 
 **The baseline comes from Sleeper snapshots only.** `data/sleeper/slim/`
 keeps 10 daily snapshots, so Friday's row for every player is on disk
@@ -36,7 +38,7 @@ import pandas as pd
 from .. import config, weeks
 from ..sleeper import signals as sleeper_signals
 from . import availability, monday, payload as payload_lib, schedule, tuesday, wednesday
-from .loaders import espn_export_warning, freshness, latest_export
+from .loaders import espn_export_warning, freshness, latest_export, roster_staleness_note
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, table
 
 # A module-local severity ranking, used only to decide whether a tier move
@@ -253,8 +255,11 @@ FOOTER_NOTES = [
     "nflverse publishes no history and its injuries parquet is overwritten in place by every pull -- "
     "Friday's official designation cannot be recovered, so only Sleeper's own movement is truly diffed "
     "above; \"Today's official designations\" is today's absolute nflverse read, not a diff against Friday.",
-    "ESPN last pulled Wednesday (`espn-wednesday`) -- roster and lineup changes made Thursday through "
-    "Saturday are invisible to this report.",
+    # The ESPN staleness note that used to sit here unconditionally is now
+    # conditional and computed: `espn-daily` pulls every morning and
+    # cmd_report refreshes again at render time, so a stale roster is an
+    # exception to report rather than the standing state of a Saturday.
+    # loaders.roster_staleness_note appends it in build() when it is true.
     "No odds job runs Saturday. Nothing here reflects market movement since Friday's `line_movement` "
     "capture.",
     "Replacements above are recomputed against today's data, not carried from Friday's lineup-lock "
@@ -609,6 +614,12 @@ def build(season, week, team_id=None):
     export_warning = espn_export_warning()
     if export_warning:
         footer_notes.append(f"The last ESPN export shrank -- {export_warning}.")
+    # Per-view, not the feed-level `freshness()` loop above: that one reads
+    # max(fetched_at) across every cached ESPN view, so a fresh player-pool
+    # fetch masks a day-old roster. See loaders.roster_read_is_current.
+    roster_note = roster_staleness_note(rendered_at, season=season, week=week)
+    if roster_note:
+        footer_notes.append(roster_note)
     if gate["insufficient"]:
         footer_notes.append(f"The tier-change diff could not be read -- {gate['reason']}.")
     if unmatched_names:

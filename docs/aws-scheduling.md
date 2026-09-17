@@ -92,9 +92,7 @@ one of the two day fields.
 | `health-evening` | `cron(4 19 * * ? *)` | 19:04 daily | — |
 | `health-sunday` | `cron(4 12 ? * SUN *)` | Sun 12:04 | — |
 | `sleeper-daily` | `cron(11 8 * * ? *)` | 08:11 daily | — |
-| `espn-monday` | `cron(8 9 ? * MON *)` | Mon 09:08 | — |
-| `espn-tuesday` | `cron(8 9 ? * TUE *)` | Tue 09:08 | — |
-| `espn-wednesday` | `cron(8 9 ? * WED *)` | Wed 09:08 | — |
+| `espn-daily` | `cron(8 9 * * ? *)` | 09:08 daily | — |
 | `espn-sunday-live` | `cron(8,38 13-23 ? * SUN *)` | Sun 13:08–23:38 | — |
 | `espn-monday-night` | `cron(8,38 0 ? * MON *)` | Mon 00:08, 00:38 | — |
 | `nflverse-routine` | `cron(23 9,13,18 * * ? *)` | 09:23 / 13:23 / 18:23 | `force=false` |
@@ -165,12 +163,19 @@ hour, with identical coverage — 24 fires from Sun 13:08 through Mon 00:38.
    `report-tuesday-waivers` at `:00`(11), additionally waits on odds `slate`
    `:38` — an 82-minute margin, the tightest in the report family and the
    only one whose upstream feed is metered (see the next gap). Wednesday
-   carries the same shape as Monday: `espn-wednesday` `:08` and nflverse's
-   routine `:23` both feed `report-wednesday` `:00`(10) — the same ordering
-   argument applies, since `report.yml` reads a cache `espn.yml` owns and
-   so must go second. The binding margin stays nflverse's 37 minutes
-   (`:23` → `:00`(10)) rather than tightening to ESPN's own 52-minute gap,
-   since nflverse is the later of the two slots.
+   carries the same shape as Monday: `espn-daily` `:08` and nflverse's
+   routine `:23` both feed `report-wednesday` `:00`(10). The binding margin
+   stays nflverse's 37 minutes (`:23` → `:00`(10)) rather than tightening to
+   ESPN's own 52-minute gap, since nflverse is the later of the two slots.
+
+   **The ESPN half of every gap in this item is now a margin, not a
+   dependency** (Documented — `espn_ff/cli.py`'s `_refresh_espn_for_report`).
+   `cmd_report` re-pulls ESPN's live views before it builds, so a missed or
+   late `espn-daily` costs a report freshness it immediately re-earns rather
+   than correctness. Preserve the gaps anyway: they are what makes a *failed*
+   in-process refresh degrade to this morning's roster rather than
+   yesterday's. The nflverse and odds halves are unchanged — those feeds are
+   read off disk and a report cannot re-fetch them.
 4. **`odds` never auto-retries** — see below. `report-tuesday-waivers` is the
    first report that reads `odds`' output, which sharpens what that gap
    means downstream: a missed or budget-aborted `slate` doesn't just leave

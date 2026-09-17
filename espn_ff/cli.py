@@ -550,11 +550,55 @@ def cmd_credits(client, args):
     return 0
 
 
+def _refresh_espn_for_report(client, args):
+    """Re-pull ESPN's live views and re-export before a report renders.
+    Returns None on success, or a reason string when the refresh could not
+    complete. **Never raises.**
+
+    This exists because the reports read `data/out/` CSVs, not ESPN, and
+    nothing else guarantees those CSVs are current. On 2026-09-17 the
+    Thursday report listed a player traded away the previous afternoon: the
+    last ESPN pull before it was `espn-wednesday` at 09:08 ET, and
+    report.yml only restores what S3 already holds (Observed). A slot
+    ordering cannot fix that -- a trade at 10:00 still beats an 09:08 pull
+    -- so the report fetches for itself.
+
+    No `--refresh`: `cache.ttl_for` already gives the live week and every
+    league-wide view a 300s TTL while completed weeks are cached forever, so
+    a plain export refetches exactly what can have changed and serves weeks
+    1..n-1 from the restored cache. Forcing the cache open would re-fetch
+    every completed week's immutable roster on every report run.
+
+    Swallowing every failure -- `PrivateLeagueError` included -- is
+    deliberate. A report that cannot reach ESPN must still render from disk
+    and exit 0: report.yml's commit step carries no `if: always()`, so a
+    non-zero return here loses the report entirely, which is strictly worse
+    than a stale one that says it is stale. Expired cookies still surface as
+    EXIT_AUTH from `health.yml`'s probe and from espn.yml, which are the
+    jobs that exist to alert on them. `report/loaders.py`'s
+    `roster_read_is_current` is what turns a failure here into a visible
+    note in the rendered report.
+    """
+    try:
+        cmd_export(client, args)
+        return None
+    except Exception as exc:
+        # The bare except is the point, not laziness: the contract above is
+        # "never raises", and a narrow tuple does not deliver it. cmd_export
+        # writes eight CSVs and an atomic parquet, so OSError (full disk,
+        # read-only mount) and pandas' own parse errors reach here alongside
+        # EspnError and requests' transport failures -- and every one of them
+        # must cost the roster's freshness, never the report itself. The
+        # reason names the exception type, so a genuinely unexpected failure
+        # stays legible in the run log rather than reading like ESPN was down.
+        return f"{type(exc).__name__}: {exc}".splitlines()[0]
+
+
 def cmd_report(client, args):
-    """Render one of docs/report-weekly-schedule.md's reports from data
-    already on disk. No network beyond what `--week`'s default fallback
-    needs. Any day not yet in REPORTS exits cleanly rather than writing an
-    empty file.
+    """Render one of docs/report-weekly-schedule.md's reports, refreshing
+    ESPN's live views first so the roster and transaction log it reads are
+    this run's, not the last collection slot's. Any day not yet in REPORTS
+    exits cleanly rather than writing an empty file.
 
     Two artifacts per run, from one `build_fn` call:
 
@@ -576,6 +620,18 @@ def cmd_report(client, args):
     if args.day not in REPORTS:
         print(f"report --day {args.day}: not implemented yet -- only {sorted(REPORTS)} is", file=sys.stderr)
         return 1
+
+    # Before `week` resolves, so a scoring-period rollover mid-refresh is
+    # picked up by current_scoring_period() rather than missed by a week
+    # number read from a pre-refresh calendar.
+    if not args.no_espn_refresh:
+        reason = _refresh_espn_for_report(client, args)
+        if reason:
+            print(
+                f"::warning::ESPN refresh failed before the report -- {reason}. "
+                "Rendering from data/out/ as restored; the report will say so.",
+                file=sys.stderr,
+            )
 
     build_fn, day_label, slug = REPORTS[args.day]
     season = args.season
@@ -775,6 +831,13 @@ def main(argv=None):
         "scripts/s3_sync.sh sync-summaries). Deliberately not --summaries-dir: that tree "
         "holds the full history and this one holds only what this run produced, which is "
         "what keeps the push append-only.",
+    )
+    ap.add_argument(
+        "--no-espn-refresh", action="store_true",
+        help="report: render from data/out/ as restored instead of re-pulling ESPN's "
+        "live views first. The debugging path -- a scheduled run must never pass it, "
+        "or the report renders whatever S3 last held, which is the staleness the "
+        "refresh exists to close.",
     )
     ap.add_argument(
         "--no-news", action="store_true",

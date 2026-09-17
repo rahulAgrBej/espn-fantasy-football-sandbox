@@ -71,7 +71,7 @@ aws iam update-assume-role-policy --role-name espn-ff-github-actions \
 
 ## The scheduler stack
 
-`scheduler.yaml` holds everything that fires the workflows: 26 EventBridge
+`scheduler.yaml` holds everything that fires the workflows: 31 EventBridge
 schedules, the `ff-dispatch` bus, one rule per workflow, the API destination
 and connection that reach GitHub, a dead-letter queue and an alarm. It creates
 its own two IAM roles, so `CAPABILITY_NAMED_IAM` is required.

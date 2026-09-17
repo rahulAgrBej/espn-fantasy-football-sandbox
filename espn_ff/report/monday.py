@@ -17,7 +17,7 @@ import pandas as pd
 from .. import config, weeks
 from . import availability, pool, schedule
 from . import payload as payload_lib
-from .loaders import freshness, latest_export
+from .loaders import freshness, latest_export, roster_staleness_note
 from .render import freshness_lines, header_lines
 
 INSUFFICIENT_DATA = "insufficient data"
@@ -490,14 +490,27 @@ def build(season, week, team_id=None):
                 starter, our_bench, free_agents_df, pool_df, allowed_slots, monday_teams
             )
 
-    args = (
-        season, week, team_id, monday_games, margin, at_risk, avail_df,
-        alternatives_by_player, FOOTER_NOTES,
-    )
     # `rendered_at` is pinned here rather than left to each emitter's own
     # time.time() default -- two calls would stamp the markdown and the JSON
-    # that embeds it with different clock reads on every single run.
-    kwargs = {"window": weeks.week_window(season, week), "rendered_at": time.time()}
+    # that embeds it with different clock reads on every single run. It is
+    # also what the roster gate below measures the payload's age against.
+    rendered_at = time.time()
+
+    # FOOTER_NOTES is copied rather than passed through: this report's notes
+    # are no longer purely static. Per-view, not feed-level -- `freshness()`
+    # reads max(fetched_at) across every cached ESPN view, so a fresh
+    # player-pool fetch masks a day-old roster. See
+    # loaders.roster_read_is_current.
+    footer_notes = list(FOOTER_NOTES)
+    roster_note = roster_staleness_note(rendered_at, season=season, week=week)
+    if roster_note:
+        footer_notes.append(roster_note)
+
+    args = (
+        season, week, team_id, monday_games, margin, at_risk, avail_df,
+        alternatives_by_player, footer_notes,
+    )
+    kwargs = {"window": weeks.week_window(season, week), "rendered_at": rendered_at}
     header, sections = payload(*args, **kwargs)
     return payload_lib.RenderedReport(
         render(*args, **kwargs), {"header": header, "sections": sections}

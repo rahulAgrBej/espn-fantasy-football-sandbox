@@ -23,7 +23,7 @@ from .. import config, weeks
 from ..odds import projections as odds_projections
 from ..odds import store as odds_store
 from . import availability, loaders, monday, payload as payload_lib, pool, tuesday, waivers, wednesday
-from .loaders import espn_export_warning, freshness, latest_export
+from .loaders import espn_export_warning, freshness, latest_export, roster_staleness_note
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 
 # Chosen, not fitted -- see FOOTER_NOTES. No report in this repo is ever
@@ -775,6 +775,12 @@ def build(season, week, team_id=None):
     export_warning = espn_export_warning()
     if export_warning:
         footer_notes.append(f"The last ESPN export shrank -- {export_warning}.")
+    # Per-view, not the feed-level `freshness()` loop above: that one reads
+    # max(fetched_at) across every cached ESPN view, so a fresh player-pool
+    # fetch masks a day-old roster. See loaders.roster_read_is_current.
+    roster_note = roster_staleness_note(rendered_at, season=season, week=week)
+    if roster_note:
+        footer_notes.append(roster_note)
     if movement["insufficient"]:
         footer_notes.append(f"Line movement could not be read -- {movement['reason']}.")
     if not recommended["insufficient"]:

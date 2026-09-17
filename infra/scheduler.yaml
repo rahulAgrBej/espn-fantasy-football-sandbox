@@ -581,63 +581,34 @@ Resources:
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn
 
-  EspnMondaySchedule:
+  # One daily slot, not one per weekday. It replaced espn-monday /
+  # espn-tuesday / espn-wednesday, which left Thursday through Sunday
+  # morning with no ESPN read at all: the Thu/Fri/Sat/Sun reports all
+  # rendered against Wednesday 09:08's weekly-rosters.csv, and on 2026-09-17
+  # the Thursday report listed a player traded away the previous afternoon
+  # as still rostered (Observed).
+  #
+  # The time does not move, so every ordering gap docs/aws-scheduling.md
+  # calls load-bearing survives: espn :08 still precedes odds :38 on Mon and
+  # Tue by 30 minutes, and every report slot by 52 minutes or more. The
+  # per-day rationale the three retired schedules carried in their
+  # Descriptions is unchanged and still true -- Monday closes the weekend,
+  # Tuesday catches pending claims, Wednesday catches Tuesday night's waiver
+  # settlements -- it is just no longer the reason the slot exists.
+  #
+  # This is a backstop, not the correctness guarantee. `cmd_report`
+  # refreshes ESPN's live views in-process before it renders, because a slot
+  # ordering cannot help a trade made at 10:00 against an 09:08 pull. See
+  # espn_ff/cli.py's _refresh_espn_for_report.
+  EspnDailySchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
-      Name: espn-monday
+      Name: espn-daily
       GroupName: !Ref ScheduleGroup
       State: !Ref EspnScheduleState
-      ScheduleExpression: cron(8 9 ? * MON *)
+      ScheduleExpression: cron(8 9 * * ? *)
       ScheduleExpressionTimezone: America/New_York
-      Description: Mon 09:08 ET -- final scores, weekend transactions
-      FlexibleTimeWindow:
-        Mode: "OFF"
-      Target:
-        Arn: !GetAtt DispatchBus.Arn
-        RoleArn: !GetAtt SchedulerExecutionRole.Arn
-        Input: "{}"
-        EventBridgeParameters:
-          Source: ff.scheduler
-          DetailType: dispatch.espn
-        RetryPolicy:
-          MaximumRetryAttempts: 5
-          MaximumEventAgeInSeconds: 3600
-        DeadLetterConfig:
-          Arn: !GetAtt DispatchDlq.Arn
-
-  EspnTuesdaySchedule:
-    Type: AWS::Scheduler::Schedule
-    Properties:
-      Name: espn-tuesday
-      GroupName: !Ref ScheduleGroup
-      State: !Ref EspnScheduleState
-      ScheduleExpression: cron(8 9 ? * TUE *)
-      ScheduleExpressionTimezone: America/New_York
-      Description: Tue 09:08 ET -- settled week, pending waiver claims
-      FlexibleTimeWindow:
-        Mode: "OFF"
-      Target:
-        Arn: !GetAtt DispatchBus.Arn
-        RoleArn: !GetAtt SchedulerExecutionRole.Arn
-        Input: "{}"
-        EventBridgeParameters:
-          Source: ff.scheduler
-          DetailType: dispatch.espn
-        RetryPolicy:
-          MaximumRetryAttempts: 5
-          MaximumEventAgeInSeconds: 3600
-        DeadLetterConfig:
-          Arn: !GetAtt DispatchDlq.Arn
-
-  EspnWednesdaySchedule:
-    Type: AWS::Scheduler::Schedule
-    Properties:
-      Name: espn-wednesday
-      GroupName: !Ref ScheduleGroup
-      State: !Ref EspnScheduleState
-      ScheduleExpression: cron(8 9 ? * WED *)
-      ScheduleExpressionTimezone: America/New_York
-      Description: Wed 09:08 ET -- waiver settlements from Tuesday night's run
+      Description: 09:08 ET daily -- rosters and transactions ahead of the day's report
       FlexibleTimeWindow:
         Mode: "OFF"
       Target:
@@ -879,9 +850,13 @@ Resources:
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn
 
-  # 82 minutes after espn-monday (09:08) and 67 after nflverse-routine's
+  # 82 minutes after espn-daily (09:08) and 67 after nflverse-routine's
   # 09:23 slot -- both feeds this report reads, and nflverse's is the
-  # tighter margin. Preserve the gap if either side is ever retimed.
+  # tighter margin. Preserve the nflverse gap if either side is ever
+  # retimed. The espn one is now a margin rather than a dependency:
+  # cmd_report re-pulls ESPN's live views itself before rendering, so a
+  # missed espn-daily costs this report freshness it re-earns, not
+  # correctness. See espn_ff/cli.py's _refresh_espn_for_report.
   ReportMondaySchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
@@ -906,9 +881,11 @@ Resources:
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn
 
-  # 52 minutes after espn-tuesday's 09:08 ET slot, the only feed this
-  # report reads at review time. Preserve the gap if either side is ever
-  # retimed.
+  # 52 minutes after espn-daily's 09:08 ET slot, the only feed this report
+  # reads at review time -- and, since cmd_report re-pulls ESPN itself, a
+  # margin rather than a correctness dependency. Preserve it anyway: it is
+  # what keeps a failed in-process refresh degrading to this morning's
+  # roster rather than yesterday's.
   ReportTuesdaySchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
@@ -933,8 +910,9 @@ Resources:
         DeadLetterConfig:
           Arn: !GetAtt DispatchDlq.Arn
 
-  # 82 minutes after odds-slate's 09:38 ET slot and 112 after espn-tuesday's
-  # 09:08 -- both feeds this report reads, and odds is the tighter margin.
+  # 82 minutes after odds-slate's 09:38 ET slot and 112 after espn-daily's
+  # 09:08 -- both feeds this report reads, and odds is the tighter margin
+  # (and the only one of the two this report cannot re-fetch for itself).
   # Preserve the gap if either side is ever retimed. It is also the first
   # report whose input is metered: a missed or budget-aborted slate leaves
   # the opening-market section reading "insufficient data" while this run

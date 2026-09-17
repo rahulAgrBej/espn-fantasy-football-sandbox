@@ -30,7 +30,7 @@ from ..names import normalize_team
 from ..odds import projections as odds_projections
 from ..odds import store as odds_store
 from . import monday, payload as payload_lib, pool, tuesday
-from .loaders import freshness, latest_export
+from .loaders import freshness, latest_export, roster_staleness_note
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 
 _SETTLEMENT_TYPES = {"WAIVER", "FREEAGENT"}
@@ -894,6 +894,12 @@ def build(season, week, team_id=None):
     for name, (_, stale) in freshness(season=season).items():
         if stale:
             footer_notes.append(f"The {name} feed is stale as of this report's generation.")
+    # Per-view, not the feed-level `freshness()` loop above: that one reads
+    # max(fetched_at) across every cached ESPN view, so a fresh player-pool
+    # fetch masks a day-old roster. See loaders.roster_read_is_current.
+    roster_note = roster_staleness_note(rendered_at, season=season, week=week)
+    if roster_note:
+        footer_notes.append(roster_note)
     if totals["insufficient"]:
         footer_notes.append(
             f"Opening-market tempering could not be applied to add candidates -- {totals['reason']}."
