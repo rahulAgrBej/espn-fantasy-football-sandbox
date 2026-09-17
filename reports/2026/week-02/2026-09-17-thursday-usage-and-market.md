@@ -2,12 +2,12 @@
 
 **Covers** week 2's Thursday-night start/sit; canonical usage below reviews week 1
 **Week 2** Tue 2026-09-15 03:00 - Tue 2026-09-22 03:00 ET
-**Rendered** Thu 2026-09-17 11:01 ET
+**Rendered** Thu 2026-09-17 12:54 ET
 
 ## Freshness
 - sleeper: 2026-09-17 08:11:32 ET
-- nflverse: 2026-09-17 09:54:07 ET
-- espn: 2026-09-16 11:02:09 ET
+- nflverse: 2026-09-17 12:53:37 ET
+- espn: 2026-09-17 12:54:58 ET
 - odds: 2026-09-15 18:42:00 ET
 
 ## Decisions due
@@ -34,7 +34,7 @@ No rostered player is on tonight's two teams.
 | Cam Skattebo | RB | 0.61 | -- | -- | -- | 0 | 0.0 | 0.0 | 0.0 | 0.0 |
 | RJ Harvey | RB | 0.51 | -- | -- | -- | 4 | 0.148 | -0.239 | 0.055 | 0.154 |
 | RJ Harvey | RB | 0.51 | -- | -- | -- | 4 | 0.148 | -0.239 | 0.055 | 0.154 |
-| De'Zhaun Stribling | WR | 0.32 | -- | -- | -- | 0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| Caleb Douglas | WR | 0.91 | -- | -- | -- | 7 | 0.259 | 0.314 | 0.609 | 0.137 |
 
 ## Market -- prop-derived points
 **insufficient data** -- no player_props.parquet on disk
@@ -64,9 +64,9 @@ _None today._ The waiver deadline was Tuesday night; a mid-week drop on two prac
 | DK Metcalf | — / — / — |
 | Chuba Hubbard | — / — / — |
 | RJ Harvey | — / — / — |
-| De'Zhaun Stribling | — / — / — |
 | Tre Tucker | — / — / — |
 | Jordan Love | — / — / — |
+| Caleb Douglas | — / — / — |
 
 ## What this report cannot see
 - The Thursday-night practice trajectory is two days deep (Wed/Thu), not three -- a short week gives genuinely less signal than Sunday's players will have by Friday.
