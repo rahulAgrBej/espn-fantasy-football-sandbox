@@ -47,6 +47,22 @@ on:
         description: "Re-summarize reports that already have a summary"
         type: boolean
         default: false
+      # `force` alone re-bills every report that already has a summary, which
+      # is almost never what a re-render needs: one report was corrected, the
+      # other four were already right. These narrow it to that one.
+      # `cmd_summarize` has carried the matching `--day`/`--week` filters all
+      # along (`ai/reports.py`'s `pending_work` applies them before `force`);
+      # only the dispatch surface was missing.
+      day:
+        description: "Only this report day (e.g. thursday). Empty = every day."
+        type: string
+        required: false
+        default: ""
+      week:
+        description: "Only this scoring period. Empty = every week."
+        type: string
+        required: false
+        default: ""
   workflow_run:
     workflows: [report]
     types: [completed]
@@ -141,13 +157,20 @@ jobs:
             echo "::add-mask::$GEMINI_API_KEY"
           fi
           set +e
-          # inputs.force is empty on the workflow_run path, so this is a
-          # plain `summarize` there -- never a forced re-bill.
+          # Every input is empty on the workflow_run path, so that path stays
+          # a bare `summarize` -- never a forced re-bill, never a filter.
+          scope=""
+          if [ -n "${{ inputs.day }}" ]; then
+            scope="$scope --day ${{ inputs.day }}"
+          fi
+          if [ -n "${{ inputs.week }}" ]; then
+            scope="$scope --week ${{ inputs.week }}"
+          fi
           if [ "${{ inputs.force }}" = "true" ]; then
-            echo "::notice::forcing re-summarization of reports that already have a summary"
-            .venv/bin/python -m espn_ff summarize --force
+            echo "::notice::forcing re-summarization of reports that already have a summary${scope:+, scoped to$scope}"
+            .venv/bin/python -m espn_ff summarize --force $scope
           else
-            .venv/bin/python -m espn_ff summarize
+            .venv/bin/python -m espn_ff summarize $scope
           fi
           code=$?
           set -e
