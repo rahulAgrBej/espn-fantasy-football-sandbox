@@ -43,6 +43,27 @@ response almost always means the market hasn't opened yet, not that
 nothing changed; `last_run.json` records `stale=true` with a reason
 either way.
 
+**That "market hasn't opened yet" reason hid a real bug for the whole life
+of this layer.** `/events` returns every upcoming NFL event — two or more
+weeks of them at once — and `jobs._events_by_team` built its team → event
+index by assigning as it walked the list, so the *last* event naming a team
+won: the furthest-out one. Every `props` run therefore bought markets on
+games 8–12 days away, got zero bookmakers back, and wrote nothing, while
+`last_run.json` reported the entirely plausible "no props returned; markets
+likely not open yet". **Observed 2026-09-17**: 10 events fetched, every
+cached payload under `data/raw/odds/**/event_odds/` carrying a
+`commence_time` of 2026-09-25..29 while week 2's games ran 09-17..09-21,
+and `player_props.parquet` never written once. The index now takes each
+team's *earliest* upcoming event and drops anything outside the fantasy
+week (`weeks.week_window`), so a bye-week team maps to nothing rather than
+to next week's game.
+
+The credit consequence is the reason this went unnoticed rather than
+showing up as overspend: those calls cost nothing, because
+`/events/{id}/odds` bills on **markets returned**, not requested, and an
+unopened game returns none. A silent zero-cost failure is the worst shape a
+metered job can fail in — it looks identical to a quiet week.
+
 ## The five-job schedule
 
 | Job (`odds <job>`) | Slot (ET) | Run budget | Priority | Typical cost |

@@ -10,6 +10,25 @@ import pandas as pd
 import pytest
 
 from espn_ff.odds import jobs, ledger, store
+from espn_ff.weeks import ET
+
+# The fantasy week `_events_payload()`'s dates sit in: Tue 09-15 03:00 ET ->
+# Tue 09-22 03:00 ET.
+_FIXTURE_WEEK_WINDOW = (
+    dt.datetime(2026, 9, 15, 3, tzinfo=ET),
+    dt.datetime(2026, 9, 22, 3, tzinfo=ET),
+)
+
+
+@pytest.fixture(autouse=True)
+def pinned_week_window(monkeypatch):
+    """`decision_events` restricts events to the fantasy week, and reads that
+    window from the ESPN calendar cached under `data/raw/`. A test must never
+    depend on whether that file happens to exist -- it does on a developer
+    machine and does not on CI, which would make every test below pass or
+    fail by environment. Pinned here so these stay about roster-driven
+    selection; the window's own behaviour is tested explicitly further down."""
+    monkeypatch.setattr(jobs.weeks, "week_window", lambda season, week: _FIXTURE_WEEK_WINDOW)
 
 
 class _FakeEspnClient:
@@ -290,3 +309,90 @@ def test_events_override_narrows_props_pull_to_the_given_ids(con, odds_paths, mo
 
     called_events = {event_id for event_id, _markets, _priority in fake.event_odds_calls}
     assert called_events == {"evt_gb_min"}
+
+
+# ---- event selection across weeks -----------------------------------------
+#
+# The 2026-09-17 props bug. `/events` returns every upcoming NFL event, which
+# is two or more weeks of them at once, and `_events_by_team` assigned
+# `index[team] = event_id` as it walked that list -- so the LAST event
+# mentioning a team won, which is the furthest-out one. Every props pull
+# asked for markets on games 8-12 days away, got 0 bookmakers back, and wrote
+# nothing. player_props.parquet had never been written since the layer
+# shipped. Nothing caught it because `_events_payload()` above holds exactly
+# one game per team, which is the one shape where last-wins and next-game
+# agree.
+
+
+def _two_week_events_payload():
+    """What `/events` really returns on a Thursday: this week's games and
+    next week's, in commence_time order."""
+    return [
+        # Week 2 -- the games we actually want props for.
+        {"id": "w2_gb_min", "commence_time": "2026-09-21T17:00:00Z",
+         "home_team": "Minnesota Vikings", "away_team": "Green Bay Packers"},
+        {"id": "w2_kc_bal", "commence_time": "2026-09-21T20:25:00Z",
+         "home_team": "Baltimore Ravens", "away_team": "Kansas City Chiefs"},
+        # Week 3 -- same teams, a week out. No book has posted player props.
+        {"id": "w3_gb_dal", "commence_time": "2026-09-27T17:00:00Z",
+         "home_team": "Dallas Cowboys", "away_team": "Green Bay Packers"},
+        {"id": "w3_kc_nyj", "commence_time": "2026-09-28T00:20:00Z",
+         "home_team": "New York Jets", "away_team": "Kansas City Chiefs"},
+    ]
+
+
+def test_events_by_team_picks_the_next_game_not_the_furthest_out():
+    index = jobs._events_by_team(_two_week_events_payload())
+    assert index["GB"] == "w2_gb_min"
+    assert index["KC"] == "w2_kc_bal"
+
+
+def test_events_by_team_is_order_independent():
+    """The real payload arrives sorted by kickoff, so a last-wins bug is
+    invisible until it isn't. Reversing the list must change nothing."""
+    forward = jobs._events_by_team(_two_week_events_payload())
+    backward = jobs._events_by_team(list(reversed(_two_week_events_payload())))
+    assert forward == backward
+
+
+def test_events_by_team_drops_games_outside_the_fantasy_week():
+    """A team on bye this week has no game in the window. Without the filter
+    it maps to next week's game and we buy props nobody has posted."""
+    bye_week_only = [e for e in _two_week_events_payload() if e["id"].startswith("w3_")]
+    index = jobs._events_by_team(bye_week_only, window=_FIXTURE_WEEK_WINDOW)
+    assert index == {}
+
+
+def test_events_by_team_falls_back_to_next_game_with_no_calendar():
+    """`week_window` returns None when the ESPN calendar isn't on disk. The
+    earliest-game rule is the half that fixes the bug and must stand alone."""
+    index = jobs._events_by_team(_two_week_events_payload(), window=None)
+    assert index["GB"] == "w2_gb_min"
+
+
+def test_events_by_team_tolerates_an_unparseable_kickoff():
+    payload = [
+        {"id": "no_time", "home_team": "Green Bay Packers", "away_team": "Chicago Bears"},
+        {"id": "dated", "commence_time": "2026-09-21T17:00:00Z",
+         "home_team": "Green Bay Packers", "away_team": "Minnesota Vikings"},
+    ]
+    # A dated event is always preferred over an undated one, whichever order
+    # they arrive in -- but an undated event is still reachable on its own.
+    assert jobs._events_by_team(payload, window=None)["GB"] == "dated"
+    assert jobs._events_by_team(payload[:1], window=None)["GB"] == "no_time"
+
+
+def test_props_primary_never_buys_next_weeks_props(con, odds_paths, monkeypatch):
+    """End to end: the bug as the job would have hit it."""
+    fake = _FakeOddsClient(events=_two_week_events_payload())
+    _patch_client(monkeypatch, fake)
+    espn_client = _FakeEspnClient(_roster_payload())
+
+    jobs.props_primary(espn_client, con=con, today=dt.date(2026, 9, 17))
+
+    called = {event_id for event_id, _m, _p in fake.event_odds_calls}
+    assert called == {"w2_gb_min", "w2_kc_bal"}
+    assert not any(e.startswith("w3_") for e in called), (
+        "bought props for a game a week out -- markets are not open yet and "
+        "the response comes back with zero bookmakers"
+    )
