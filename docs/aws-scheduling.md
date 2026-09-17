@@ -280,6 +280,35 @@ aws cloudformation deploy \
       HealthScheduleState=ENABLED
 ```
 
+That form is the **bootstrap**, for standing the stack up the first time. It
+is the wrong command for an incremental change — adding a schedule, retiming
+one — because passing a stale `$GH_DISPATCH_TOKEN` rewrites the
+`ff-github-dispatch` connection and breaks every schedule, not just the one
+you meant to touch. For an incremental change, omit every parameter
+(`aws cloudformation deploy` carries previous values forward for a stack
+that already exists) and preview the changeset before executing it:
+
+```bash
+aws cloudformation deploy \
+  --template-file infra/scheduler.yaml \
+  --stack-name ff-scheduler \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --no-execute-changeset
+
+aws cloudformation describe-change-set --change-set-name <arn> \
+  --query "Changes[].ResourceChange.{Action:Action,Id:LogicalResourceId}" --output table
+aws cloudformation describe-change-set --change-set-name <arn> \
+  --query "Parameters[].{K:ParameterKey,V:ParameterValue}" --output text
+```
+
+Read both queries before executing. The first must list only the resources
+you meant to touch; the second must match
+`describe-stacks --query "Stacks[0].Parameters"` exactly, which is what
+proves no parameter silently reverted to its template default. Collapsing
+the three per-weekday ESPN slots into `espn-daily` was deployed this way
+*(Observed — the changeset was `Add EspnDailySchedule`, three `Remove`s, and
+nothing else)*.
+
 Every schedule defaults to `DISABLED`. The rollout enables them one workflow at
 a time, and the order within each step matters: **land the `on.schedule`
 removal on the default branch first, then flip the parameter.** `on.schedule`
@@ -288,7 +317,7 @@ leaves a window where GitHub and AWS both own the slot.
 
 `SummaryScheduleState` is the one switch that arbitrates nothing —
 `summary.yml` never had an `on.schedule` to remove, so there is no window to
-avoid and it can be flipped at any time. Its six slots are a backstop
+avoid and it can be flipped at any time. Its eight slots are a backstop
 behind a `workflow_run` event, and because the job is idempotent a backstop
 that fires against work already done costs nothing. The ordering that *does*
 matter for it is the ordinary one: `summary.yml` must be on the default
