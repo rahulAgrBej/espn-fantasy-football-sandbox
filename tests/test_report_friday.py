@@ -9,6 +9,8 @@ import pytest
 
 from espn_ff.report import friday, tuesday
 
+import payload_helpers
+
 
 # ---- fixture builders (same shapes as tests/test_report_thursday.py) ------
 
@@ -60,6 +62,20 @@ def _render(**overrides):
     )
     kwargs.update(overrides)
     return friday.render(**kwargs)
+
+
+def _render_kwargs(**overrides):
+    """The same defaults as `_render`, returned rather than rendered, so the
+    payload drift test can feed one argument set to both emitters."""
+    kwargs = dict(
+        season=2026, week=3, team_id=5,
+        movement=dict(_EMPTY_MOVEMENT), recommended=dict(_EMPTY_RECOMMENDED),
+        diff_rows=[], held_rows=[], bench_rows=[], practice_df=pd.DataFrame(),
+        streaming_drops=[], streaming_drop_reason="no legal drop candidate exists this week",
+        footer_notes=friday.FOOTER_NOTES, rendered_at=1_760_000_000,
+    )
+    kwargs.update(overrides)
+    return kwargs
 
 
 # ---- line_movement_read: one test per rung of the ladder -------------------
@@ -379,9 +395,110 @@ def test_build_swap_row_names_tier_rule_and_never_recommends_ir(monkeypatch):
     })
     monkeypatch.setattr(friday, "espn_export_warning", lambda: None)
 
-    text = friday.build(2026, week=3, team_id=5)
+    result = friday.build(2026, week=3, team_id=5)
+    text = result.markdown
+    payload_helpers.assert_payload_matches_markdown(text, result.data["sections"])
 
     lineup_section = text.split("## Recommended lineup")[1].split("## Bench")[0]
     assert "tier downgrade" in lineup_section
     assert "Good Backup" in lineup_section
     assert "Stashed" not in lineup_section  # IR is never a lineup-solve candidate
+
+
+# ---- payload: the JSON twin ---------------------------------------------
+
+def _populated_overrides():
+    """Every section populated, including the branches the empty set misses:
+    a solved lineup with a held-open slot and a swap, real line movement, a
+    practice table and a streaming-drop pairing."""
+    return dict(
+        movement={
+            "insufficient": False, "reason": None,
+            "open_at": pd.Timestamp("2026-09-22 18:00", tz="UTC"),
+            "current_at": pd.Timestamp("2026-09-25 14:00", tz="UTC"),
+            "rows": [{
+                "team": "KC", "spread_open": -3.0, "spread_current": -4.5, "spread_delta": -1.5,
+                "total_open": 47.0, "total_current": 48.5, "total_delta": 1.5,
+                "implied_open": 25.0, "implied_current": 26.5, "implied_delta": 1.5,
+            }],
+        },
+        recommended={
+            "insufficient": False, "reason": None, "total_projected": 118.6,
+            "lineup": [], "unfilled_slots": ["K"], "unprojected_names": set(),
+            "fallback_names": set(), "candidates": [], "eligibility": [], "values": [],
+        },
+        diff_rows=[
+            {"slot": "RB", "current": [{"player_name": "Held Guy", "projection": 10.0}],
+             "recommended": [{"player_name": "Held Guy", "projection": 10.0}],
+             "changed": False, "reasons": []},
+            {"slot": "WR", "current": [{"player_name": "Old Guy", "projection": 7.0}],
+             "recommended": [{"player_name": "New Guy", "projection": 12.0}],
+             "changed": True, "reasons": ["tier downgrade", "projection gap"]},
+        ],
+        held_rows=[{"slot": "RB", "player_name": "Held Guy",
+                    "reason": "COIN_FLIP with a 1.2-point alternative"}],
+        bench_rows=[{"player_name": "Bench Guy", "position": "TE",
+                     "projection": 5.5, "source": "pool"}],
+        practice_df=pd.DataFrame([
+            {"player_name": "Held Guy", "practice_trajectory": "DNP / LP / LP", "tier": "COIN_FLIP"},
+        ]),
+        streaming_drops=[{
+            "drop": {"player_name": "Deadweight", "position": "K"},
+            "streams": [{"player_name": "Stream K", "week_projected": 8.1}],
+        }],
+        streaming_drop_reason=None,
+    )
+
+
+@pytest.mark.parametrize("args_name", ["empty", "populated"])
+def test_payload_names_the_same_sections_as_the_markdown(monkeypatch, args_name):
+    monkeypatch.setattr(friday, "freshness", lambda season=None: {
+        "sleeper": (None, True), "nflverse": (None, True),
+        "espn": (None, True), "odds": (None, True),
+    })
+    kwargs = _render_kwargs(**({} if args_name == "empty" else _populated_overrides()))
+
+    text = friday.render(**kwargs)
+    header, sections = friday.payload(**kwargs)
+
+    payload_helpers.assert_payload_matches_markdown(text, sections)
+    payload_helpers.assert_no_display_strings(sections)
+    payload_helpers.assert_json_serializable(header, sections)
+
+
+def test_payload_held_open_slots_are_data_not_only_bullets(monkeypatch):
+    """The held-open slots are Sunday's actual worklist, and the markdown
+    carries them only as prose bullets under Decisions due."""
+    monkeypatch.setattr(friday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = friday.payload(**_render_kwargs(**_populated_overrides()))
+    decisions = next(s for s in sections if s["id"] == "decisions-due")
+    assert decisions["data"]["held_open"] == [
+        {"slot": "RB", "player_name": "Held Guy",
+         "reason": "COIN_FLIP with a 1.2-point alternative"}
+    ]
+
+
+def test_payload_keeps_fired_rules_as_a_list(monkeypatch):
+    """render joins them with ", "; a consumer filtering on one rule would
+    have to split the string back apart and guess at the delimiter."""
+    monkeypatch.setattr(friday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = friday.payload(**_render_kwargs(**_populated_overrides()))
+    lineup = next(s for s in sections if s["id"] == "recommended-lineup")
+    swap = next(r for r in lineup["rows"] if r["slot"] == "WR")
+    assert swap["reasons"] == ["tier downgrade", "projection gap"]
+    assert swap["status"] == "swap" and swap["gap"] == 5.0
+    assert lineup["data"]["total_projected"] == 118.6
+
+
+def test_payload_marks_the_held_slot_rather_than_calling_it_unchanged(monkeypatch):
+    monkeypatch.setattr(friday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = friday.payload(**_render_kwargs(**_populated_overrides()))
+    lineup = next(s for s in sections if s["id"] == "recommended-lineup")
+    assert next(r for r in lineup["rows"] if r["slot"] == "RB")["status"] == "held open"
+
+
+def test_payload_pairs_each_drop_with_the_streams_it_funds(monkeypatch):
+    monkeypatch.setattr(friday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = friday.payload(**_render_kwargs(**_populated_overrides()))
+    drops = next(s for s in sections if s["id"] == "drop-candidates")
+    assert drops["rows"][0]["streams"] == [{"player_name": "Stream K", "week_projected": 8.1}]

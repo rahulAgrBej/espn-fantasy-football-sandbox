@@ -768,6 +768,15 @@ That is also why the read cache and the output tree are separate
 directories: `.cache/s3-summaries` holds the full history and is only ever
 read; `summaries/` holds one run's output and is only ever pushed.
 
+A third sibling prefix has since joined these two: `reports-json/`, the
+structured twin of each rendered report, written by `report.yml` rather than
+`summary.yml` and pushed append-only for exactly the reasoning above. It
+does not change anything here — `espn_ff/ai/reports.py:scan` globs `*.md`
+under `reports/` only, so the summarizer never sees it, and the summary
+envelope's `schema_version` is unchanged. The three prefixes share one key
+shape, `<season>/week-NN/<stem>`, which is the entire join between a report,
+its JSON, and this envelope. See `docs/report-json.md`.
+
 No IAM change was needed — the existing policy grants
 `Get/Put/DeleteObject` on `<BUCKET>/*` and `ListBucket` on the bucket — and
 no lifecycle rule touches the new prefix; the existing three are scoped to

@@ -11,6 +11,14 @@ name: report
 # just to S3 -- reports/<season>/week-NN/ is git-tracked and this job needs
 # contents: write to commit its own output.
 #
+# The same run also writes reports-json/<season>/week-NN/, the structured
+# twin of each report (docs/report-json.md). That tree is gitignored and
+# S3-only: it is NOT committed, and it is pushed append-only rather than
+# mirrored, because a runner's copy holds only the report this run rendered.
+# The two mirror steps at the bottom are therefore deliberately asymmetric --
+# see scripts/s3_sync.sh's comments on cmd_sync_reports vs
+# cmd_sync_reports_json.
+#
 # The clock lives in AWS. EventBridge Scheduler dispatches:
 #
 #   report-monday           Mon 10:30 ET
@@ -132,3 +140,13 @@ jobs:
         env:
           S3_BUCKET: ${{ vars.S3_BUCKET }}
         run: ./scripts/s3_sync.sh sync-reports
+
+      # Append-only, not a mirror -- reports-json/ is gitignored, so
+      # actions/checkout restores none of it and this tree holds only what
+      # this run rendered. A --delete sync from here would wipe the season.
+      - name: Mirror reports-json/ to S3
+        if: always()
+        shell: bash
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+        run: ./scripts/s3_sync.sh sync-reports-json

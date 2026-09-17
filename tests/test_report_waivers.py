@@ -11,6 +11,8 @@ import pytest
 from espn_ff.report import loaders, pool, tuesday, waivers
 from espn_ff.weeks import ET
 
+import payload_helpers
+
 
 # ---- fixture builders -------------------------------------------------
 
@@ -778,3 +780,102 @@ def test_freshness_lines_tolerates_a_partial_dict():
     fresh = {"sleeper": (None, True), "nflverse": (None, True), "espn": (None, True)}
     lines = freshness_lines(fresh)
     assert len(lines) == 3
+
+
+# ---- payload: the JSON twin ---------------------------------------------
+
+def _empty_payload_args():
+    settle = {"insufficient": True, "reason": "no transactions export on disk"}
+    order = {"insufficient": True, "reason": "no usable waiver_rank column"}
+    totals = {"insufficient": True, "reason": "no team_totals.parquet on disk", "by_team": {}}
+    return (2026, 2, 5, settle, order, [], totals, [], list(waivers.FOOTER_NOTES))
+
+
+def _populated_payload_args():
+    """Every section populated, including both Add-candidates branches: a
+    slot with rows and a slot with none."""
+    settle = {
+        "insufficient": False,
+        "rows": [{
+            "scoring_period": 2, "acting_team": "Us", "player_name": "Claimed Guy",
+            "type": "WAIVER", "item_type": "ADD", "execution_type": "EXECUTE",
+            "is_pending": False, "bid_amount": 4, "proposed_date": "2026-09-16",
+        }],
+        "excluded_count": 3, "pending_count": 1,
+        "faab_in_use": True, "waiver_type_observed": True,
+    }
+    order = {
+        "insufficient": False, "our_rank": 4, "our_rank_of": 10,
+        "rows": pd.DataFrame([
+            {"team_id": 3, "team_name": "Them", "waiver_rank": 1},
+            {"team_id": 5, "team_name": "Us", "waiver_rank": 4},
+        ]),
+    }
+    totals = {"insufficient": False, "by_team": {"KC": 27.5, "SEA": 21.0}}
+    blocks = [
+        {
+            "slot": "RB",
+            "bench_floor": {"player_name": "Floor Guy", "projection": 6.5, "source": "bench"},
+            "starter_context": None,
+            "rows": [{
+                "player_name": "Add Me", "position": "RB", "pro_team": "KC",
+                "week_projected": 11.0, "gap": 4.5, "percent_owned": 12.0,
+                "implied_team_total": 27.5, "trending_add": 4210, "drop_name": "Deadweight",
+            }],
+            "none_reason": "",
+        },
+        {
+            "slot": "WR",
+            "bench_floor": None,
+            "starter_context": {"player_name": "Starter Guy", "projection": 13.0},
+            "rows": [],
+            "none_reason": "no free agent at this slot clears the floor",
+        },
+    ]
+    drop_list = [{"player_name": "Deadweight", "position": "WR", "ros_projection": 1.8}]
+    return (2026, 2, 5, settle, order, blocks, totals, drop_list, list(waivers.FOOTER_NOTES))
+
+
+@pytest.mark.parametrize("args_name", ["empty", "populated"])
+def test_payload_names_the_same_sections_as_the_markdown(monkeypatch, args_name):
+    monkeypatch.setattr(waivers, "freshness", lambda season=None: {
+        "sleeper": (None, True), "nflverse": (None, True),
+        "espn": (None, True), "odds": (None, True),
+    })
+    args = _empty_payload_args() if args_name == "empty" else _populated_payload_args()
+    kwargs = {"rendered_at": _FIXED_RENDERED_AT}
+
+    text = waivers.render(*args, **kwargs)
+    header, sections = waivers.payload(*args, **kwargs)
+
+    payload_helpers.assert_payload_matches_markdown(text, sections)
+    payload_helpers.assert_no_display_strings(sections)
+    payload_helpers.assert_json_serializable(header, sections)
+
+
+def test_payload_marks_our_waiver_row_with_a_boolean_not_an_arrow(monkeypatch):
+    monkeypatch.setattr(waivers, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = waivers.payload(*_populated_payload_args(), rendered_at=_FIXED_RENDERED_AT)
+    order = next(s for s in sections if s["id"] == "waiver-order")
+    assert [r["is_ours"] for r in order["rows"]] == [False, True]
+
+
+def test_payload_keeps_faab_in_use_distinct_from_zero_spent(monkeypatch):
+    """"no FAAB in this league" and "nobody bid this week" are different
+    facts; the markdown makes the distinction only in an italic note."""
+    monkeypatch.setattr(waivers, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = waivers.payload(*_populated_payload_args(), rendered_at=_FIXED_RENDERED_AT)
+    settle = next(s for s in sections if s["id"] == "waiver-settlements")
+    assert settle["data"]["faab_in_use"] is True
+    assert settle["data"]["pending_count"] == 1
+
+
+def test_payload_carries_each_slots_bench_floor_as_data(monkeypatch):
+    """The floor is the number every row in the block is judged against, and
+    in markdown it lives only in an italic sentence above the table."""
+    monkeypatch.setattr(waivers, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = waivers.payload(*_populated_payload_args(), rendered_at=_FIXED_RENDERED_AT)
+    adds = next(s for s in sections if s["id"] == "add-candidates")
+    rb, wr = adds["blocks"]
+    assert rb["data"]["bench_floor_projection"] == 6.5
+    assert wr["data"]["bench_floor_projection"] is None and wr["data"]["row_count"] == 0

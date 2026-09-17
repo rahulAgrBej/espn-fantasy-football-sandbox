@@ -38,6 +38,7 @@ from .. import config, weeks
 from ..sleeper import signals as sleeper_signals
 from ..sleeper import snapshots as sleeper_snapshots
 from . import availability, monday, pool, tuesday
+from . import payload as payload_lib
 from .loaders import espn_export_warning, espn_view_freshness, freshness, latest_export
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 from .waivers import waiver_outcomes, waiver_read_is_settled, week_projection
@@ -516,6 +517,278 @@ def render(season, week, team_id, watch_rows, signals_df, avail_df, starters, mo
     return "\n".join(lines) + "\n"
 
 
+def payload(season, week, team_id, watch_rows, signals_df, avail_df, starters, moves,
+            outcomes, alternates_by_player, footer_notes, window=None, rendered_at=None):
+    """The structured twin of `render`, over the identical argument list.
+
+    `build` calls both on one set of values and one pinned `rendered_at`, so
+    the two artifacts cannot disagree about what the report says -- only about
+    how each presents it. Section ids are fixed strings rather than slugged
+    headings, so a heading rewording does not silently rename a key a consumer
+    routes on. See espn_ff/report/payload.py.
+    """
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    today = _today_et(rendered_at)
+    title = f"Availability watchlist -- {season} week {week}"
+    covers = f"Wed {today} -- the first of week {week}'s three practice days"
+
+    header = payload_lib.header_block(title, week, covers, window, rendered_at)
+    sections = [payload_lib.freshness_section(freshness(season=season))]
+
+    decisions = [
+        "**None binding today.** This is a contingency list, not an action: one practice day "
+        "is one-third of the trajectory Friday's lineup lock will read."
+    ]
+    if starters.empty:
+        decisions.append(f"**{INSUFFICIENT_DATA}** -- no weekly-rosters export for week {week}.")
+    else:
+        decisions.append(
+            f"{len(watch_rows)} of {len(starters)} starters are on the watchlist "
+            f"as of this morning's snapshot."
+        )
+    if outcomes["insufficient"] and outcomes.get("reason"):
+        decisions.append(
+            "_Waiver-deadline note: this league's deadline was last night (Tuesday into "
+            f"Wednesday), not tonight -- but {outcomes['reason']}._"
+        )
+    else:
+        decisions.append(
+            "_Waiver-deadline note: this league's deadline was last night (Tuesday into Wednesday), "
+            "not tonight -- this morning's ESPN pull is the first settled read of last night's run._"
+        )
+    sections.append(payload_lib.prose_section(
+        "decisions-due", "Decisions due", decisions, emphasis=True,
+        # The counts the prose above states in English. `None` rather than 0
+        # when there is no roster export: nobody on the watchlist and no
+        # watchlist at all are different facts.
+        data={
+            "binding": False,
+            "watchlist_count": None if starters.empty else len(watch_rows),
+            "starter_count": None if starters.empty else len(starters),
+        },
+    ))
+
+    sections.append(_waiver_outcomes_section(outcomes, alternates_by_player))
+    sections.append(_watchlist_section(week, watch_rows, starters))
+    sections.append(_practice_report_section(avail_df, signals_df))
+
+    if not moves:
+        sections.append(payload_lib.prose_section(
+            "depth-chart-moves", "Depth chart moves",
+            ["No rostered player's Sleeper depth-chart order improved over the lookback window."],
+        ))
+    else:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("depth_chart_order", "current order", "number"),
+            payload_lib.column("improved", "improved", "boolean"),
+            payload_lib.column("promoted", "promoted", "boolean"),
+            payload_lib.column("days_used", "days used", "integer"),
+        ]
+        sections.append(payload_lib.table_section(
+            "depth-chart-moves", "Depth chart moves", columns, payload_lib.rows(moves, columns),
+        ))
+
+    sections.append(payload_lib.prose_section(
+        "drop-candidates", "Drop candidates",
+        ["_None by design._ Dropping on one day of practice data discards a player before the "
+         "signal that would justify it exists. Tuesday's waiver report owns the drop list."],
+        # Not an empty table: this report produces no drop list by design, and
+        # "none by design" must not be readable as "none found today".
+        data={"by_design": True},
+    ))
+
+    sections.append(payload_lib.list_section(
+        "cannot-see", "What this report cannot see", footer_notes,
+    ))
+    return header, sections
+
+
+def _waiver_outcomes_section(outcomes, alternates_by_player):
+    """The `## Waiver outcomes` block: a counts lead-in, then three `###`
+    groups, the middle one holding a `####` block per player lost."""
+    if outcomes["insufficient"]:
+        return payload_lib.insufficient_section(
+            "waiver-outcomes", "Waiver outcomes", outcomes["reason"],
+        )
+
+    intro = [
+        f"{len(outcomes['claimed_by_us'])} claimed by us, {len(outcomes['claimed_by_others'])} "
+        f"claimed by other teams, {len(outcomes['newly_available'])} newly available."
+    ]
+    if outcomes["pending_count"]:
+        intro.append(f"_{outcomes['pending_count']} row(s) in this window are still pending -- excluded above._")
+    if outcomes.get("failed_count"):
+        intro.append(
+            f"_{outcomes['failed_count']} claim(s) in this window failed or were canceled "
+            "(`FAILED_*`/`CANCELED`) and are excluded above -- a losing claim on a contested "
+            "player is recorded for every team that attempted it, not just the winner._"
+        )
+    if outcomes.get("unknown_count"):
+        intro.append(
+            f"_{outcomes['unknown_count']} row(s) in this window carry a status this report "
+            f"could not read -- **{INSUFFICIENT_DATA}**, counted here rather than assumed "
+            "settled or failed._"
+        )
+    if outcomes["excluded_count"]:
+        intro.append(f"_{outcomes['excluded_count']} other transaction(s) in this window were "
+                     "DRAFT/ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._")
+
+    claimed_columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("position", "position", "string"),
+        payload_lib.column("pro_team", "pro_team", "string"),
+        payload_lib.column("bid_amount", "bid", "number"),
+        payload_lib.column("scoring_period", "period", "integer"),
+        payload_lib.column("proposed_date", "date", "date"),
+    ]
+    available_columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("position", "position", "string"),
+        payload_lib.column("pro_team", "pro_team", "string"),
+        payload_lib.column("dropped_by_team", "dropped by", "string"),
+        payload_lib.column("scoring_period", "period", "integer"),
+        payload_lib.column("proposed_date", "date", "date"),
+    ]
+    alt_columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("position", "position", "string"),
+        payload_lib.column("pro_team", "pro_team", "string"),
+        payload_lib.column("week_projected", "week_projected", "number"),
+    ]
+
+    lost_blocks = []
+    for r in outcomes["claimed_by_others"]:
+        alts = alternates_by_player.get(r["player_id"], [])
+        heading = f"{r['player_name']} ({r['position']}) -- claimed by {r['acting_team']}"
+        block_id = f"lost-{r['player_id']}"
+        if not alts:
+            lost_blocks.append(payload_lib.prose_section(
+                block_id, heading, ["No same-slot free-agent alternate found."], level=4,
+                data={"player_id": r["player_id"], "acting_team": r["acting_team"]},
+            ))
+        else:
+            lost_blocks.append(payload_lib.table_section(
+                block_id, heading, alt_columns, payload_lib.rows(alts, alt_columns), level=4,
+                data={"player_id": r["player_id"], "acting_team": r["acting_team"]},
+            ))
+
+    return payload_lib.blocks_section(
+        "waiver-outcomes", "Waiver outcomes",
+        [
+            payload_lib.prose_section("waiver-outcomes-summary", None, intro, level=None),
+            payload_lib.table_section(
+                "claimed-by-us", "Claimed by us", claimed_columns,
+                payload_lib.rows(outcomes["claimed_by_us"], claimed_columns), level=3,
+            ),
+            payload_lib.blocks_section(
+                "claimed-by-others", "Claimed by other teams", lost_blocks, level=3,
+            ),
+            payload_lib.table_section(
+                "newly-available", "Newly available", available_columns,
+                payload_lib.rows(outcomes["newly_available"], available_columns), level=3,
+            ),
+        ],
+        data={
+            "claimed_by_us_count": len(outcomes["claimed_by_us"]),
+            "claimed_by_others_count": len(outcomes["claimed_by_others"]),
+            "newly_available_count": len(outcomes["newly_available"]),
+            "pending_count": outcomes["pending_count"],
+            "failed_count": outcomes.get("failed_count"),
+            "unknown_count": outcomes.get("unknown_count"),
+            "excluded_count": outcomes["excluded_count"],
+        },
+    )
+
+
+def _watchlist_section(week, watch_rows, starters):
+    """The `## Watchlist` block: a table, an italic note, and a second table
+    of the same players' unresolved source columns -- three blocks under one
+    heading, none of which has a heading of its own."""
+    if starters.empty:
+        return payload_lib.insufficient_section(
+            "watchlist", "Watchlist", f"no starters could be read for week {week}",
+        )
+    if not watch_rows:
+        return payload_lib.prose_section(
+            "watchlist", "Watchlist",
+            ["No starter is OUT, HIGH_RISK or COIN_FLIP on today's read."],
+            data={"count": 0},
+        )
+
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("slot", "slot", "string"),
+        payload_lib.column("tier", "tier", "string"),
+        payload_lib.column("practice_trajectory", "practice (W/T/F)", "string"),
+        payload_lib.column("projection", "proj at risk", "number"),
+        payload_lib.column("replacement_name", "best replacement", "string"),
+        payload_lib.column("replacement_projection", "repl. proj", "number"),
+        payload_lib.column("replacement_tier", "repl. tier", "string"),
+    ]
+    table_rows = []
+    for r in watch_rows:
+        repl = r["replacement"]
+        table_rows.append({
+            "player_name": payload_lib.unset(r["player_name"]),
+            "slot": payload_lib.unset(r["slot"]),
+            "tier": payload_lib.unset(r["tier"]),
+            # None, not the markdown's "-- / -- / --" placeholder: a consumer
+            # needs to know the trajectory is absent, not that it is a string
+            # of dashes.
+            "practice_trajectory": payload_lib.unset(r["practice_trajectory"]) or None,
+            "projection": payload_lib.unset(r["projection"]),
+            "replacement_name": payload_lib.unset(repl["player_name"]) if repl else None,
+            "replacement_projection": payload_lib.unset(repl["projection"]) if repl else None,
+            "replacement_tier": payload_lib.unset(repl["tier"]) if repl else None,
+        })
+
+    source_columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("espn_injury_status", "ESPN", "string"),
+        payload_lib.column("sleeper_tier", "Sleeper", "string"),
+        payload_lib.column("nflverse_report_status", "nflverse", "string"),
+    ]
+    return payload_lib.blocks_section(
+        "watchlist", "Watchlist",
+        [
+            payload_lib.table_section("watchlist-rows", None, columns, table_rows, level=None),
+            payload_lib.prose_section(
+                "watchlist-sources-note", None,
+                ["_Source columns for the same players, shown unresolved so a disagreement between "
+                 "the three feeds is visible rather than hidden behind `tier`:_"],
+                level=None,
+            ),
+            payload_lib.table_section(
+                "watchlist-sources", None, source_columns,
+                payload_lib.rows(watch_rows, source_columns), level=None,
+            ),
+        ],
+        data={"count": len(watch_rows)},
+    )
+
+
+def _practice_report_section(avail_df, signals_df):
+    if avail_df.empty or signals_df.empty:
+        return payload_lib.insufficient_section(
+            "practice-report", "Practice report -- full roster",
+            "no roster or no Sleeper snapshot to read",
+        )
+    merged = avail_df.merge(signals_df, on="player_id", how="left")
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("tier", "tier", "string"),
+        payload_lib.column("practice_participation", "practice", "string"),
+        payload_lib.column("practice_trajectory", "trajectory (W/T/F)", "string"),
+        payload_lib.column("depth_chart_order", "depth order", "number"),
+        payload_lib.column("matched", "Sleeper match", "boolean"),
+    ]
+    return payload_lib.table_section(
+        "practice-report", "Practice report -- full roster", columns,
+        payload_lib.rows(merged, columns),
+    )
+
+
 def build(season, week, team_id=None):
     """Assemble the full Wednesday report as markdown text. `week` is the
     current scoring period with no offset -- Wednesday looks forward at the
@@ -631,8 +904,12 @@ def build(season, week, team_id=None):
             "from the position-fallback map -- the fallback path may be wrong for them specifically."
         )
 
-    return render(
+    args = (
         season, week, team_id, watch_rows, signals_df, avail_df, starters, moves,
         outcomes, alternates_by_player, footer_notes,
-        window=week_window, rendered_at=rendered_at,
+    )
+    kwargs = {"window": week_window, "rendered_at": rendered_at}
+    header, sections = payload(*args, **kwargs)
+    return payload_lib.RenderedReport(
+        render(*args, **kwargs), {"header": header, "sections": sections}
     )

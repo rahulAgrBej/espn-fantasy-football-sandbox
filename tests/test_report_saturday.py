@@ -5,8 +5,11 @@ and the render/build wiring. Fixtures only, no network, no disk."""
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from espn_ff.report import saturday
+
+import payload_helpers
 
 
 # ---- fixture builders ------------------------------------------------------
@@ -49,6 +52,19 @@ def _render(**overrides):
     )
     kwargs.update(overrides)
     return saturday.render(**kwargs)
+
+
+def _render_kwargs(**overrides):
+    """The same defaults as `_render`, returned rather than rendered, so the
+    payload drift test can feed one argument set to both emitters."""
+    kwargs = dict(
+        season=2026, week=3, team_id=5,
+        gate=dict(_EMPTY_GATE), diff_rows=[], unmatched_names=set(), status_rows=[], depth_moves=[],
+        bye_starters=[], parked_rows=[], official_rows=[], footer_notes=saturday.FOOTER_NOTES,
+        rendered_at=1_760_000_000,
+    )
+    kwargs.update(overrides)
+    return kwargs
 
 
 # ---- baseline_snapshot: one test per rung of the ladder --------------------
@@ -211,3 +227,82 @@ def test_render_with_every_frame_empty_produces_complete_document():
     assert "## Roster status and depth chart" in text
     assert "## Today's official designations" in text
     assert "## What this report cannot see" in text
+
+
+# ---- payload: the JSON twin ---------------------------------------------
+
+def _populated_overrides():
+    """Every section populated, including a tier change that improved (no
+    replacement looked for) alongside one that worsened with no legal swap."""
+    return dict(
+        gate={"insufficient": False, "reason": None, "baseline_date": "2026-09-25",
+              "current_date": "2026-09-26", "days_used": 1},
+        diff_rows=[
+            {"player_name": "Worse Guy", "tier_then": "CLEAR", "tier_now": "OUT",
+             "direction": "worse", "changed": True, "replacement": None},
+            {"player_name": "Better Guy", "tier_then": "OUT", "tier_now": "CLEAR",
+             "direction": "better", "changed": True, "replacement": None},
+            {"player_name": "Swappable", "tier_then": "CLEAR", "tier_now": "HIGH_RISK",
+             "direction": "worse", "changed": True,
+             "replacement": {"player_name": "Backup Guy"}},
+            {"player_name": "Steady Guy", "tier_then": "CLEAR", "tier_now": "CLEAR",
+             "direction": "same", "changed": False, "replacement": None},
+        ],
+        status_rows=[{"player_name": "Elevated Guy", "status_then": "Practice Squad",
+                      "status_now": "Active", "active_then": False, "active_now": True}],
+        depth_moves=[{"player_name": "Riser", "depth_chart_order": 1.0, "improved": True,
+                      "promoted": True, "days_used": 1}],
+        bye_starters=[{"player_name": "Bye Guy", "pro_team": "KC"}],
+        parked_rows=[{"player_name": "Healthy Parked", "tier": "CLEAR"}],
+        official_rows=[{"player_name": "Worse Guy", "lineup_slot": "RB",
+                        "nflverse_report_status": "Out"}],
+    )
+
+
+@pytest.mark.parametrize("args_name", ["empty", "populated"])
+def test_payload_names_the_same_sections_as_the_markdown(monkeypatch, args_name):
+    monkeypatch.setattr(saturday, "freshness", lambda season=None: {
+        "sleeper": (None, True), "nflverse": (None, True),
+        "espn": (None, True), "odds": (None, True),
+    })
+    kwargs = _render_kwargs(**({} if args_name == "empty" else _populated_overrides()))
+
+    text = saturday.render(**kwargs)
+    header, sections = saturday.payload(**kwargs)
+
+    payload_helpers.assert_payload_matches_markdown(text, sections)
+    payload_helpers.assert_no_display_strings(sections)
+    payload_helpers.assert_json_serializable(header, sections)
+
+
+def test_payload_freshness_drops_odds_like_the_markdown_does(monkeypatch):
+    """No odds job runs on a Saturday, so this report omits the feed rather
+    than reporting it permanently stale."""
+    monkeypatch.setattr(saturday, "freshness", lambda season=None: {
+        "sleeper": (1, False), "nflverse": (2, False), "espn": (3, False), "odds": (4, True),
+    })
+    _, sections = saturday.payload(**_render_kwargs())
+    feeds = [f["feed"] for f in sections[0]["feeds"]]
+    assert feeds == ["sleeper", "nflverse", "espn"]
+
+
+def test_payload_tier_changes_id_is_stable_while_the_heading_moves(monkeypatch):
+    monkeypatch.setattr(saturday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = saturday.payload(**_render_kwargs(**_populated_overrides()))
+    tiers = next(s for s in sections if s["id"] == "tier-changes")
+    assert tiers["heading"] == "Tier changes since 2026-09-25"
+    assert tiers["data"]["baseline_date"] == "2026-09-25"
+
+
+def test_payload_separates_no_legal_swap_from_no_swap_needed(monkeypatch):
+    """render puts a name, "no legal swap", and "--" in one cell. Only the
+    middle one means "we looked and found nothing"."""
+    monkeypatch.setattr(saturday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = saturday.payload(**_render_kwargs(**_populated_overrides()))
+    rows = {r["player_name"]: r for r in
+            next(s for s in sections if s["id"] == "tier-changes")["rows"]}
+    assert rows["Worse Guy"]["no_legal_swap"] is True
+    assert rows["Better Guy"]["no_legal_swap"] is False
+    assert rows["Swappable"]["no_legal_swap"] is False
+    assert rows["Swappable"]["replacement_name"] == "Backup Guy"
+    assert "Steady Guy" not in rows   # unchanged rows never reach the table

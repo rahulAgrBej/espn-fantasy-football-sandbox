@@ -222,6 +222,30 @@ cmd_sync_reports() {
     s3 s3 sync "$ROOT/reports" "s3://$BUCKET/reports" --delete --only-show-errors
 }
 
+# --- sync-reports-json: local reports-json/ -> S3 reports-json/ (append-only)
+# The JSON twin of every rendered report (espn_ff/report/payload.py; see
+# docs/report-json.md), written by the same cmd_report call that writes the
+# markdown.
+#
+# **No --delete, and that is load-bearing** -- note the asymmetry with
+# cmd_sync_reports directly above, which mirrors the *same reports* with
+# --delete. The difference is not the content, it is git: reports/ is tracked,
+# so actions/checkout restores the complete history and the local tree is the
+# authoritative set at sync time. reports-json/ is gitignored, so a runner's
+# tree holds ONLY the report this run just rendered -- a --delete mirror from
+# it would wipe the entire season's JSON from the bucket on every single run.
+# Same reasoning as cmd_sync_summaries, and reports-json/ sits firmly on that
+# side of the state/ vs archive/ line despite its name pairing it with
+# reports/.
+cmd_sync_reports_json() {
+    if [ ! -d "$ROOT/reports-json" ]; then
+        say "no reports-json/ -- nothing to sync"
+        return 0
+    fi
+    say "sync reports-json/ -> s3://$BUCKET/reports-json (append-only)"
+    s3 s3 sync "$ROOT/reports-json" "s3://$BUCKET/reports-json" "${COMMON_EXCLUDES[@]}" --only-show-errors
+}
+
 # --- pull-reports / pull-summaries: S3 -> a local read cache --------------
 # For summary.yml, which has to know which reports already have a summary
 # before it can decide what to generate. Both land under .cache/ (gitignored)
@@ -323,9 +347,10 @@ case "${1:-}" in
     archive)        shift; cmd_archive ;;
     push-state)     shift; cmd_push_state "${1:-}" ;;
     sync-reports)   shift; cmd_sync_reports ;;
+    sync-reports-json) shift; cmd_sync_reports_json ;;
     pull-reports)   shift; cmd_pull_reports "${1:-}" ;;
     pull-summaries) shift; cmd_pull_summaries "${1:-}" ;;
     sync-summaries) shift; cmd_sync_summaries ;;
     receipt)        shift; cmd_receipt "$@" ;;
-    *) echo "usage: $0 {restore [subtrees]|restore-out <dataset>...|archive|push-state [owned-subtrees]|sync-reports|pull-reports [dest]|pull-summaries [dest]|sync-summaries|receipt <workflow> <run_id> <cmd> <code>}" >&2; exit 64 ;;
+    *) echo "usage: $0 {restore [subtrees]|restore-out <dataset>...|archive|push-state [owned-subtrees]|sync-reports|sync-reports-json|pull-reports [dest]|pull-summaries [dest]|sync-summaries|receipt <workflow> <run_id> <cmd> <code>}" >&2; exit 64 ;;
 esac

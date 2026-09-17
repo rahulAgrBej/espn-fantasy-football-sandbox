@@ -35,7 +35,7 @@ import pandas as pd
 
 from .. import config, weeks
 from ..sleeper import signals as sleeper_signals
-from . import availability, monday, schedule, tuesday, wednesday
+from . import availability, monday, payload as payload_lib, schedule, tuesday, wednesday
 from .loaders import espn_export_warning, freshness, latest_export
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, table
 
@@ -363,6 +363,183 @@ def render(season, week, team_id, gate, diff_rows, unmatched_names, status_rows,
     return "\n".join(lines) + "\n"
 
 
+def payload(season, week, team_id, gate, diff_rows, unmatched_names, status_rows, depth_moves,
+            bye_starters, parked_rows, official_rows, footer_notes, window=None, rendered_at=None):
+    """The structured twin of `render`, over the identical argument list.
+
+    Note this report's freshness block drops `odds` -- no odds job runs on a
+    Saturday -- and that `## Tier changes since <date>` builds its heading at
+    render time, which is why the section id is a fixed string. See
+    espn_ff/report/payload.py.
+    """
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Contingency check -- {season} week {week}"
+    covers = f"week {week}'s Saturday contingency check"
+
+    header = payload_lib.header_block(title, week, covers, window, rendered_at)
+    fresh = {name: value for name, value in freshness(season=season).items() if name != "odds"}
+
+    sections = [
+        payload_lib.freshness_section(fresh),
+        _decisions_section(bye_starters, parked_rows),
+        _tier_changes_section(gate, diff_rows),
+        _roster_status_section(status_rows, depth_moves),
+    ]
+
+    if not official_rows:
+        sections.append(payload_lib.prose_section(
+            "official-designations", "Today's official designations",
+            ["No at-risk starter carries an nflverse `report_status` today."], data={"count": 0},
+        ))
+    else:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("lineup_slot", "slot", "string"),
+            payload_lib.column("nflverse_report_status", "report_status", "string"),
+        ]
+        sections.append(payload_lib.table_section(
+            "official-designations", "Today's official designations", columns,
+            payload_lib.rows(official_rows, columns), data={"count": len(official_rows)},
+        ))
+
+    sections.append(payload_lib.list_section("cannot-see", "What this report cannot see", footer_notes))
+    return header, sections
+
+
+def _decisions_section(bye_starters, parked_rows):
+    """`## Decisions due` -- two lists the markdown renders as bullets: byes
+    and healthy players parked in an IR slot. Both are actionable rosters, so
+    they become tables rather than prose."""
+    blocks = [payload_lib.prose_section(
+        "decisions-due-lead", None, ["Hold or adjust a single slot."], level=None,
+    )]
+
+    if bye_starters:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("pro_team", "pro_team", "string"),
+        ]
+        blocks.append(payload_lib.table_section(
+            "bye-starters", None, columns, payload_lib.rows(bye_starters, columns),
+            notes=[f"{len(bye_starters)} starter(s) are on a bye this week:"], level=None,
+        ))
+    else:
+        blocks.append(payload_lib.prose_section(
+            "bye-starters", None, ["No starter is on a bye this week."], level=None,
+        ))
+
+    if parked_rows:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("tier", "tier", "string"),
+        ]
+        blocks.append(payload_lib.table_section(
+            "parked-in-ir", None, columns, payload_lib.rows(parked_rows, columns),
+            notes=[f"{len(parked_rows)} player(s) are sitting in an IR slot but are not at-risk -- "
+                   "they could be scoring:"],
+            level=None,
+        ))
+    else:
+        blocks.append(payload_lib.prose_section(
+            "parked-in-ir", None, ["No healthy player is parked in an IR slot."], level=None,
+        ))
+
+    return payload_lib.blocks_section(
+        "decisions-due", "Decisions due", blocks,
+        data={"bye_starter_count": len(bye_starters), "parked_in_ir_count": len(parked_rows)},
+    )
+
+
+def _tier_changes_section(gate, diff_rows):
+    baseline_label = gate["baseline_date"] if gate["baseline_date"] is not None else "--"
+    heading = f"Tier changes since {baseline_label}"
+    data = {"baseline_date": gate["baseline_date"]}
+
+    if gate["insufficient"]:
+        return payload_lib.insufficient_section(
+            "tier-changes", heading, gate["reason"], data=data,
+        )
+    changed = [r for r in diff_rows if r["changed"]]
+    if not changed:
+        return payload_lib.prose_section(
+            "tier-changes", heading, [f"No tier changed since {gate['baseline_date']}."],
+            data={**data, "count": 0},
+        )
+
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("tier_then", "then", "string"),
+        payload_lib.column("tier_now", "now", "string"),
+        payload_lib.column("direction", "direction", "string"),
+        payload_lib.column("replacement_name", "best replacement", "string"),
+        payload_lib.column("no_legal_swap", "no legal swap", "boolean"),
+    ]
+    rows = []
+    for r in changed:
+        repl = r.get("replacement")
+        rows.append({
+            "player_name": payload_lib.unset(r["player_name"]),
+            "tier_then": payload_lib.unset(r["tier_then"]),
+            "tier_now": payload_lib.unset(r["tier_now"]),
+            "direction": payload_lib.unset(r["direction"]),
+            "replacement_name": payload_lib.unset(repl["player_name"]) if repl else None,
+            # render collapses three states into one cell -- a name, the
+            # words "no legal swap", or "--" for a tier that improved. The
+            # boolean keeps "we looked and found nothing" apart from "we did
+            # not need to look".
+            "no_legal_swap": repl is None and r["direction"] == "worse",
+        })
+    return payload_lib.table_section(
+        "tier-changes", heading, columns, rows, data={**data, "count": len(changed)},
+    )
+
+
+def _roster_status_section(status_rows, depth_moves):
+    """`## Roster status and depth chart`, with two `###` groups."""
+    if not status_rows:
+        elevations = payload_lib.prose_section(
+            "practice-squad-elevations", "Practice-squad elevations",
+            ["No status/active transition since the baseline snapshot."], level=3,
+            data={"count": 0},
+        )
+    else:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("status_then", "status then", "string"),
+            payload_lib.column("status_now", "status now", "string"),
+            payload_lib.column("active_then", "active then", "boolean"),
+            payload_lib.column("active_now", "active now", "boolean"),
+        ]
+        elevations = payload_lib.table_section(
+            "practice-squad-elevations", "Practice-squad elevations", columns,
+            payload_lib.rows(status_rows, columns), level=3, data={"count": len(status_rows)},
+        )
+
+    heading = "Depth chart moves (1-day lookback)"
+    if not depth_moves:
+        moves = payload_lib.prose_section(
+            "depth-chart-moves", heading,
+            ["No rostered player's Sleeper depth-chart order improved since yesterday."],
+            level=3, data={"count": 0},
+        )
+    else:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("depth_chart_order", "current order", "number"),
+            payload_lib.column("improved", "improved", "boolean"),
+            payload_lib.column("promoted", "promoted", "boolean"),
+            payload_lib.column("days_used", "days used", "integer"),
+        ]
+        moves = payload_lib.table_section(
+            "depth-chart-moves", heading, columns, payload_lib.rows(depth_moves, columns),
+            level=3, data={"count": len(depth_moves)},
+        )
+
+    return payload_lib.blocks_section(
+        "roster-status", "Roster status and depth chart", [elevations, moves],
+    )
+
+
 def build(season, week, team_id=None):
     """Assemble the full Saturday report as markdown text. `week` is the
     current scoring period with no offset, same contract as
@@ -455,8 +632,12 @@ def build(season, week, team_id=None):
             "the position-fallback map -- the fallback path may be wrong for them specifically."
         )
 
-    return render(
+    args = (
         season, week, team_id, gate, diff_rows, unmatched_names, status_rows, depth_moves,
         bye_starters, parked_rows, official_rows, footer_notes,
-        window=weeks.week_window(season, week), rendered_at=rendered_at,
+    )
+    kwargs = {"window": weeks.week_window(season, week), "rendered_at": rendered_at}
+    header, sections = payload(*args, **kwargs)
+    return payload_lib.RenderedReport(
+        render(*args, **kwargs), {"header": header, "sections": sections}
     )

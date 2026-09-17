@@ -30,6 +30,7 @@ from .odds import ledger as odds_ledger
 from .odds import projections as odds_projections
 from .odds.ledger import BudgetExceeded, OddsError
 from .report import loaders
+from .report import payload as report_payload
 from .report import friday as report_friday
 from .report import monday as report_monday
 from .report import saturday as report_saturday
@@ -553,7 +554,22 @@ def cmd_report(client, args):
     """Render one of docs/report-weekly-schedule.md's reports from data
     already on disk. No network beyond what `--week`'s default fallback
     needs. Any day not yet in REPORTS exits cleanly rather than writing an
-    empty file."""
+    empty file.
+
+    Two artifacts per run, from one `build_fn` call:
+
+      `reports/`       the markdown -- git-tracked, mirrored to S3's
+                       `reports/` prefix with `--delete`.
+      `reports-json/`  the same report as structured data, embedding the
+                       markdown verbatim -- gitignored, mirrored to S3's
+                       `reports-json/` prefix append-only.
+
+    The JSON is deliberately a *sibling directory* rather than a sibling
+    file: report.yml's commit step is `git add reports/`, so a `.json` next
+    to the `.md` would be committed, and s3_sync.sh's `sync-reports` mirrors
+    that whole tree with `--delete`. Keeping the trees apart is what lets the
+    two prefixes keep their opposite sync semantics. See docs/report-json.md.
+    """
     if not args.day:
         print(f"Usage: report --day <day>  where day is one of: {', '.join(sorted(REPORTS))}", file=sys.stderr)
         return 1
@@ -564,14 +580,28 @@ def cmd_report(client, args):
     build_fn, day_label, slug = REPORTS[args.day]
     season = args.season
     week = args.week or client.current_scoring_period()
-    text = build_fn(season, week, team_id=args.team_id)
+    result = build_fn(season, week, team_id=args.team_id)
+
+    rendered_on = datetime.now(ET).date()
+    stem = f"{rendered_on:%Y-%m-%d}-{day_label}-{slug}"
 
     out_dir = config.PROJECT_ROOT / "reports" / str(season) / f"week-{week:02d}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    rendered_on = datetime.now(ET).date()
-    path = out_dir / f"{rendered_on:%Y-%m-%d}-{day_label}-{slug}.md"
-    path.write_text(text)
+    path = out_dir / f"{stem}.md"
+    path.write_text(result.markdown)
     print(f"  wrote {path}")
+
+    record = report_payload.envelope(
+        season=season, week=week, day=args.day, day_label=day_label, slug=slug, stem=stem,
+        generated_at=datetime.now(ET).isoformat(),
+        header=result.data["header"], sections=result.data["sections"],
+        markdown=result.markdown,
+    )
+    json_dir = config.PROJECT_ROOT / "reports-json" / str(season) / f"week-{week:02d}"
+    json_dir.mkdir(parents=True, exist_ok=True)
+    json_path = json_dir / f"{stem}.json"
+    json_path.write_text(json.dumps(record, indent=2) + "\n")
+    print(f"  wrote {json_path}")
     return 0
 
 

@@ -22,7 +22,7 @@ import pandas as pd
 from .. import config, weeks
 from ..odds import projections as odds_projections
 from ..odds import store as odds_store
-from . import availability, loaders, monday, pool, tuesday, waivers, wednesday
+from . import availability, loaders, monday, payload as payload_lib, pool, tuesday, waivers, wednesday
 from .loaders import espn_export_warning, freshness, latest_export
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 
@@ -511,6 +511,208 @@ def render(season, week, team_id, movement, recommended, diff_rows, held_rows, b
     return "\n".join(lines) + "\n"
 
 
+def payload(season, week, team_id, movement, recommended, diff_rows, held_rows, bench_rows,
+            practice_df, streaming_drops, streaming_drop_reason, footer_notes,
+            window=None, rendered_at=None):
+    """The structured twin of `render`, over the identical argument list. See
+    espn_ff/report/payload.py."""
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Lineup lock -- {season} week {week}"
+    covers = f"week {week}'s Sunday lineup lock"
+
+    header = payload_lib.header_block(title, week, covers, window, rendered_at)
+    sections = [
+        payload_lib.freshness_section(freshness(season=season)),
+        _decisions_section(recommended, held_rows),
+        _recommended_section(recommended, diff_rows, held_rows),
+    ]
+
+    if not bench_rows:
+        sections.append(payload_lib.insufficient_section(
+            "bench", "Bench", f"no bench could be read for week {week}",
+        ))
+    else:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("position", "position", "string"),
+            payload_lib.column("projection", "week_projected", "number"),
+            payload_lib.column("source", "source", "string"),
+        ]
+        sections.append(payload_lib.table_section(
+            "bench", "Bench", columns, payload_lib.rows(bench_rows, columns),
+        ))
+
+    sections.append(_movement_section(movement))
+
+    if practice_df.empty:
+        sections.append(payload_lib.insufficient_section(
+            "practice-report", "Practice report -- Wed / Thu / Fri",
+            "no roster or no Sleeper snapshot to read",
+        ))
+    else:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("practice_trajectory", "trajectory (W/T/F)", "string"),
+            payload_lib.column("tier", "tier", "string"),
+        ]
+        sections.append(payload_lib.table_section(
+            "practice-report", "Practice report -- Wed / Thu / Fri", columns,
+            payload_lib.rows(practice_df, columns),
+        ))
+
+    sections.append(_streaming_drops_section(streaming_drops, streaming_drop_reason))
+    sections.append(payload_lib.list_section("cannot-see", "What this report cannot see", footer_notes))
+    return header, sections
+
+
+def _decisions_section(recommended, held_rows):
+    body = ["**Lock the Sunday lineup**, except for any slot deliberately held open below."]
+    if recommended["insufficient"]:
+        body.append(f"**{INSUFFICIENT_DATA}** -- {recommended['reason']}")
+    elif held_rows:
+        body.append(f"{len(held_rows)} slot(s) held open for Sunday's `pre_lock` read:")
+        body.extend(f"- **{h['slot']}** ({h['player_name']}) -- {h['reason']}" for h in held_rows)
+    else:
+        body.append("No slot is held open -- every recommended starter is either healthy or has "
+                    "no close legal alternative.")
+    return payload_lib.prose_section(
+        "decisions-due", "Decisions due", body, emphasis=True,
+        # The held-open slots are Sunday's actual worklist, and in markdown
+        # they exist only as bullet prose.
+        data={
+            "binding": True,
+            "held_open": [
+                {"slot": h["slot"], "player_name": h["player_name"], "reason": h["reason"]}
+                for h in held_rows
+            ] if not recommended["insufficient"] else None,
+        },
+    )
+
+
+def _recommended_section(recommended, diff_rows, held_rows):
+    if recommended["insufficient"]:
+        return payload_lib.insufficient_section(
+            "recommended-lineup", "Recommended lineup", recommended["reason"],
+        )
+
+    columns = [
+        payload_lib.column("slot", "slot", "string"),
+        payload_lib.column("current", "current", "string"),
+        payload_lib.column("current_projection", "current proj", "number"),
+        payload_lib.column("recommended", "recommended", "string"),
+        payload_lib.column("recommended_projection", "recommended proj", "number"),
+        payload_lib.column("gap", "gap", "number"),
+        payload_lib.column("reasons", "rule(s) fired", "string"),
+        payload_lib.column("status", "status", "string"),
+        payload_lib.column("changed", "changed", "boolean"),
+    ]
+    held_names = {h["player_name"] for h in held_rows}
+    rows = []
+    for d in diff_rows:
+        current_proj = d["current"][0]["projection"] if d["current"] else None
+        recommended_proj = d["recommended"][0]["projection"] if d["recommended"] else None
+        gap = (
+            recommended_proj - current_proj
+            if recommended_proj is not None and current_proj is not None and pd.notna(current_proj)
+            else None
+        )
+        touches_held = (d["current"] and d["current"][0]["player_name"] in held_names) or \
+            (d["recommended"] and d["recommended"][0]["player_name"] in held_names)
+        if touches_held:
+            status = "held open"
+        elif not d["changed"]:
+            status = "unchanged"
+        elif d["reasons"]:
+            status = "swap"
+        else:
+            status = "hold (below threshold)"
+        rows.append({
+            "slot": payload_lib.unset(d["slot"]),
+            # Joined, as the markdown joins them: a slot can hold more than
+            # one player, and the names are the cell's content either way.
+            "current": ", ".join(c["player_name"] for c in d["current"]) or None,
+            "current_projection": payload_lib.unset(current_proj),
+            "recommended": ", ".join(r["player_name"] for r in d["recommended"]) or None,
+            "recommended_projection": payload_lib.unset(recommended_proj),
+            "gap": payload_lib.unset(gap),
+            # A list, not the markdown's comma-joined string: these are
+            # discrete rule names and a consumer may want to filter on one.
+            "reasons": list(d["reasons"]),
+            "status": status,
+            "changed": bool(d["changed"]),
+        })
+
+    notes = []
+    if recommended["unfilled_slots"]:
+        notes.append(
+            f"_{len(recommended['unfilled_slots'])} slot(s) had no projected, eligible candidate: "
+            + ", ".join(recommended["unfilled_slots"]) + "._"
+        )
+    return payload_lib.table_section(
+        "recommended-lineup", "Recommended lineup", columns, rows, notes=notes,
+        data={
+            "total_projected": recommended["total_projected"],
+            "unfilled_slots": recommended["unfilled_slots"],
+        },
+    )
+
+
+def _movement_section(movement):
+    heading = "Line movement since Tuesday's open"
+    if movement["insufficient"]:
+        return payload_lib.insufficient_section("line-movement", heading, movement["reason"])
+    columns = [
+        payload_lib.column("team", "team", "string"),
+        payload_lib.column("spread_open", "spread open", "number"),
+        payload_lib.column("spread_current", "spread now", "number"),
+        payload_lib.column("spread_delta", "d(spread)", "number"),
+        payload_lib.column("total_open", "total open", "number"),
+        payload_lib.column("total_current", "total now", "number"),
+        payload_lib.column("total_delta", "d(total)", "number"),
+        payload_lib.column("implied_open", "implied open", "number"),
+        payload_lib.column("implied_current", "implied now", "number"),
+        payload_lib.column("implied_delta", "d(implied)", "number"),
+    ]
+    return payload_lib.table_section(
+        "line-movement", heading, columns, payload_lib.rows(movement["rows"], columns),
+        notes=[f"Open {_fmt_captured_at(movement['open_at'])} -> current "
+               f"{_fmt_captured_at(movement['current_at'])}."],
+        data={"open_at": movement["open_at"], "current_at": movement["current_at"]},
+    )
+
+
+def _streaming_drops_section(streaming_drops, streaming_drop_reason):
+    """`## Drop candidates` -- each entry pairs one droppable player with the
+    streaming adds that drop would fund, so the pairing is preserved as
+    nested rows rather than flattened into one sentence per line."""
+    if streaming_drop_reason:
+        return payload_lib.prose_section(
+            "drop-candidates", "Drop candidates", [f"_None -- {streaming_drop_reason}._"],
+            data={"count": 0, "reason": streaming_drop_reason},
+        )
+    columns = [
+        payload_lib.column("player_name", "drop", "string"),
+        payload_lib.column("position", "position", "string"),
+        payload_lib.column("streams", "for", "string"),
+    ]
+    rows = [
+        {
+            "player_name": payload_lib.unset(entry["drop"]["player_name"]),
+            "position": payload_lib.unset(entry["drop"]["position"]),
+            "streams": [
+                {"player_name": payload_lib.unset(s["player_name"]),
+                 "week_projected": payload_lib.unset(s["week_projected"])}
+                for s in entry["streams"]
+            ],
+        }
+        for entry in streaming_drops
+    ]
+    return payload_lib.table_section(
+        "drop-candidates", "Drop candidates", columns, rows,
+        data={"count": len(streaming_drops), "reason": None},
+    )
+
+
 def build(season, week, team_id=None):
     """Assemble the full Friday report as markdown text. `week` is the
     current scoring period with no offset -- Friday looks forward at the
@@ -605,8 +807,12 @@ def build(season, week, team_id=None):
             "the position-fallback map -- the fallback path may be wrong for them specifically."
         )
 
-    return render(
+    args = (
         season, week, team_id, movement, recommended, diff_rows, held_rows, bench_rows,
         practice_df, streaming_drops, streaming_drop_reason, footer_notes,
-        window=weeks.week_window(season, week), rendered_at=rendered_at,
+    )
+    kwargs = {"window": weeks.week_window(season, week), "rendered_at": rendered_at}
+    header, sections = payload(*args, **kwargs)
+    return payload_lib.RenderedReport(
+        render(*args, **kwargs), {"header": header, "sections": sections}
     )

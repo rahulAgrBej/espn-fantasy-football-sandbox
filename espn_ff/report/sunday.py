@@ -43,7 +43,7 @@ import pandas as pd
 from .. import config, weeks
 from ..odds import projections as odds_projections
 from ..odds import store as odds_store
-from . import availability, friday, monday, saturday, schedule, thursday, tuesday, wednesday
+from . import availability, friday, monday, payload as payload_lib, saturday, schedule, thursday, tuesday, wednesday
 from .loaders import espn_export_warning, freshness, latest_export
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 
@@ -666,6 +666,295 @@ def render(season, week, team_id, lock, gate, lines, props, market_by_player, un
     return "\n".join(lines_out) + "\n"
 
 
+def payload(season, week, team_id, lock, gate, lines, props, market_by_player, undecided_rows,
+            out_read, recommended, footer_notes, window=None, rendered_at=None):
+    """The structured twin of `render`, over the identical argument list.
+
+    Two things are specific to this report. The kickoff countdown renders
+    *above* the freshness block rather than under a `##` heading, so it is a
+    headingless leading section. And the freshness block carries a fifth
+    `pre_lock` line that is this report's own read, kept apart from
+    `loaders._odds_freshness`'s Tuesday `slate_context` capture. See
+    espn_ff/report/payload.py.
+    """
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Final lock -- {season} week {week}"
+    covers = f"week {week}'s Sunday lineup lock, before {lock['kickoff_label']}"
+    generated = f"{pd.Timestamp(rendered_at, unit='s', tz='UTC').tz_convert(weeks.ET):%a %Y-%m-%d %H:%M ET}"
+
+    header = payload_lib.header_block(title, week, covers, window, rendered_at)
+
+    if lock["minutes"] < 0:
+        countdown = (f"**Generated {generated} -- kickoff ({lock['kickoff_label']}) has already "
+                     "passed. This report is history, not a decision.**")
+    else:
+        countdown = (f"**Generated {generated} -- {lock['minutes']} minutes to the first Sunday "
+                     f"kickoff ({lock['kickoff_label']}). After kickoff this report is history.**")
+
+    sections = [
+        # No heading: the spec puts this above even the freshness block, so a
+        # tab left open past kickoff says so at a glance.
+        payload_lib.prose_section(
+            "kickoff-countdown", None, [countdown], emphasis=True, level=None,
+            data={
+                "minutes_to_kickoff": lock["minutes"],
+                "kickoff_passed": lock["minutes"] < 0,
+                "kickoff_label": lock["kickoff_label"],
+                "source": lock["source"],
+            },
+        ),
+        _freshness_section(season, gate),
+        _decisions_section(lock, undecided_rows, out_read),
+        _pre_lock_ran_section(gate, lines, props),
+        _undecided_section(undecided_rows),
+        _out_section(out_read),
+        _lineup_section(recommended, market_by_player),
+        _featured_lines_section(lines),
+        _props_section(props),
+        payload_lib.list_section("cannot-see", "What this report cannot see", footer_notes),
+    ]
+    return header, sections
+
+
+def _freshness_section(season, gate):
+    if gate["insufficient"]:
+        pre_lock = f"- odds (`pre_lock`): **{INSUFFICIENT_DATA}** -- {gate['reason']}"
+    else:
+        credits = gate["credits_spent"] if gate["credits_spent"] is not None else INSUFFICIENT_DATA
+        pre_lock = f"- odds (`pre_lock`): {_fmt_et(gate['ran_at'])} -- verified, {credits} credits spent"
+    return payload_lib.freshness_section(
+        freshness(season=season),
+        notes=[
+            pre_lock,
+            "_The `odds:` line above is `loaders._odds_freshness`, hardcoded to the `slate_context` "
+            "job -- it reads Tuesday's capture. The `pre_lock` line is this report's own read._",
+        ],
+    )
+
+
+def _decisions_section(lock, undecided_rows, out_read):
+    body = [f"**The final lock, before {lock['kickoff_label']}.**"]
+    if lock["minutes"] >= 0:
+        body.append(f"- {lock['minutes']} minutes remain (source: {lock['source']}).")
+    else:
+        body.append(f"- Kickoff passed {abs(lock['minutes'])} minutes ago (source: {lock['source']}).")
+    body.append(f"- {len(undecided_rows)} slot(s) still undecided this morning.")
+
+    if out_read["gate"]["insufficient"]:
+        body.append(f"- Starters reading `OUT`: {INSUFFICIENT_DATA} -- the overnight tier read could not run.")
+        out_count = None
+    else:
+        out_count = len(out_read["moved"]) + len(out_read["already_out"])
+        body.append(f"- {out_count} starter(s) read `OUT`.")
+
+    return payload_lib.prose_section(
+        "decisions-due", "Decisions due", body, emphasis=True,
+        # `out_starter_count` is None, never 0, when the read did not run --
+        # an absence of evidence must not serialize as an all-clear.
+        data={
+            "binding": True,
+            "minutes_to_kickoff": lock["minutes"],
+            "undecided_count": len(undecided_rows),
+            "out_starter_count": out_count,
+        },
+    )
+
+
+def _pre_lock_ran_section(gate, lines, props):
+    heading = "Did `pre_lock` actually run"
+    if gate["insufficient"]:
+        return payload_lib.insufficient_section("pre-lock-ran", heading, gate["reason"])
+    body = [
+        f"- Ran at {_fmt_et(gate['ran_at'])}, `stale` flag clear.",
+        f"- Featured lines: newest capture {_fmt_captured_at(lines['current_at'])}"
+        + (" -- from this run." if lines["from_this_run"] else
+           " -- **not from this run**; the featured half returned nothing and Friday's lines are "
+           "what render below."),
+        f"- Props: newest capture {_fmt_captured_at(props['captured_at'])}"
+        + (" -- from this run." if props["from_this_run"] else
+           " -- **not from this run**; the props half of this morning's job returned nothing."),
+    ]
+    return payload_lib.prose_section(
+        "pre-lock-ran", heading, body,
+        # Whether each half is this morning's data is the whole point of the
+        # section, and in markdown it is a bolded clause mid-sentence.
+        data={
+            "ran_at": gate["ran_at"], "credits_spent": gate["credits_spent"],
+            "lines_from_this_run": lines["from_this_run"],
+            "props_from_this_run": props["from_this_run"],
+        },
+    )
+
+
+def _undecided_section(undecided_rows):
+    """`## Slots still undecided as of this morning`, one `###` per slot."""
+    heading = "Slots still undecided as of this morning"
+    note = (
+        "_Recomputed by `friday.recommended_lineup`/`friday.held_open_slots` against today's data. "
+        "Nothing persists Friday's own list; these agree with it whenever no input has moved._"
+    )
+    if not undecided_rows:
+        return payload_lib.prose_section(
+            "slots-undecided", heading,
+            [note, "No slot is undecided -- every recommended starter is either clear or clearly better."],
+            data={"count": 0},
+        )
+
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("tier", "tier", "string"),
+        payload_lib.column("prop_points", "prop points", "number"),
+        payload_lib.column("markets", "markets", "integer"),
+        payload_lib.column("projection", "ESPN projected", "number"),
+        payload_lib.column("rank_source", "ranked on", "string"),
+    ]
+    blocks = []
+    for row in undecided_rows:
+        if row["market_best"] and row["friday_best"]:
+            verdict = (
+                f"Market and projection agree on {row['market_best']['player_name']}."
+                if row["agrees"] else
+                f"Market picks {row['market_best']['player_name']}; Friday's projection rule picks "
+                f"{row['friday_best']['player_name']}."
+            )
+        else:
+            verdict = "No `pre_lock` quote for this slot -- ranked on ESPN's projection alone."
+        blocks.append(payload_lib.table_section(
+            f"undecided-{row['slot'].lower().replace('/', '-')}",
+            f"{row['slot']} -- {row['incumbent_name']}",
+            columns, payload_lib.rows(row["candidates"], columns),
+            notes=[row["reason"], verdict], level=3,
+            data={
+                "slot": row["slot"], "incumbent_name": row["incumbent_name"],
+                "market_best": (row["market_best"] or {}).get("player_name"),
+                "friday_best": (row["friday_best"] or {}).get("player_name"),
+                # None, not False, when there is no market quote to agree
+                # with -- "they disagree" and "only one of them spoke" are
+                # different answers.
+                "agrees": row["agrees"] if (row["market_best"] and row["friday_best"]) else None,
+            },
+        ))
+    return payload_lib.blocks_section(
+        "slots-undecided", heading, blocks, data={"count": len(undecided_rows)},
+    )
+
+
+def _out_section(out_read):
+    heading = "Starters whose tier reads `OUT`"
+    if out_read["gate"]["insufficient"]:
+        return payload_lib.insufficient_section("starters-out", heading, out_read["gate"]["reason"])
+    rows_in = out_read["moved"] + out_read["already_out"]
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("tier_then", "tier at baseline", "string"),
+        payload_lib.column("tier_now", "tier now", "string"),
+        payload_lib.column("since", "since", "string"),
+        payload_lib.column("replacement_name", "best bench replacement", "string"),
+        payload_lib.column("no_legal_swap", "no legal swap", "boolean"),
+    ]
+    rows = [
+        {
+            "player_name": payload_lib.unset(r["player_name"]),
+            "tier_then": payload_lib.unset(r["tier_then"]),
+            "tier_now": payload_lib.unset(r["tier_now"]),
+            "since": payload_lib.unset(r["since"]),
+            "replacement_name": (
+                payload_lib.unset(r["replacement"]["player_name"]) if r.get("replacement") else None
+            ),
+            "no_legal_swap": not r.get("replacement"),
+        }
+        for r in rows_in
+    ]
+    return payload_lib.table_section(
+        "starters-out", heading, columns, rows,
+        data={"count": len(rows_in), "moved_count": len(out_read["moved"]),
+              "already_out_count": len(out_read["already_out"])},
+    )
+
+
+def _lineup_section(recommended, market_by_player):
+    heading = "The lineup you are locking"
+    if recommended["insufficient"]:
+        return payload_lib.insufficient_section("lineup", heading, recommended["reason"])
+    columns = [
+        payload_lib.column("slot", "slot", "string"),
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("projection", "projected", "number"),
+        payload_lib.column("tier", "tier", "string"),
+        payload_lib.column("prop_points", "prop points", "number"),
+    ]
+    rows = []
+    for r in recommended["lineup"]:
+        market = market_by_player.get(r["player_id"]) or {}
+        rows.append({
+            "slot": payload_lib.unset(r["slot"]),
+            "player_name": payload_lib.unset(r["player_name"]),
+            "projection": payload_lib.unset(r["projection"]),
+            "tier": payload_lib.unset(market.get("tier")),
+            "prop_points": payload_lib.unset(market.get("points")),
+        })
+    notes = []
+    if recommended["unfilled_slots"]:
+        notes.append(f"Unfilled: {', '.join(recommended['unfilled_slots'])}.")
+    return payload_lib.table_section(
+        "lineup", heading, columns, rows, notes=notes,
+        data={"unfilled_slots": recommended["unfilled_slots"]},
+    )
+
+
+def _featured_lines_section(lines):
+    heading = "Pre-lock featured lines"
+    if lines["insufficient"]:
+        return payload_lib.insufficient_section("featured-lines", heading, lines["reason"])
+    notes = []
+    if not lines["from_this_run"]:
+        notes.append(
+            "**These rows are not from this morning's run** -- the newest capture predates it, so "
+            "what follows is Friday's `line_movement` data."
+        )
+    notes.append(
+        f"Capture {_fmt_captured_at(lines['current_at'])}"
+        + (f", against {_fmt_captured_at(lines['prior_at'])}." if lines["prior_at"] else
+           " -- no prior capture to diff against.")
+    )
+    columns = [
+        payload_lib.column("team", "team", "string"),
+        payload_lib.column("spread", "spread", "number"),
+        payload_lib.column("total", "total", "number"),
+        payload_lib.column("implied", "implied", "number"),
+        payload_lib.column("implied_prior", "implied prior", "number"),
+        payload_lib.column("implied_delta", "d(implied)", "number"),
+    ]
+    return payload_lib.table_section(
+        "featured-lines", heading, columns, payload_lib.rows(lines["rows"], columns), notes=notes,
+        data={"from_this_run": lines["from_this_run"], "current_at": lines["current_at"],
+              "prior_at": lines["prior_at"]},
+    )
+
+
+def _props_section(props):
+    heading = "Pre-lock props -- still-undecided slots only"
+    if props["insufficient"]:
+        return payload_lib.insufficient_section("pre-lock-props", heading, props["reason"])
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("points", "prop points", "number"),
+        payload_lib.column("markets", "markets", "integer"),
+    ]
+    ranked = sorted(props["by_player"].values(), key=lambda v: -v["points"])
+    notes = []
+    if props["unmatched_count"]:
+        notes.append(
+            f"_{props['unmatched_count']} prop row(s) matched no ESPN player and are excluded from "
+            "the table above -- counted, never silently dropped._"
+        )
+    return payload_lib.table_section(
+        "pre-lock-props", heading, columns, payload_lib.rows(ranked, columns), notes=notes,
+        data={"unmatched_count": props["unmatched_count"], "from_this_run": props["from_this_run"],
+              "captured_at": props["captured_at"]},
+    )
+
+
 def build(season, week, team_id=None):
     """Assemble the full Sunday report as markdown text. `week` is the
     current scoring period with no offset, same contract as
@@ -803,8 +1092,12 @@ def build(season, week, team_id=None):
             "the position-fallback map -- the fallback path may be wrong for them specifically."
         )
 
-    return render(
+    args = (
         season, week, team_id, lock, gate, lines, props, market_by_player, undecided_rows,
         out_read, recommended, footer_notes,
-        window=weeks.week_window(season, week), rendered_at=rendered_at,
+    )
+    kwargs = {"window": weeks.week_window(season, week), "rendered_at": rendered_at}
+    header, sections = payload(*args, **kwargs)
+    return payload_lib.RenderedReport(
+        render(*args, **kwargs), {"header": header, "sections": sections}
     )

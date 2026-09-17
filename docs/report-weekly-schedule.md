@@ -126,6 +126,12 @@ number.** `docs/data-sources.md` already sets this precedent for the
 deferred category-level diagnostic — render the words rather than a
 figure computed on history that isn't there.
 
+Each report is also emitted as structured JSON alongside the markdown,
+carrying the same four parts as typed data plus the markdown verbatim.
+`docs/report-json.md` owns that artifact's schema, its storage, and how
+the "insufficient data" rule above is represented there (as a `null` or an
+`insufficient` section, never as a zero).
+
 ## Monday — Monday night call
 
 The only report of the week issued while a game is still swappable: a

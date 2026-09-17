@@ -8,6 +8,8 @@ import pytest
 
 from espn_ff.report import thursday
 
+import payload_helpers
+
 
 # ---- fixture builders (same shapes as tests/test_report_wednesday.py) ----
 
@@ -73,6 +75,22 @@ def _render(**overrides):
     )
     kwargs.update(overrides)
     return thursday.render(**kwargs)
+
+
+def _render_kwargs(**overrides):
+    """The same defaults as `_render`, returned rather than rendered, so the
+    payload drift test can feed one argument set to both emitters."""
+    kwargs = dict(
+        season=2026, week=3, team_id=5, usage_week=2,
+        thursday_games=pd.DataFrame(), tnf_rows=[], watch_rows=[],
+        gate=dict(_EMPTY_GATE), features_df=pd.DataFrame(),
+        props_gate=dict(_EMPTY_PROPS_GATE), market=dict(_EMPTY_MARKET),
+        divergence_rows=[], could_not_compare=0, swap_rows=[],
+        practice_df=pd.DataFrame(), footer_notes=thursday.FOOTER_NOTES,
+        rendered_at=1_760_000_000,
+    )
+    kwargs.update(overrides)
+    return kwargs
 
 
 # ---- _round_or_none: the gap-vs-zero trap ---------------------------------
@@ -370,8 +388,104 @@ def test_build_pairs_at_risk_tnf_starter_with_best_legal_bench_never_ir(monkeypa
     })
     monkeypatch.setattr(thursday, "espn_export_warning", lambda: None)
 
-    text = thursday.build(2026, week=3, team_id=5)
+    result = thursday.build(2026, week=3, team_id=5)
+    text = result.markdown
+    payload_helpers.assert_payload_matches_markdown(text, result.data["sections"])
 
     decisions_section = text.split("## Decisions due")[1].split("## Canonical usage")[0]
     assert "best legal swap: Good Backup" in decisions_section
     assert "Stashed" not in decisions_section  # IR is never a candidate, and never shown as roster context either
+
+
+# ---- payload: the JSON twin ---------------------------------------------
+
+def _populated_overrides():
+    """Every section populated, including both branches the empty set misses:
+    a Thursday game with rostered players and an at-risk starter, a canonical
+    usage table carrying a bye row, a resolved market, divergence rows and
+    swap rows."""
+    return dict(
+        thursday_games=pd.DataFrame([
+            {"away_team": "KC", "home_team": "SEA", "gametime": "20:15", "gameday": "2026-09-24"},
+        ]),
+        tnf_rows=[{
+            "player_name": "TNF Guy", "side": "ours", "slot": "WR", "tier": "COIN_FLIP",
+            "practice_trajectory": "LP / FP / --", "week_projected": 12.4, "prop_points": 13.1,
+        }],
+        watch_rows=[{
+            "player_name": "TNF Guy", "slot": "WR", "tier": "COIN_FLIP",
+            "replacement": {"player_name": "Good Backup", "projection": 9.2, "tier": "CLEAR"},
+        }],
+        gate={"insufficient": False, "reason": None, "provisional": True},
+        features_df=pd.DataFrame([
+            {"player_name": "Usage Guy", "position": "WR", "offense_pct": 0.88,
+             "snap_pct_delta_1w": 0.05, "snap_pct_delta_3w": None, "snap_pct_trend": 0.0123,
+             "targets": 9, "target_share": 0.27, "air_yards_share": 0.31, "wopr": 0.62,
+             "targets_per_snap": 0.18, "bye": False, "provisional": True},
+            {"player_name": "Bye Guy", "position": "RB", "offense_pct": 0.0,
+             "snap_pct_delta_1w": None, "snap_pct_delta_3w": None, "snap_pct_trend": None,
+             "targets": None, "target_share": None, "air_yards_share": None, "wopr": None,
+             "targets_per_snap": None, "bye": True, "provisional": True},
+        ]),
+        props_gate={"insufficient": False, "reason": None, "props_df": pd.DataFrame()},
+        market={"by_player": {7: {"points": 13.1, "markets": 3, "player_name": "TNF Guy"}},
+                "unmatched_count": 5},
+        divergence_rows=[{
+            "player_name": "TNF Guy", "prop_total": 13.1, "espn_projected": 9.0, "pct": 0.4556,
+        }],
+        could_not_compare=2,
+        swap_rows=[{
+            "starter_name": "Fading Starter", "starter_delta": -0.12, "starter_wopr": 0.31,
+            "bench_name": "Rising Bench", "bench_delta": 0.15, "bench_wopr": 0.58, "gap": 0.27,
+        }],
+        practice_df=pd.DataFrame([
+            {"player_name": "TNF Guy", "practice_trajectory": "LP / FP / --"},
+        ]),
+    )
+
+
+@pytest.mark.parametrize("args_name", ["empty", "populated"])
+def test_payload_names_the_same_sections_as_the_markdown(monkeypatch, args_name):
+    monkeypatch.setattr(thursday, "freshness", lambda season=None: {
+        "sleeper": (None, True), "nflverse": (None, True),
+        "espn": (None, True), "odds": (None, True),
+    })
+    kwargs = _render_kwargs(**({} if args_name == "empty" else _populated_overrides()))
+
+    text = thursday.render(**kwargs)
+    header, sections = thursday.payload(**kwargs)
+
+    payload_helpers.assert_payload_matches_markdown(text, sections)
+    payload_helpers.assert_no_display_strings(sections)
+    payload_helpers.assert_json_serializable(header, sections)
+
+
+def test_payload_canonical_usage_heading_is_dynamic_but_the_id_is_not(monkeypatch):
+    """The heading carries the usage week, so a consumer routing on heading
+    text would break every week. It routes on the id instead."""
+    monkeypatch.setattr(thursday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = thursday.payload(**_render_kwargs(usage_week=7, **_populated_overrides()))
+    usage = next(s for s in sections if s["id"] == "canonical-usage")
+    assert usage["heading"] == "Canonical usage -- week 7"
+    assert usage["data"]["usage_week"] == 7
+
+
+def test_payload_suppresses_offense_pct_on_a_bye_row(monkeypatch):
+    """A bye week's snap share is undefined, not 0.0 -- render suppresses it
+    and so must the JSON, or a chart draws a cliff that never happened."""
+    monkeypatch.setattr(thursday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = thursday.payload(**_render_kwargs(**_populated_overrides()))
+    usage = next(s for s in sections if s["id"] == "canonical-usage")
+    bye_row = next(r for r in usage["rows"] if r["player_name"] == "Bye Guy")
+    assert bye_row["offense_pct"] is None and bye_row["bye"] is True
+    assert usage["data"]["provisional"] is True
+
+
+def test_payload_divergence_keeps_the_fraction_not_the_rounded_percent(monkeypatch):
+    """render prints "46%"; the fraction is lossy in both directions once
+    rounded to a string."""
+    monkeypatch.setattr(thursday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = thursday.payload(**_render_kwargs(**_populated_overrides()))
+    divergence = next(s for s in sections if s["id"] == "divergence")
+    assert divergence["rows"][0]["pct"] == 0.4556
+    assert divergence["data"]["could_not_compare"] == 2

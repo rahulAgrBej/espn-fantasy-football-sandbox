@@ -98,13 +98,20 @@ So each run is: **restore state → run → archive outputs → push state back.
 
 ```
 s3://espn-ff-data-2026/
-  state/      exact mirror of the stateful data/ subtrees   (synced WITH --delete)
-  archive/    append-only history, never deleted            (synced WITHOUT --delete)
-  latest/     newest copy of each output dataset
-  reports/    exact mirror of the repo's reports/ tree       (synced WITH --delete)
-  summaries/  one JSON summary per report, append-only       (synced WITHOUT --delete)
-  logs/runs/  one receipt per workflow run
+  state/         exact mirror of the stateful data/ subtrees (synced WITH --delete)
+  archive/       append-only history, never deleted          (synced WITHOUT --delete)
+  latest/        newest copy of each output dataset
+  reports/       exact mirror of the repo's reports/ tree     (synced WITH --delete)
+  reports-json/  one JSON twin per report, append-only        (synced WITHOUT --delete)
+  summaries/     one JSON summary per report, append-only     (synced WITHOUT --delete)
+  logs/runs/     one receipt per workflow run
 ```
+
+The three report prefixes share one key shape — `<season>/week-NN/<stem>`,
+where `<stem>` is `YYYY-MM-DD-<day_label>-<slug>` — so a reader holding any
+one of them can address the other two without a lookup. That is the whole
+join between a report, its structured twin, and its AI summary; see
+`docs/report-json.md`.
 
 `reports/` is a different kind of "exact mirror" than `state/`: it is safe
 to sync with `--delete` not because one workflow owns it in the
@@ -121,10 +128,22 @@ partial would wipe every prior summary on every run. The prior history
 reaches the runner as a read-only cache under `.cache/s3-summaries` instead,
 which is never written to and never pushed — see `docs/ai-summaries.md`.
 
-Three verbs serve it: `pull-reports` and `pull-summaries` fill those read
-caches (neither uses `--delete`, so `sync-reports` stays the only
-`--delete` path over `reports/`), and `sync-summaries` pushes the run's
-output append-only.
+**`reports-json/` sits on the `summaries/` side of that line despite its
+name pairing it with `reports/`**, and the same run writes both. `report.yml`
+renders the markdown and its JSON twin from one `build()` call, then pushes
+them with opposite verbs: `sync-reports` mirrors `reports/` with `--delete`
+because git restored it in full, while `sync-reports-json` appends because
+`reports-json/` is gitignored and the runner's copy holds only the one report
+just rendered. The trees are deliberately siblings rather than the JSON
+sitting beside the `.md` — a `.json` inside `reports/` would be swept up by
+that workflow's `git add reports/` and would inherit the `--delete` mirror.
+`tests/test_workflow_contract.py` pins both halves.
+
+Four verbs serve these prefixes: `pull-reports` and `pull-summaries` fill the
+read caches (neither uses `--delete`, so `sync-reports` stays the only
+`--delete` path over `reports/`), and `sync-summaries` and
+`sync-reports-json` push their runs' output append-only. There is no
+`pull-reports-json` — nothing in this repo reads the JSON back.
 
 **The two prefixes exist because local pruning is not the archive policy.**
 `espn_ff/sleeper/snapshots.py:_prune` keeps only the last
@@ -147,7 +166,7 @@ needs to read but **pushes back only what it owns**:
 | `sleeper.yml` | `sleeper raw raw/sleeper` | `sleeper`, `raw/sleeper` |
 | `nflverse.yml` | `nflverse raw raw/nflverse` | `nflverse`, `raw/nflverse` |
 | `odds.yml` | `odds raw raw/odds` | `odds`, `raw/odds` |
-| `report.yml` | `raw sleeper nflverse raw/nflverse odds`, plus `latest/out/{matchups,weekly-rosters,player-pool,roster-slots,teams,transactions}` | none of `data/` — see below |
+| `report.yml` | `raw sleeper nflverse raw/nflverse odds`, plus `latest/out/{matchups,weekly-rosters,player-pool,roster-slots,teams,transactions}` | none of `data/`; outside it, `reports/` and `reports-json/` — see below |
 | `summary.yml` | nothing under `data/` at all, only `latest/out/{teams,roster-slots,weekly-rosters}` plus the `reports/` and `summaries/` read caches | `summaries/`, which is outside `data/` and append-only |
 
 `summary.yml` takes `report.yml`'s pattern one step further: it restores no
@@ -185,6 +204,13 @@ report can price `implied_team_total` off the Tuesday `slate` job.
 mirrors that same tree to a new top-level `s3://$BUCKET/reports/` prefix
 (via a new `sync-reports` subcommand) after committing it. This is the only
 workflow with `contents: write` on this repo.
+
+It owns a second prefix alongside it: `reports-json/<season>/week-NN/`, the
+structured twin of each report (`docs/report-json.md`). That one is *not*
+committed — it is gitignored and S3-only — so the job's last two steps are a
+`--delete` mirror of the markdown and an append-only push of the JSON, in
+that order. Both run under `if: always()`, so a render that produced one
+artifact but failed before the other still publishes what it has.
 
 `data/raw` is shared, which is the subtlety worth knowing: `config.py` puts
 ESPN's per-season cache at `data/raw/<season>` but gives each vendor layer

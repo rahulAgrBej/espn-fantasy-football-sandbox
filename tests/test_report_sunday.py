@@ -11,6 +11,8 @@ import pytest
 
 from espn_ff.report import sunday
 
+import payload_helpers
+
 
 # ---- fixture builders (same shapes as tests/test_report_friday.py) ---------
 
@@ -114,6 +116,20 @@ def _render(**overrides):
     )
     kwargs.update(overrides)
     return sunday.render(**kwargs)
+
+
+def _render_kwargs(**overrides):
+    """The same defaults as `_render`, returned rather than rendered, so the
+    payload drift test can feed one argument set to both emitters."""
+    kwargs = dict(
+        season=2026, week=3, team_id=5,
+        lock=dict(_LOCK), gate=dict(_EMPTY_GATE), lines=dict(_EMPTY_LINES),
+        props=dict(_EMPTY_PROPS), market_by_player={}, undecided_rows=[],
+        out_read=dict(_EMPTY_OUT), recommended=dict(_EMPTY_RECOMMENDED),
+        footer_notes=sunday.FOOTER_NOTES, rendered_at=_RENDERED_AT,
+    )
+    kwargs.update(overrides)
+    return kwargs
 
 
 def _last_run(monkeypatch, entry):
@@ -634,7 +650,9 @@ def test_build_assembles_the_document_and_names_what_it_could_not_verify(monkeyp
     })
     monkeypatch.setattr(sunday, "espn_export_warning", lambda: None)
 
-    text = sunday.build(2026, week=3, team_id=5)
+    result = sunday.build(2026, week=3, team_id=5)
+    text = result.markdown
+    payload_helpers.assert_payload_matches_markdown(text, result.data["sections"])
 
     assert "# Final lock -- 2026 week 3" in text
     lineup = text.split("## The lineup you are locking")[1].split("## Pre-lock featured lines")[0]
@@ -662,3 +680,136 @@ def test_inactives_footer_matches_saturdays_wording():
     fragment = "Official inactives drop roughly 90 minutes before kickoff and appear in no feed this pipeline"
     assert any(fragment in note for note in sunday.FOOTER_NOTES)
     assert any(fragment in note for note in saturday_report.FOOTER_NOTES)
+
+
+# ---- payload: the JSON twin ---------------------------------------------
+
+def _populated_overrides():
+    """Every section populated, including the branches the empty set misses:
+    an undecided slot where market and projection disagree, an OUT starter
+    with no legal swap alongside one with a replacement, and a featured-lines
+    block that is *not* from this morning's run."""
+    captured = pd.Timestamp("2026-09-27 10:38", tz="UTC")
+    return dict(
+        gate={"insufficient": False, "reason": None, "ran_at": 1_790_000_000,
+              "credits_spent": 12, "stale_flag": False},
+        lines={
+            "insufficient": False, "reason": None, "from_this_run": False,
+            "current_at": captured, "prior_at": pd.Timestamp("2026-09-25 10:08", tz="UTC"),
+            "rows": [{"team": "KC", "spread": -3.5, "total": 48.0, "implied": 25.8,
+                      "implied_prior": 25.0, "implied_delta": 0.8}],
+        },
+        props={
+            "insufficient": False, "reason": None, "captured_at": captured,
+            "from_this_run": True, "unmatched_count": 4,
+            "by_player": {7: {"player_name": "Prop Guy", "points": 14.2, "markets": 3}},
+        },
+        market_by_player={7: {"tier": "CLEAR", "points": 14.2}},
+        undecided_rows=[{
+            "slot": "RB/WR", "incumbent_name": "Incumbent Guy",
+            "reason": "COIN_FLIP with a 1.1-point alternative",
+            "candidates": [{"player_name": "Prop Guy", "tier": "CLEAR", "prop_points": 14.2,
+                            "markets": 3, "projection": 11.0, "rank_source": "market"}],
+            "market_best": {"player_name": "Prop Guy"},
+            "friday_best": {"player_name": "Incumbent Guy"},
+            "agrees": False,
+        }],
+        out_read={
+            "gate": {"insufficient": False, "reason": None, "baseline_date": "2026-09-26",
+                     "current_date": "2026-09-27", "days_used": 1},
+            "moved": [{"player_name": "Just Out", "tier_then": "COIN_FLIP", "tier_now": "OUT",
+                       "since": "2026-09-26", "replacement": {"player_name": "Backup Guy"}}],
+            "already_out": [{"player_name": "Long Out", "tier_then": "OUT", "tier_now": "OUT",
+                             "since": "2026-09-24", "replacement": None}],
+            "unmatched_names": set(), "fallback_names": set(), "nan_names": set(),
+        },
+        recommended={
+            "insufficient": False, "reason": None, "unfilled_slots": ["K"],
+            "lineup": [{"slot": "RB/WR", "player_id": 7, "player_name": "Prop Guy",
+                        "projection": 11.0}],
+            "unprojected_names": set(), "fallback_names": set(),
+            "candidates": [], "eligibility": [], "values": [],
+        },
+    )
+
+
+@pytest.mark.parametrize("args_name", ["empty", "populated"])
+def test_payload_names_the_same_sections_as_the_markdown(monkeypatch, args_name):
+    monkeypatch.setattr(sunday, "freshness", lambda season=None: {
+        "sleeper": (None, True), "nflverse": (None, True),
+        "espn": (None, True), "odds": (None, True),
+    })
+    kwargs = _render_kwargs(**({} if args_name == "empty" else _populated_overrides()))
+
+    text = sunday.render(**kwargs)
+    header, sections = sunday.payload(**kwargs)
+
+    payload_helpers.assert_payload_matches_markdown(text, sections)
+    payload_helpers.assert_no_display_strings(sections)
+    payload_helpers.assert_json_serializable(header, sections)
+
+
+def test_payload_leads_with_the_kickoff_countdown_above_freshness(monkeypatch):
+    """The spec puts this above even the freshness block, so a tab left open
+    past kickoff says so at a glance. It has no heading, so only its position
+    carries that -- and the payload must preserve it."""
+    monkeypatch.setattr(sunday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = sunday.payload(**_render_kwargs())
+    assert sections[0]["id"] == "kickoff-countdown" and sections[0]["heading"] is None
+    assert sections[0]["data"]["minutes_to_kickoff"] == 90
+    assert sections[0]["data"]["kickoff_passed"] is False
+
+
+def test_payload_marks_a_past_kickoff_as_history(monkeypatch):
+    monkeypatch.setattr(sunday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    lock = {**_LOCK, "minutes": -20}
+    _, sections = sunday.payload(**_render_kwargs(lock=lock))
+    assert sections[0]["data"]["kickoff_passed"] is True
+
+
+def test_payload_never_reports_zero_out_starters_off_a_read_that_did_not_run(monkeypatch):
+    """An absence of evidence must not serialize as an all-clear -- the exact
+    trap the markdown avoids by printing "insufficient data" here."""
+    monkeypatch.setattr(sunday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = sunday.payload(**_render_kwargs())
+    decisions = next(s for s in sections if s["id"] == "decisions-due")
+    assert decisions["data"]["out_starter_count"] is None
+
+
+def test_payload_counts_out_starters_when_the_read_did_run(monkeypatch):
+    monkeypatch.setattr(sunday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = sunday.payload(**_render_kwargs(**_populated_overrides()))
+    decisions = next(s for s in sections if s["id"] == "decisions-due")
+    assert decisions["data"]["out_starter_count"] == 2
+
+
+def test_payload_flags_lines_that_are_not_from_this_mornings_run(monkeypatch):
+    """A budget-aborted pre_lock leaves Friday's lines looking fresh. In the
+    markdown the verdict is a bolded clause mid-sentence."""
+    monkeypatch.setattr(sunday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = sunday.payload(**_render_kwargs(**_populated_overrides()))
+    ran = next(s for s in sections if s["id"] == "pre-lock-ran")
+    assert ran["data"]["lines_from_this_run"] is False
+    assert ran["data"]["props_from_this_run"] is True
+    assert next(s for s in sections if s["id"] == "featured-lines")["data"]["from_this_run"] is False
+
+
+def test_payload_agrees_is_null_when_only_one_source_spoke(monkeypatch):
+    """"they disagree" and "only the projection spoke" are different answers,
+    and False would collapse them."""
+    monkeypatch.setattr(sunday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    overrides = _populated_overrides()
+    overrides["undecided_rows"][0]["market_best"] = None
+    _, sections = sunday.payload(**_render_kwargs(**overrides))
+    block = next(s for s in sections if s["id"] == "slots-undecided")["blocks"][0]
+    assert block["data"]["agrees"] is None
+
+
+def test_payload_separates_no_legal_swap_from_a_named_replacement(monkeypatch):
+    monkeypatch.setattr(sunday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = sunday.payload(**_render_kwargs(**_populated_overrides()))
+    rows = {r["player_name"]: r for r in
+            next(s for s in sections if s["id"] == "starters-out")["rows"]}
+    assert rows["Just Out"]["replacement_name"] == "Backup Guy"
+    assert rows["Just Out"]["no_legal_swap"] is False
+    assert rows["Long Out"]["no_legal_swap"] is True

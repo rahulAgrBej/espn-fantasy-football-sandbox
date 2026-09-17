@@ -32,6 +32,12 @@ data/
 summaries/
 .cache/
 
+# reports-json/ is the structured twin of every rendered report
+# (docs/report-json.md) and is deliberately S3-only, unlike the markdown in
+# reports/ next to it. It holds only what the latest run produced, which is
+# why scripts/s3_sync.sh pushes it append-only rather than mirroring it.
+reports-json/
+
 # Rendered IAM/S3 policies carry the real AWS account id and bucket name.
 # Only the <ACCOUNT_ID>/<BUCKET> placeholder templates are tracked.
 infra/*.json

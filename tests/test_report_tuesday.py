@@ -10,6 +10,8 @@ import pytest
 from espn_ff.report import monday, tuesday
 from espn_ff.weeks import ET
 
+import payload_helpers
+
 _FIXED_RENDERED_AT = 1789504260  # Tue 2026-09-15 16:31 ET
 
 
@@ -387,8 +389,11 @@ def test_sole_backup_at_a_one_deep_position_is_never_a_drop_candidate():
 
 
 def test_week_one_has_no_prior_week_to_review():
-    text = tuesday.build(2026, week=1, team_id=5)
-    assert "no prior week to review" in text.lower()
+    result = tuesday.build(2026, week=1, team_id=5)
+    assert "no prior week to review" in result.markdown.lower()
+    payload_helpers.assert_payload_matches_markdown(
+        result.markdown, result.data["sections"]
+    )
 
 
 # ---- header: covered dates ------------------------------------------------
@@ -421,3 +426,90 @@ def test_render_header_shows_insufficient_data_when_the_calendar_is_absent():
         list(tuesday.FOOTER_NOTES), rendered_at=_FIXED_RENDERED_AT,
     )
     assert "**Week 1** insufficient data" in text
+
+
+# ---- payload: the JSON twin ---------------------------------------------
+
+def _populated_render_args():
+    """Every section populated: a closed week, standings, regret rows, an
+    optimal-lineup headline, drops, and both IR lists."""
+    closure = {
+        "insufficient": False, "state": "final", "result": "L",
+        "our_points": 98.4, "their_points": 104.2, "margin": -5.8,
+        "opponent_name": "Them", "partial_note": None,
+    }
+    standings_result = {
+        "insufficient": False,
+        "rows": pd.DataFrame([
+            {"playoff_seed": 1, "team_name": "Them", "wins": 2, "losses": 0, "ties": 0,
+             "points_for": 210.5},
+            {"playoff_seed": 2, "team_name": "Us", "wins": 1, "losses": 1, "ties": 0,
+             "points_for": 198.1},
+        ]),
+        "games_note": "one game still in progress",
+    }
+    regret_rows = [{
+        "slot": "RB", "starter_name": "Started Guy", "starter_points": 4.2,
+        "bench_name": "Bench Guy", "bench_points": 18.9, "gap": 14.7,
+    }]
+    optimal = {"left_on_table": 14.7, "optimal_points": 113.1, "actual_points": 98.4}
+    drops = [{"player_name": "Deadweight", "position": "WR", "ros_projection": 2.1}]
+    ir_now = pd.DataFrame([{"player_name": "Hurt Guy", "position": "RB"}])
+    ir_maybe = pd.DataFrame([
+        {"player_name": "Maybe Guy", "position": "TE", "injury_status": "OUT"}
+    ])
+    return (2026, 1, closure, standings_result, regret_rows, optimal, drops,
+            ir_now, ir_maybe, list(tuesday.FOOTER_NOTES))
+
+
+def _empty_args():
+    closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe = _empty_render_args()
+    return (2026, 1, closure, standings_result, regret_rows, optimal, drops,
+            ir_now, ir_maybe, list(tuesday.FOOTER_NOTES))
+
+
+@pytest.mark.parametrize("args_name", ["empty", "populated"])
+def test_payload_names_the_same_sections_as_the_markdown(monkeypatch, args_name):
+    monkeypatch.setattr(tuesday, "freshness", lambda season=None: {
+        "sleeper": (None, True), "nflverse": (None, True),
+        "espn": (None, True), "odds": (None, True),
+    })
+    args = _empty_args() if args_name == "empty" else _populated_render_args()
+    kwargs = {"rendered_at": _FIXED_RENDERED_AT}
+
+    text = tuesday.render(*args, **kwargs)
+    header, sections = tuesday.payload(*args, **kwargs)
+
+    payload_helpers.assert_payload_matches_markdown(text, sections)
+    payload_helpers.assert_no_display_strings(sections)
+    payload_helpers.assert_json_serializable(header, sections)
+
+
+def test_payload_keeps_the_regret_headline_out_of_the_prose(monkeypatch):
+    """"points left on the table" is the one number in this report that adds
+    up, and in markdown it exists only inside a bolded sentence."""
+    monkeypatch.setattr(tuesday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = tuesday.payload(*_populated_render_args(), rendered_at=_FIXED_RENDERED_AT)
+    regret = next(s for s in sections if s["id"] == "optimal-lineup-regret")
+    assert regret["data"]["left_on_table"] == 14.7
+    assert regret["data"]["optimal_points"] == 113.1
+
+
+def test_payload_suppressed_regret_headline_is_insufficient_not_zero(monkeypatch):
+    """optimal=None means a NaN score made the figure uncomputable. Emitting
+    0 there would read as "you played the perfect lineup"."""
+    monkeypatch.setattr(tuesday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    args = list(_populated_render_args())
+    args[5] = None
+    _, sections = tuesday.payload(*args, rendered_at=_FIXED_RENDERED_AT)
+    regret = next(s for s in sections if s["id"] == "optimal-lineup-regret")
+    assert regret["data"]["left_on_table"] is None
+    assert regret["blocks"][0]["kind"] == "insufficient"
+
+
+def test_payload_standings_carries_sortable_record_parts(monkeypatch):
+    monkeypatch.setattr(tuesday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = tuesday.payload(*_populated_render_args(), rendered_at=_FIXED_RENDERED_AT)
+    standings = next(s for s in sections if s["id"] == "standings")
+    assert standings["rows"][0]["record"] == "2-0-0"
+    assert standings["rows"][0]["wins"] == 2

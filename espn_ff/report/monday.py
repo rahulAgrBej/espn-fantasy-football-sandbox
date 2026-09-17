@@ -16,6 +16,7 @@ import pandas as pd
 
 from .. import config, weeks
 from . import availability, pool, schedule
+from . import payload as payload_lib
 from .loaders import freshness, latest_export
 from .render import freshness_lines, header_lines
 
@@ -282,6 +283,161 @@ def render(
     return "\n".join(lines) + "\n"
 
 
+def payload(
+    season, week, team_id, monday_games, margin, at_risk, avail_df, alternatives_by_player, footer_notes,
+    window=None, rendered_at=None,
+):
+    """The structured twin of `render`, over the identical argument list. See
+    espn_ff/report/payload.py; `build` calls both on one pinned
+    `rendered_at`."""
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Monday night call -- {season} week {week}"
+
+    if monday_games.empty:
+        covers = f"nothing -- no Monday-night game in week {week}"
+        header = payload_lib.header_block(title, week, covers, window, rendered_at)
+        return header, [
+            payload_lib.freshness_section(freshness(season=season)),
+            payload_lib.prose_section(
+                "tonights-game", "Tonight's game",
+                [f"No Monday-night game in week {week}, as of this report's "
+                 f"{_fmt_rendered_date(rendered_at)} render. This report has nothing to add tonight."],
+                data={"has_game": False},
+            ),
+            payload_lib.list_section("cannot-see", "What this report cannot see", footer_notes),
+        ]
+
+    gameday = monday_games.iloc[0].get("gameday")
+    covers = f"Mon {gameday} -- week {week}'s Monday-night game"
+    header = payload_lib.header_block(title, week, covers, window, rendered_at)
+    sections = [payload_lib.freshness_section(freshness(season=season))]
+
+    rendered_date = _fmt_rendered_date(rendered_at)
+    game_columns = [
+        payload_lib.column("away_team", "away", "string"),
+        payload_lib.column("home_team", "home", "string"),
+        payload_lib.column("gametime", "gametime", "string"),
+    ]
+    game_notes = []
+    if gameday and rendered_date != gameday:
+        game_notes.append(f"_Rendered {rendered_date}, not {gameday} -- this game is not tonight's._")
+    sections.append(payload_lib.table_section(
+        "tonights-game", "Tonight's game", game_columns,
+        payload_lib.rows(monday_games, game_columns), notes=game_notes,
+        # `is_tonight` is the fact the italic note above states in prose: a
+        # render on the wrong day is history, not a decision.
+        data={"has_game": True, "gameday": gameday, "is_tonight": bool(gameday) and rendered_date == gameday},
+    ))
+
+    if margin["insufficient"]:
+        sections.append(payload_lib.insufficient_section("live-margin", "Live margin", margin["reason"]))
+    else:
+        verb = "down" if margin["margin"] > 0 else "up"
+        sections.append(payload_lib.prose_section(
+            "live-margin", "Live margin",
+            [f"Us {margin['our_points']:.1f} -- {margin.get('opponent_name', 'opponent')} "
+             f"{margin['their_points']:.1f} ({verb} {abs(margin['margin']):.1f})"],
+            # Signed, as the module computes it -- ours minus theirs. The
+            # prose renders the absolute value beside "up"/"down", which a
+            # consumer cannot invert back into a sign.
+            data={
+                "our_points": margin["our_points"], "their_points": margin["their_points"],
+                "margin": margin["margin"], "trailing": margin["margin"] > 0,
+                "opponent_name": margin.get("opponent_name"),
+            },
+        ))
+
+    if at_risk.empty:
+        sections.append(payload_lib.prose_section(
+            "who-is-left", "Who is left", ["No starter on either side is in tonight's game."],
+            data={"count": 0},
+        ))
+    else:
+        left_columns = [
+            payload_lib.column("side", "side", "string"),
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("position", "position", "string"),
+            payload_lib.column("pro_team", "pro_team", "string"),
+        ]
+        sections.append(payload_lib.table_section(
+            "who-is-left", "Who is left", left_columns,
+            payload_lib.rows(at_risk, left_columns), data={"count": len(at_risk)},
+        ))
+
+    if avail_df.empty:
+        sections.append(payload_lib.prose_section(
+            "availability", "Availability", ["Nothing at risk tonight."], data={"count": 0},
+        ))
+    else:
+        avail_columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("tier", "tier", "string"),
+            payload_lib.column("espn_injury_status", "ESPN", "string"),
+            payload_lib.column("sleeper_tier", "Sleeper", "string"),
+            payload_lib.column("nflverse_report_status", "nflverse", "string"),
+        ]
+        sections.append(payload_lib.table_section(
+            "availability", "Availability", avail_columns,
+            payload_lib.rows(avail_df, avail_columns), data={"count": len(avail_df)},
+        ))
+
+    sections.append(_alternatives_section(at_risk, alternatives_by_player))
+    sections.append(payload_lib.list_section("cannot-see", "What this report cannot see", footer_notes))
+    return header, sections
+
+
+def _alternatives_section(at_risk, alternatives_by_player):
+    """`## Alternatives`, one `###` per at-risk starter of ours. Bench and
+    free-agent candidates share one table with a `source` column rather than
+    two tables: the markdown distinguishes them by line prefix, and a single
+    ranked list is what the reader is actually choosing from."""
+    ours_at_risk = at_risk[at_risk["side"] == "ours"] if not at_risk.empty else at_risk
+    if ours_at_risk.empty:
+        return payload_lib.prose_section(
+            "alternatives", "Alternatives", ["No at-risk starter on our side tonight."],
+            data={"count": 0},
+        )
+
+    columns = [
+        payload_lib.column("source", "source", "string"),
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("pro_team", "pro_team", "string"),
+        payload_lib.column("projection", "proj", "number"),
+        payload_lib.column("drop_candidate", "drop", "string"),
+    ]
+    blocks = []
+    for _, starter in ours_at_risk.iterrows():
+        alt = alternatives_by_player.get(starter["player_id"])
+        heading = f"{starter['player_name']} ({starter['lineup_slot']})"
+        block_id = f"alternatives-{starter['player_id']}"
+        data = {"player_id": starter["player_id"], "lineup_slot": starter["lineup_slot"]}
+        if alt is None or alt["no_swap"]:
+            blocks.append(payload_lib.prose_section(
+                block_id, heading,
+                ["No legal swap exists -- no bench or free-agent candidate is on either "
+                 "of tonight's two teams."],
+                level=3, data={**data, "no_swap": True},
+            ))
+            continue
+        rows = [
+            {"source": "bench", "player_name": payload_lib.unset(c["player_name"]),
+             "pro_team": payload_lib.unset(c["pro_team"]),
+             "projection": payload_lib.unset(c["projected"]), "drop_candidate": None}
+            for _, c in alt["bench"].iterrows()
+        ] + [
+            {"source": "free_agent", "player_name": payload_lib.unset(c["player_name"]),
+             "pro_team": payload_lib.unset(c["pro_team"]),
+             "projection": payload_lib.unset(c["week_projected"]),
+             "drop_candidate": payload_lib.unset(alt["drop_candidate"]) or None}
+            for _, c in alt["free_agents"].iterrows()
+        ]
+        blocks.append(payload_lib.table_section(
+            block_id, heading, columns, rows, level=3, data={**data, "no_swap": False},
+        ))
+
+    return payload_lib.blocks_section("alternatives", "Alternatives", blocks)
+
+
 FOOTER_NOTES = [
     "Official inactives drop roughly 90 minutes before kickoff, in no feed this pipeline touches.",
     "Whether an unowned player can be added on a Monday is a league waiver setting recorded "
@@ -334,7 +490,15 @@ def build(season, week, team_id=None):
                 starter, our_bench, free_agents_df, pool_df, allowed_slots, monday_teams
             )
 
-    return render(
-        season, week, team_id, monday_games, margin, at_risk, avail_df, alternatives_by_player, FOOTER_NOTES,
-        window=weeks.week_window(season, week),
+    args = (
+        season, week, team_id, monday_games, margin, at_risk, avail_df,
+        alternatives_by_player, FOOTER_NOTES,
+    )
+    # `rendered_at` is pinned here rather than left to each emitter's own
+    # time.time() default -- two calls would stamp the markdown and the JSON
+    # that embeds it with different clock reads on every single run.
+    kwargs = {"window": weeks.week_window(season, week), "rendered_at": time.time()}
+    header, sections = payload(*args, **kwargs)
+    return payload_lib.RenderedReport(
+        render(*args, **kwargs), {"header": header, "sections": sections}
     )

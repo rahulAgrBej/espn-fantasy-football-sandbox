@@ -29,7 +29,7 @@ from .. import config, weeks
 from ..names import normalize_team
 from ..odds import projections as odds_projections
 from ..odds import store as odds_store
-from . import monday, pool, tuesday
+from . import monday, payload as payload_lib, pool, tuesday
 from .loaders import freshness, latest_export
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 
@@ -653,6 +653,214 @@ def render(
     return "\n".join(lines) + "\n"
 
 
+def payload(
+    season, week, team_id, settle, order, blocks, totals, drop_list, footer_notes,
+    window=None, prev_window=None, rendered_at=None,
+):
+    """The structured twin of `render`, over the identical argument list. See
+    espn_ff/report/payload.py."""
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Waiver wire and opening market -- {season} week {week}"
+    covers = f"week {week}'s waiver window"
+    if prev_window:
+        covers += f"; settlements also span week {week - 1} ({weeks.format_window(*prev_window)})"
+
+    header = payload_lib.header_block(title, week, covers, window, rendered_at)
+    sections = [payload_lib.freshness_section(freshness(season=season))]
+
+    decisions = []
+    if order["insufficient"]:
+        decisions.append(f"Waiver order: **insufficient data** -- {order['reason']}")
+    else:
+        decisions.append(f"Our waiver rank: {num(order['our_rank'], places=0)} of {order['our_rank_of']}.")
+    total_rows = sum(len(b["rows"]) for b in blocks)
+    clearing = sum(1 for b in blocks for r in b["rows"] if r["gap"] is not None and r["gap"] > 0)
+    decisions.append(
+        f"{clearing} of {total_rows} add candidates below project to clear their slot's bench floor."
+    )
+    if drop_list:
+        decisions.append(
+            f"{len(drop_list)} legal drop(s) exist; the pairings below are alternatives to one another "
+            "beyond that count, not simultaneously-available moves."
+        )
+    decisions.append(
+        "_Claim-deadline guidance: this league processes waivers tonight (Tuesday into Wednesday) -- "
+        "submit or adjust claims before then; results land in tomorrow morning's ESPN pull._"
+    )
+    sections.append(payload_lib.prose_section(
+        "decisions-due", "Decisions due", decisions,
+        data={
+            "our_rank": None if order["insufficient"] else order["our_rank"],
+            "our_rank_of": None if order["insufficient"] else order["our_rank_of"],
+            "add_candidate_count": total_rows,
+            "clearing_bench_floor_count": clearing,
+            "legal_drop_count": len(drop_list),
+        },
+    ))
+
+    sections.append(_settlements_section(settle))
+    sections.append(_waiver_order_section(order, team_id))
+    sections.append(_opening_market_section(totals))
+    sections.append(_add_candidates_section(blocks))
+
+    if drop_list:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("position", "position", "string"),
+            payload_lib.column("ros_projection", "ROS projection (inferred)", "number"),
+        ]
+        sections.append(payload_lib.table_section(
+            "drop-candidates", "Drop candidates", columns, payload_lib.rows(drop_list, columns),
+            notes=[f"{len(drop_list)} legal drop(s), ranked weakest ROS projection first -- named per "
+                   "add row above; reused across slot blocks, not simultaneously available."],
+            data={"count": len(drop_list)},
+        ))
+    else:
+        sections.append(payload_lib.prose_section(
+            "drop-candidates", "Drop candidates",
+            ["No bench player is a legal drop candidate this week."], data={"count": 0},
+        ))
+
+    sections.append(payload_lib.list_section("cannot-see", "What this report cannot see", footer_notes))
+    return header, sections
+
+
+def _settlements_section(settle):
+    if settle["insufficient"]:
+        return payload_lib.insufficient_section(
+            "waiver-settlements", "Waiver settlements", settle["reason"],
+        )
+    notes = []
+    if not settle["waiver_type_observed"]:
+        notes.append(
+            "_No `WAIVER`-type transaction has ever been observed in this league's export; "
+            "rows below are `FREEAGENT` claims only._"
+        )
+    if not settle["faab_in_use"]:
+        notes.append("_This league shows no FAAB bids in any observed transaction -- not \"0 spent\"._")
+    if settle["pending_count"]:
+        notes.append(f"_{settle['pending_count']} row(s) below are still pending -- not yet settled._")
+    if settle["excluded_count"]:
+        notes.append(f"_{settle['excluded_count']} other transaction(s) in this window were DRAFT/"
+                     "ROSTER-LINEUP/TRADE_PROPOSAL and are excluded above._")
+
+    columns = [
+        payload_lib.column("scoring_period", "period", "integer"),
+        payload_lib.column("acting_team", "team", "string"),
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("type", "type", "string"),
+        payload_lib.column("item_type", "item", "string"),
+        payload_lib.column("execution_type", "execution", "string"),
+        payload_lib.column("is_pending", "pending", "boolean"),
+        payload_lib.column("bid_amount", "bid", "number"),
+        payload_lib.column("proposed_date", "date", "date"),
+    ]
+    return payload_lib.table_section(
+        "waiver-settlements", "Waiver settlements", columns,
+        payload_lib.rows(settle["rows"], columns), notes=notes,
+        # `faab_in_use` false is not "0 spent" -- the distinction the italic
+        # note above makes, kept as a flag so a consumer cannot lose it.
+        data={
+            "pending_count": settle["pending_count"],
+            "excluded_count": settle["excluded_count"],
+            "waiver_type_observed": settle["waiver_type_observed"],
+            "faab_in_use": settle["faab_in_use"],
+        },
+    )
+
+
+def _waiver_order_section(order, team_id):
+    if order["insufficient"]:
+        return payload_lib.insufficient_section("waiver-order", "Waiver order", order["reason"])
+    columns = [
+        payload_lib.column("rank", "rank", "integer"),
+        payload_lib.column("team_name", "team", "string"),
+        payload_lib.column("waiver_rank", "waiver_rank", "integer"),
+        payload_lib.column("is_ours", "ours", "boolean"),
+    ]
+    # The markdown marks our row with a `<--` arrow; a boolean is the same
+    # fact without the consumer matching on punctuation.
+    rows = [
+        {
+            "rank": i + 1, "team_name": payload_lib.unset(r["team_name"]),
+            "waiver_rank": payload_lib.unset(r["waiver_rank"]),
+            "is_ours": r["team_id"] == team_id,
+        }
+        for i, (_, r) in enumerate(order["rows"].iterrows())
+    ]
+    return payload_lib.table_section("waiver-order", "Waiver order", columns, rows)
+
+
+def _opening_market_section(totals):
+    if totals["insufficient"]:
+        return payload_lib.insufficient_section(
+            "opening-market", "Opening market",
+            f"{totals['reason']}. `implied_team_total` tempering was not applied to the "
+            "add candidates below",
+        )
+    columns = [
+        payload_lib.column("team", "team", "string"),
+        payload_lib.column("implied_team_total", "implied_team_total", "number"),
+    ]
+    rows = [
+        {"team": team, "implied_team_total": payload_lib.unset(value)}
+        for team, value in sorted(totals["by_team"].items())
+    ]
+    return payload_lib.table_section("opening-market", "Opening market", columns, rows)
+
+
+def _add_candidates_section(blocks):
+    """`## Add candidates`, one `###` per slot. The bench floor is the number
+    each block's rows are judged against, so it rides in the block's `data`
+    rather than only in the italic line above the table."""
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("position", "position", "string"),
+        payload_lib.column("pro_team", "pro_team", "string"),
+        payload_lib.column("week_projected", "week_projected", "number"),
+        payload_lib.column("gap", "gap", "number"),
+        payload_lib.column("percent_owned", "percent_owned", "number"),
+        payload_lib.column("implied_team_total", "implied_team_total", "number"),
+        payload_lib.column("trending_add", "trending_add", "number"),
+        payload_lib.column("drop_name", "drop", "string"),
+    ]
+    slot_blocks = []
+    for block in blocks:
+        notes = []
+        bench_floor = block["bench_floor"]
+        if bench_floor:
+            notes.append(f"_Bench floor: {bench_floor['player_name']} "
+                         f"({num(bench_floor['projection'])} proj, source={bench_floor['source']})._")
+        else:
+            notes.append(f"_{INSUFFICIENT_DATA} -- no eligible bench player at this slot to set a floor._")
+            if block["starter_context"]:
+                sc = block["starter_context"]
+                notes.append(f"_Current starter for context: {sc['player_name']} "
+                             f"({num(sc['projection'])} proj)._")
+        if block["slot"] in ("WR", "RB/WR"):
+            notes.append("_WR and RB/WR share eligible candidates -- this block may repeat the other's rows._")
+
+        data = {
+            "slot": block["slot"],
+            "bench_floor_player": bench_floor["player_name"] if bench_floor else None,
+            "bench_floor_projection": bench_floor["projection"] if bench_floor else None,
+            "bench_floor_source": bench_floor["source"] if bench_floor else None,
+            "row_count": len(block["rows"]),
+        }
+        block_id = f"add-{block['slot'].lower().replace('/', '-')}"
+        if block["rows"]:
+            slot_blocks.append(payload_lib.table_section(
+                block_id, block["slot"], columns, payload_lib.rows(block["rows"], columns),
+                notes=notes, level=3, data=data,
+            ))
+        else:
+            slot_blocks.append(payload_lib.prose_section(
+                block_id, block["slot"], notes + [f"_{block['none_reason']}_"],
+                level=3, data=data,
+            ))
+    return payload_lib.blocks_section("add-candidates", "Add candidates", slot_blocks)
+
+
 def build(season, week, team_id=None):
     """Assemble the full waiver-wire report as markdown text. `week` is
     the current scoring period with **no offset** -- unlike
@@ -713,8 +921,15 @@ def build(season, week, team_id=None):
             "the position-fallback map -- the fallback path may be wrong for them specifically."
         )
 
-    return render(
-        season, week, team_id, settle, order, blocks, totals, drop_list, footer_notes,
-        window=weeks.week_window(season, week),
-        prev_window=weeks.week_window(season, week - 1) if week - 1 >= 1 else None,
+    args = (season, week, team_id, settle, order, blocks, totals, drop_list, footer_notes)
+    # Pinned once: two emitters each defaulting to their own time.time() would
+    # stamp the markdown and the JSON embedding it with different clock reads.
+    kwargs = {
+        "window": weeks.week_window(season, week),
+        "prev_window": weeks.week_window(season, week - 1) if week - 1 >= 1 else None,
+        "rendered_at": time.time(),
+    }
+    header, sections = payload(*args, **kwargs)
+    return payload_lib.RenderedReport(
+        render(*args, **kwargs), {"header": header, "sections": sections}
     )

@@ -24,6 +24,7 @@ import pandas as pd
 
 from .. import config, weeks
 from . import monday
+from . import payload as payload_lib
 from .loaders import freshness, latest_export
 from .render import freshness_lines, header_lines, num, table
 
@@ -548,6 +549,185 @@ def render(
     return "\n".join(lines) + "\n"
 
 
+def payload(
+    season, review_week, closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe, footer_notes,
+    window=None, rendered_at=None,
+):
+    """The structured twin of `render`, over the identical argument list. See
+    espn_ff/report/payload.py."""
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Week {review_week} in review -- {season}"
+    covers = f"week {review_week}, the completed week this report reviews"
+
+    header = payload_lib.header_block(title, review_week, covers, window, rendered_at)
+    sections = [payload_lib.freshness_section(freshness(season=season))]
+
+    ir_columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("position", "position", "string"),
+        payload_lib.column("status", "status", "string"),
+    ]
+    decisions_blocks = [payload_lib.prose_section(
+        "decisions-due-lead", None,
+        ["None binding today. This report seeds the shortlist for the 11:00 waiver-wire report."],
+        level=None,
+    )]
+    if not ir_now.empty:
+        decisions_blocks.append(payload_lib.table_section(
+            "ir-eligible-now", None, ir_columns,
+            [{"player_name": payload_lib.unset(r["player_name"]),
+              "position": payload_lib.unset(r["position"]), "status": "INJURY_RESERVE"}
+             for _, r in ir_now.iterrows()],
+            notes=["IR-eligible now:"], level=None,
+        ))
+    if not ir_maybe.empty:
+        decisions_blocks.append(payload_lib.table_section(
+            "ir-eligible-maybe", None, ir_columns,
+            [{"player_name": payload_lib.unset(r["player_name"]),
+              "position": payload_lib.unset(r["position"]),
+              "status": payload_lib.unset(r["injury_status"])}
+             for _, r in ir_maybe.iterrows()],
+            notes=["Possibly IR-eligible, depending on this league's setting "
+                   "(assumption, unconfirmed):"],
+            level=None,
+        ))
+    sections.append(payload_lib.blocks_section(
+        "decisions-due", "Decisions due", decisions_blocks,
+        data={"binding": False, "ir_now_count": len(ir_now), "ir_maybe_count": len(ir_maybe)},
+    ))
+
+    if closure["insufficient"]:
+        sections.append(payload_lib.insufficient_section(
+            "result", "Result", closure["reason"],
+            data={"state": closure["state"]},
+        ))
+    else:
+        verb = {"W": "won", "L": "lost", "T": "tied"}.get(closure["result"], "result unclear")
+        body = [
+            f"{verb.capitalize()}. Us {num(closure['our_points'])} -- "
+            f"{closure.get('opponent_name', 'opponent')} {num(closure['their_points'])} "
+            f"(margin {num(closure['margin'])}, ours minus theirs)"
+        ]
+        if closure.get("partial_note"):
+            body.append(f"_{closure['partial_note']}_")
+        sections.append(payload_lib.prose_section(
+            "result", "Result", body,
+            data={
+                "result": closure["result"], "our_points": closure["our_points"],
+                "their_points": closure["their_points"], "margin": closure["margin"],
+                "opponent_name": closure.get("opponent_name"), "state": closure.get("state"),
+                "partial_note": closure.get("partial_note"),
+            },
+        ))
+
+    if standings_result["insufficient"]:
+        sections.append(payload_lib.insufficient_section(
+            "standings", "Standings", standings_result["reason"],
+        ))
+    else:
+        columns = [
+            payload_lib.column("playoff_seed", "seed", "integer"),
+            payload_lib.column("team_name", "team", "string"),
+            payload_lib.column("record", "record", "string"),
+            payload_lib.column("wins", "wins", "integer"),
+            payload_lib.column("losses", "losses", "integer"),
+            payload_lib.column("ties", "ties", "integer"),
+            payload_lib.column("points_for", "points for", "number"),
+        ]
+        # `record` is the markdown's "W-L-T" string; wins/losses/ties are
+        # carried beside it so a consumer can sort on them without parsing.
+        rows = [
+            {
+                "playoff_seed": payload_lib.unset(r["playoff_seed"]),
+                "team_name": payload_lib.unset(r["team_name"]),
+                "record": f"{r['wins']}-{r['losses']}-{r['ties']}",
+                "wins": payload_lib.unset(r["wins"]), "losses": payload_lib.unset(r["losses"]),
+                "ties": payload_lib.unset(r["ties"]),
+                "points_for": payload_lib.unset(r["points_for"]),
+            }
+            for _, r in standings_result["rows"].iterrows()
+        ]
+        notes = []
+        if standings_result.get("games_note"):
+            notes.append(f"_{standings_result['games_note']}_")
+        sections.append(payload_lib.table_section("standings", "Standings", columns, rows, notes=notes))
+
+    sections.append(_regret_section(optimal, regret_rows))
+
+    if drops:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("position", "position", "string"),
+            payload_lib.column("ros_projection", "ROS projection (inferred)", "number"),
+        ]
+        sections.append(payload_lib.table_section(
+            "drop-candidates", "Drop candidates", columns, payload_lib.rows(drops, columns),
+            data={"count": len(drops)},
+        ))
+    else:
+        sections.append(payload_lib.prose_section(
+            "drop-candidates", "Drop candidates",
+            ["No bench player is a drop candidate this week."], data={"count": 0},
+        ))
+
+    sections.append(payload_lib.list_section("cannot-see", "What this report cannot see", footer_notes))
+    return header, sections
+
+
+def _regret_section(optimal, regret_rows):
+    """`## Optimal-lineup regret`: a headline, the standing caveat that the
+    per-slot gaps do not add, then the per-slot table."""
+    if optimal is None:
+        headline = payload_lib.insufficient_section(
+            "regret-headline", None,
+            "at least one rostered player's points read NaN this week; the optimal-lineup "
+            "headline is suppressed rather than computed against a missing score",
+            level=None,
+        )
+        data = {"left_on_table": None, "optimal_points": None, "actual_points": None}
+    else:
+        headline = payload_lib.prose_section(
+            "regret-headline", None,
+            [f"**{num(optimal['left_on_table'])} points left on the table** "
+             f"(optimal {num(optimal['optimal_points'])} vs actual {num(optimal['actual_points'])})."],
+            emphasis=True, level=None,
+        )
+        data = {
+            "left_on_table": optimal["left_on_table"],
+            "optimal_points": optimal["optimal_points"],
+            "actual_points": optimal["actual_points"],
+        }
+
+    caveat = payload_lib.prose_section(
+        "regret-caveat", None,
+        ["_Per-slot gaps below are independent counterfactuals and do not add; for the one number "
+         "that does, see \"points left on the table\" above._"],
+        level=None,
+    )
+    if regret_rows:
+        columns = [
+            payload_lib.column("slot", "slot", "string"),
+            payload_lib.column("starter_name", "started", "string"),
+            payload_lib.column("starter_points", "starter pts", "number"),
+            payload_lib.column("bench_name", "best bench", "string"),
+            payload_lib.column("bench_points", "bench pts", "number"),
+            payload_lib.column("gap", "gap", "number"),
+        ]
+        table_block = payload_lib.table_section(
+            "regret-rows", None, columns, payload_lib.rows(regret_rows, columns), level=None,
+        )
+    else:
+        table_block = payload_lib.prose_section(
+            "regret-rows", None,
+            ["No starter was outscored by an eligible bench player this week."], level=None,
+        )
+
+    return payload_lib.blocks_section(
+        "optimal-lineup-regret", "Optimal-lineup regret",
+        [headline, caveat, table_block], data=data,
+    )
+
+
 def build(season, week, team_id=None):
     """Assemble the full Tuesday report as markdown text. `--week` keeps
     Monday's contract exactly -- the current scoring period -- and this
@@ -556,16 +736,27 @@ def build(season, week, team_id=None):
     review_week = week - 1
 
     if review_week < 1:
-        lines = header_lines(
-            f"Week {review_week} in review -- {season}", review_week,
-            "nothing -- there is no prior week to review", None, time.time(),
-        )
+        rendered_at = time.time()
+        title = f"Week {review_week} in review -- {season}"
+        covers = "nothing -- there is no prior week to review"
+        lines = header_lines(title, review_week, covers, None, rendered_at)
         lines += [
             "", "No completed week yet -- there is no prior week to review.", "",
             "## What this report cannot see",
         ]
         lines.extend(f"- {n}" for n in FOOTER_NOTES)
-        return "\n".join(lines) + "\n"
+        # The one branch whose body precedes any heading, so the lead line is
+        # a headingless block rather than a section of its own.
+        return payload_lib.RenderedReport("\n".join(lines) + "\n", {
+            "header": payload_lib.header_block(title, review_week, covers, None, rendered_at),
+            "sections": [
+                payload_lib.prose_section(
+                    "no-completed-week", None,
+                    ["No completed week yet -- there is no prior week to review."], level=None,
+                ),
+                payload_lib.list_section("cannot-see", "What this report cannot see", FOOTER_NOTES),
+            ],
+        })
 
     matchups_df = latest_export("matchups")
     closure = week_closed(matchups_df, review_week, team_id)
@@ -610,7 +801,14 @@ def build(season, week, team_id=None):
             "the position-fallback map -- the fallback path may be wrong for them specifically."
         )
 
-    return render(
-        season, review_week, closure, standings_result, regret_rows, optimal, drops, ir_now, ir_maybe, footer_notes,
-        window=weeks.week_window(season, review_week),
+    args = (
+        season, review_week, closure, standings_result, regret_rows, optimal, drops,
+        ir_now, ir_maybe, footer_notes,
+    )
+    # Pinned once: two emitters each defaulting to their own time.time() would
+    # stamp the markdown and the JSON embedding it with different clock reads.
+    kwargs = {"window": weeks.week_window(season, review_week), "rendered_at": time.time()}
+    header, sections = payload(*args, **kwargs)
+    return payload_lib.RenderedReport(
+        render(*args, **kwargs), {"header": header, "sections": sections}
     )

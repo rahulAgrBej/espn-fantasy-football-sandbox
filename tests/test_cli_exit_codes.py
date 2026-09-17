@@ -18,6 +18,7 @@ deliberately absent from main()'s except-chain for that reason -- the
 command catches it itself. The last block of tests here pins that.
 """
 
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,7 @@ from espn_ff.ai.client import GeminiError
 from espn_ff.client import EspnError, PrivateLeagueError
 from espn_ff.nflverse.client import NflverseError
 from espn_ff.odds.ledger import BudgetExceeded, OddsError
+from espn_ff.report import payload as report_payload
 
 
 def _run(monkeypatch, exc):
@@ -84,12 +86,30 @@ def test_success_is_zero(monkeypatch):
     assert cli.main(["credits"]) == cli.EXIT_OK
 
 
+def _report_stub(markdown):
+    """A stand-in for a day module's `build`, returning what the real ones
+    return: the markdown plus the structured payload cmd_report writes as
+    JSON. A bare string would make these dispatch tests pass against a
+    cmd_report that had lost the JSON half entirely."""
+    def stub(season, week, team_id=None):
+        return report_payload.RenderedReport(
+            markdown,
+            {
+                "header": report_payload.header_block(
+                    "Stub", week, "a stub report", None, 1_760_000_000
+                ),
+                "sections": [report_payload.prose_section("stub", "Stub", ["body"])],
+            },
+        )
+    return stub
+
+
 def test_report_day_tuesday_dispatches_to_the_tuesday_builder(monkeypatch, tmp_path):
     """report --day tuesday used to hit cmd_report's "not implemented yet"
     guard, since REPORT_DAYS only ever held "monday". Pins that REPORTS
     now routes tuesday to report_tuesday.build rather than falling
     through to that error path."""
-    stub = lambda season, week, team_id=None: "stub tuesday report\n"
+    stub = _report_stub("stub tuesday report\n")
     monkeypatch.setitem(cli.REPORTS, "tuesday", (stub, "tuesday", "week-in-review"))
     monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
 
@@ -108,7 +128,7 @@ def test_report_filename_uses_et_date_not_runner_local_date(monkeypatch, tmp_pat
     (runner-local), so a render crossing that boundary landed beside the
     stale file instead of replacing it. Pins that the filename is now
     derived from `datetime.now(ET)` instead."""
-    stub = lambda season, week, team_id=None: "stub tuesday report\n"
+    stub = _report_stub("stub tuesday report\n")
     monkeypatch.setitem(cli.REPORTS, "tuesday", (stub, "tuesday", "week-in-review"))
     monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
 
@@ -135,7 +155,7 @@ def test_report_day_saturday_dispatches_to_the_saturday_builder(monkeypatch, tmp
     """report --day saturday must route to report_saturday.build, the same
     way test_report_day_tuesday_dispatches_to_the_tuesday_builder pins
     tuesday's routing."""
-    stub = lambda season, week, team_id=None: "stub saturday report\n"
+    stub = _report_stub("stub saturday report\n")
     monkeypatch.setitem(cli.REPORTS, "saturday", (stub, "saturday", "contingency-check"))
     monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
 
@@ -151,7 +171,7 @@ def test_report_day_sunday_dispatches_to_the_sunday_builder(monkeypatch, tmp_pat
     """report --day sunday must route to report_sunday.build, the same way
     test_report_day_saturday_dispatches_to_the_saturday_builder pins
     saturday's routing."""
-    stub = lambda season, week, team_id=None: "stub sunday report\n"
+    stub = _report_stub("stub sunday report\n")
     monkeypatch.setitem(cli.REPORTS, "sunday", (stub, "sunday", "pre-lock-call"))
     monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
 
@@ -258,3 +278,43 @@ def test_gemini_errors_are_not_in_mains_except_chain():
     were ever added to main()'s handler chain it would silently start
     mapping to exit 1 for every other command too."""
     assert not issubclass(GeminiError, (EspnError, NflverseError, OddsError))
+
+
+def test_report_writes_the_json_twin_beside_the_markdown(monkeypatch, tmp_path):
+    """One `build` call, two artifacts. The JSON lands in a sibling
+    *directory*, not a sibling file: report.yml commits `reports/` wholesale
+    and s3_sync.sh mirrors that tree with --delete, so a .json inside it
+    would be committed and would inherit the wrong sync semantics."""
+    monkeypatch.setitem(cli.REPORTS, "tuesday", (_report_stub("stub\n"), "tuesday", "week-in-review"))
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+
+    assert cli.main(["report", "--day", "tuesday", "--week", "2"]) == cli.EXIT_OK
+
+    md = next(iter(tmp_path.rglob("*-tuesday-week-in-review.md")))
+    written = list(tmp_path.rglob("*-tuesday-week-in-review.json"))
+    assert len(written) == 1
+    assert written[0].parent == tmp_path / "reports-json" / "2026" / "week-02"
+    assert md.parent == tmp_path / "reports" / "2026" / "week-02"
+    assert written[0].stem == md.stem
+    # Nothing JSON-shaped may appear under the --delete-mirrored tree.
+    assert not list((tmp_path / "reports").rglob("*.json"))
+
+
+def test_report_json_embeds_the_markdown_verbatim(monkeypatch, tmp_path):
+    """The no-information-loss guarantee, end to end: whatever the section
+    structuring did not capture is still readable out of the envelope."""
+    monkeypatch.setitem(
+        cli.REPORTS, "tuesday", (_report_stub("# T\n\nbody\n"), "tuesday", "week-in-review")
+    )
+    monkeypatch.setattr(cli.config, "PROJECT_ROOT", tmp_path)
+
+    cli.main(["report", "--day", "tuesday", "--week", "2"])
+
+    written = next(iter(tmp_path.rglob("*-tuesday-week-in-review.json")))
+    envelope = json.loads(written.read_text())
+    assert envelope["markdown"] == "# T\n\nbody\n"
+    assert envelope["schema_version"] == report_payload.SCHEMA_VERSION
+    assert envelope["day"] == "tuesday" and envelope["week"] == 2
+    assert envelope["related"]["markdown_path"] == (
+        f"reports/2026/week-02/{written.stem}.md"
+    )

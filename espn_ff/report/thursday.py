@@ -26,7 +26,7 @@ import pandas as pd
 from .. import config, weeks
 from ..odds import projections as odds_projections
 from ..odds import store as odds_store
-from . import availability, loaders, monday, schedule, tuesday, waivers, wednesday
+from . import availability, loaders, monday, payload as payload_lib, schedule, tuesday, waivers, wednesday
 from .loaders import espn_export_warning, freshness, latest_export
 from .render import INSUFFICIENT_DATA, freshness_lines, header_lines, num, table
 
@@ -400,6 +400,262 @@ def render(season, week, team_id, usage_week, thursday_games, tnf_rows, watch_ro
     return "\n".join(lines) + "\n"
 
 
+def payload(season, week, team_id, usage_week, thursday_games, tnf_rows, watch_rows,
+            gate, features_df, props_gate, market, divergence_rows, could_not_compare,
+            swap_rows, practice_df, footer_notes, window=None, rendered_at=None):
+    """The structured twin of `render`, over the identical argument list.
+
+    Note the two headings this report builds at render time -- "Canonical
+    usage -- week N" -- which is why section ids here are fixed strings and
+    never slugged from the heading. See espn_ff/report/payload.py.
+    """
+    rendered_at = rendered_at if rendered_at is not None else time.time()
+    title = f"Usage and market -- {season} week {week}"
+    covers = f"week {week}'s Thursday-night start/sit; canonical usage below reviews week {usage_week}"
+
+    header = payload_lib.header_block(title, week, covers, window, rendered_at)
+    sections = [
+        payload_lib.freshness_section(freshness(season=season)),
+        _decisions_section(week, thursday_games, tnf_rows, watch_rows),
+        _canonical_usage_section(usage_week, gate, features_df),
+        _market_section(props_gate, market),
+        _divergence_section(divergence_rows, could_not_compare),
+    ]
+
+    if not swap_rows:
+        sections.append(payload_lib.prose_section(
+            "swap-candidates", "Swap candidates",
+            ["No starter's one-week snap share fell against a bench player trending the other way."],
+            data={"count": 0},
+        ))
+    else:
+        columns = [
+            payload_lib.column("starter_name", "starter", "string"),
+            payload_lib.column("starter_delta", "starter delta", "number"),
+            payload_lib.column("starter_wopr", "starter wopr", "number"),
+            payload_lib.column("bench_name", "bench", "string"),
+            payload_lib.column("bench_delta", "bench delta", "number"),
+            payload_lib.column("bench_wopr", "bench wopr", "number"),
+            payload_lib.column("gap", "gap", "number"),
+        ]
+        sections.append(payload_lib.table_section(
+            "swap-candidates", "Swap candidates", columns,
+            payload_lib.rows(swap_rows, columns), data={"count": len(swap_rows)},
+        ))
+
+    sections.append(payload_lib.prose_section(
+        "drop-candidates", "Drop candidates",
+        ["_None today._ The waiver deadline was Tuesday night; a mid-week drop on two practice days "
+         "trades a real bye-week problem for a marginal add."],
+        data={"by_design": True},
+    ))
+
+    if practice_df.empty:
+        sections.append(payload_lib.insufficient_section(
+            "practice-report", "Practice report -- Wed / Thu",
+            "no roster or no Sleeper snapshot to read",
+        ))
+    else:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("practice_trajectory", "trajectory (W/T/--)", "string"),
+        ]
+        sections.append(payload_lib.table_section(
+            "practice-report", "Practice report -- Wed / Thu", columns,
+            payload_lib.rows(practice_df, columns),
+        ))
+
+    sections.append(payload_lib.list_section("cannot-see", "What this report cannot see", footer_notes))
+    return header, sections
+
+
+def _decisions_section(week, thursday_games, tnf_rows, watch_rows):
+    """`## Decisions due` -- the only binding call of the day, so the lead
+    line is flagged `emphasis` and the binding fact rides in `data`."""
+    lead = payload_lib.prose_section(
+        "decisions-due-lead", None,
+        ["**The Thursday-night start/sit is binding at kickoff** -- the only hard call today."],
+        emphasis=True, level=None,
+    )
+    if thursday_games.empty:
+        return payload_lib.blocks_section(
+            "decisions-due", "Decisions due",
+            [lead, payload_lib.prose_section(
+                "tnf-game", None, [f"No Thursday-night game in week {week}."], level=None,
+            )],
+            data={"binding": True, "has_game": False, "tnf_player_count": 0},
+        )
+
+    game_columns = [
+        payload_lib.column("away_team", "away", "string"),
+        payload_lib.column("home_team", "home", "string"),
+        payload_lib.column("gametime", "gametime", "string"),
+    ]
+    blocks = [lead, payload_lib.table_section(
+        "tnf-game", None, game_columns, payload_lib.rows(thursday_games, game_columns), level=None,
+    )]
+
+    if not tnf_rows:
+        blocks.append(payload_lib.prose_section(
+            "tnf-players", None, ["No rostered player is on tonight's two teams."], level=None,
+        ))
+    else:
+        columns = [
+            payload_lib.column("player_name", "player", "string"),
+            payload_lib.column("side", "role", "string"),
+            payload_lib.column("slot", "slot", "string"),
+            payload_lib.column("tier", "tier", "string"),
+            payload_lib.column("practice_trajectory", "practice (W/T/--)", "string"),
+            payload_lib.column("week_projected", "week_projected", "number"),
+            payload_lib.column("prop_points", "prop points", "number"),
+        ]
+        blocks.append(payload_lib.table_section(
+            "tnf-players", None, columns, payload_lib.rows(tnf_rows, columns), level=None,
+        ))
+        if watch_rows:
+            swap_columns = [
+                payload_lib.column("player_name", "player", "string"),
+                payload_lib.column("slot", "slot", "string"),
+                payload_lib.column("tier", "tier", "string"),
+                payload_lib.column("replacement_name", "best legal swap", "string"),
+                payload_lib.column("replacement_projection", "swap proj", "number"),
+                payload_lib.column("replacement_tier", "swap tier", "string"),
+            ]
+            rows = []
+            for r in watch_rows:
+                repl = r["replacement"]
+                rows.append({
+                    "player_name": payload_lib.unset(r["player_name"]),
+                    "slot": payload_lib.unset(r["slot"]), "tier": payload_lib.unset(r["tier"]),
+                    "replacement_name": payload_lib.unset(repl["player_name"]) if repl else None,
+                    "replacement_projection": payload_lib.unset(repl["projection"]) if repl else None,
+                    "replacement_tier": payload_lib.unset(repl["tier"]) if repl else None,
+                })
+            blocks.append(payload_lib.table_section(
+                "tnf-at-risk", None, swap_columns, rows,
+                notes=["At-risk starters on tonight's teams:"], level=None,
+            ))
+
+    return payload_lib.blocks_section(
+        "decisions-due", "Decisions due", blocks,
+        data={"binding": True, "has_game": True, "tnf_player_count": len(tnf_rows),
+              "at_risk_count": len(watch_rows)},
+    )
+
+
+def _canonical_usage_section(usage_week, gate, features_df):
+    heading = f"Canonical usage -- week {usage_week}"
+    if gate["insufficient"]:
+        return payload_lib.insufficient_section(
+            "canonical-usage", heading, gate["reason"], data={"usage_week": usage_week},
+        )
+    if features_df.empty:
+        return payload_lib.insufficient_section(
+            "canonical-usage", heading,
+            f"no rostered player matched to a week {usage_week} usage row",
+            data={"usage_week": usage_week, "provisional": gate["provisional"]},
+        )
+
+    notes = []
+    if gate["provisional"]:
+        notes.append(
+            f"_These figures are still **provisional** for week {usage_week} -- the Thursday "
+            "nflverse `--force` refresh has not fully landed. Read them as a preview, not the "
+            "canonical numbers._"
+        )
+    byes = features_df[features_df["bye"] == True]  # noqa: E712
+    if not byes.empty:
+        notes.append("_On bye: " + ", ".join(sorted(byes["player_name"].dropna())) + "._")
+
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("position", "pos", "string"),
+        payload_lib.column("offense_pct", "offense_pct", "number"),
+        payload_lib.column("snap_pct_delta_1w", "snap_pct_delta_1w", "number"),
+        payload_lib.column("snap_pct_delta_3w", "snap_pct_delta_3w", "number"),
+        payload_lib.column("snap_pct_trend", "snap_pct_trend", "number"),
+        payload_lib.column("targets", "targets", "integer"),
+        payload_lib.column("target_share", "target_share", "number"),
+        payload_lib.column("air_yards_share", "air_yards_share", "number"),
+        payload_lib.column("wopr", "wopr", "number"),
+        payload_lib.column("targets_per_snap", "targets_per_snap", "number"),
+        payload_lib.column("bye", "bye", "boolean"),
+    ]
+    rows = []
+    for _, r in features_df.iterrows():
+        row = {col["key"]: payload_lib.unset(r.get(col["key"])) for col in columns}
+        # Same suppression render applies: a bye week's snap share is not 0,
+        # it is undefined, and a consumer plotting it would draw a cliff.
+        if r.get("bye"):
+            row["offense_pct"] = None
+        rows.append(row)
+
+    return payload_lib.table_section(
+        "canonical-usage", heading, columns, rows, notes=notes,
+        data={"usage_week": usage_week, "provisional": gate["provisional"], "bye_count": len(byes)},
+    )
+
+
+def _market_section(props_gate, market):
+    if props_gate["insufficient"]:
+        return payload_lib.insufficient_section(
+            "market", "Market -- prop-derived points", props_gate["reason"],
+        )
+    by_player = market["by_player"]
+    note = (
+        f"_{market['unmatched_count']} props row(s) carried no ESPN player id/team match and are "
+        "excluded from the table above -- kept, never dropped, in the underlying capture. The odds "
+        "feed carries no player id and often no team, the one join in this repo with nothing to "
+        "fall back on._"
+    )
+    if not by_player:
+        return payload_lib.insufficient_section(
+            "market", "Market -- prop-derived points",
+            "no props row resolved to a scoreable player",
+            data={"unmatched_count": market["unmatched_count"]},
+        )
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("points", "prop points", "number"),
+        payload_lib.column("markets", "markets", "string"),
+    ]
+    rows = [
+        {"player_name": payload_lib.unset(info["player_name"]),
+         "points": payload_lib.unset(info["points"]), "markets": payload_lib.unset(info["markets"])}
+        for _, info in sorted(by_player.items(), key=lambda kv: kv[1]["points"], reverse=True)
+    ]
+    return payload_lib.table_section(
+        "market", "Market -- prop-derived points", columns, rows, notes=[note],
+        data={"unmatched_count": market["unmatched_count"]},
+    )
+
+
+def _divergence_section(divergence_rows, could_not_compare):
+    note = f"_{could_not_compare} player(s) could not be compared -- zero or missing ESPN projection._"
+    heading = "Divergence -- prop points vs ESPN projection"
+    if not divergence_rows:
+        return payload_lib.prose_section(
+            "divergence", heading,
+            [f"No player's prop-derived total diverges from ESPN's projection by "
+             f"{PROJECTION_DIVERGENCE_PCT:.0%} or more.", note],
+            data={"count": 0, "could_not_compare": could_not_compare,
+                  "threshold_pct": PROJECTION_DIVERGENCE_PCT},
+        )
+    columns = [
+        payload_lib.column("player_name", "player", "string"),
+        payload_lib.column("prop_total", "prop points", "number"),
+        payload_lib.column("espn_projected", "ESPN projected", "number"),
+        payload_lib.column("pct", "divergence", "number"),
+    ]
+    # `pct` stays a fraction, as the module computes it. The markdown prints
+    # it as a rounded percentage string, which is lossy in both directions.
+    return payload_lib.table_section(
+        "divergence", heading, columns, payload_lib.rows(divergence_rows, columns), notes=[note],
+        data={"count": len(divergence_rows), "could_not_compare": could_not_compare,
+              "threshold_pct": PROJECTION_DIVERGENCE_PCT},
+    )
+
+
 def build(season, week, team_id=None):
     """Assemble the full Thursday report as markdown text. `week` is the
     current scoring period; usage internally reviews `week - 1`."""
@@ -514,9 +770,13 @@ def build(season, week, team_id=None):
             "ESPN projection."
         )
 
-    return render(
+    args = (
         season, week, team_id, usage_week, thursday_games, tnf_rows, watch_rows,
         gate, our_features, props_gate, market, divergence_rows, could_not_compare,
         swap_rows, practice_df, footer_notes,
-        window=weeks.week_window(season, week), rendered_at=rendered_at,
+    )
+    kwargs = {"window": weeks.week_window(season, week), "rendered_at": rendered_at}
+    header, sections = payload(*args, **kwargs)
+    return payload_lib.RenderedReport(
+        render(*args, **kwargs), {"header": header, "sections": sections}
     )

@@ -5,9 +5,12 @@ Fixtures only, no network, no disk."""
 from datetime import datetime
 
 import pandas as pd
+import pytest
 
 from espn_ff.report import monday
 from espn_ff.weeks import ET
+
+import payload_helpers
 
 _FIXED_RENDERED_AT = 1789504260  # Tue 2026-09-15 16:31 ET
 
@@ -217,3 +220,89 @@ def test_render_header_shows_insufficient_data_for_no_monday_game_week():
     )
     assert "**Week 18** insufficient data" in text
     assert "No Monday-night game in week 18" in text
+
+
+# ---- payload: the JSON twin ---------------------------------------------
+
+def _populated_args():
+    """An argument set reaching every section: a live margin, starters on
+    both sides, an availability row, and an at-risk starter of ours with both
+    a bench and a free-agent alternative."""
+    monday_games = pd.DataFrame(
+        [{"away_team": "NYG", "home_team": "LAR", "gametime": "20:15", "gameday": "2026-09-15"}]
+    )
+    margin = {
+        "insufficient": False, "our_points": 88.5, "their_points": 95.0,
+        "margin": 6.5, "opponent_name": "Them",
+    }
+    at_risk = pd.DataFrame([
+        {"side": "ours", "player_name": "Our Guy", "position": "RB", "pro_team": "LAR",
+         "player_id": 1, "lineup_slot": "RB"},
+        {"side": "theirs", "player_name": "Their Guy", "position": "WR", "pro_team": "NYG",
+         "player_id": 2, "lineup_slot": "WR"},
+    ])
+    avail = pd.DataFrame([{
+        "player_name": "Our Guy", "tier": "HIGH_RISK", "espn_injury_status": "QUESTIONABLE",
+        "sleeper_tier": "HIGH_RISK", "nflverse_report_status": None,
+    }])
+    alternatives = {1: {
+        "no_swap": False,
+        "bench": pd.DataFrame([{"player_name": "Bench Guy", "pro_team": "LAR", "projected": 7.5}]),
+        "free_agents": pd.DataFrame([{"player_name": "FA Guy", "pro_team": "NYG", "week_projected": 6.0}]),
+        "drop_candidate": "Deadweight",
+    }}
+    return (2026, 2, 5, monday_games, margin, at_risk, avail, alternatives, monday.FOOTER_NOTES)
+
+
+def _no_swap_args():
+    """The other branch of the Alternatives block."""
+    season, week, team_id, games, margin, at_risk, avail, _, notes = _populated_args()
+    return (season, week, team_id, games, margin, at_risk, avail,
+            {1: {"no_swap": True, "bench": pd.DataFrame(), "free_agents": pd.DataFrame(),
+                 "drop_candidate": None}},
+            notes)
+
+
+_NO_GAME_ARGS = (2026, 18, 5, pd.DataFrame(), _EMPTY_MARGIN, _EMPTY_AT_RISK,
+                 _EMPTY_AVAIL, {}, monday.FOOTER_NOTES)
+
+
+@pytest.mark.parametrize("args_name", ["no-game", "populated", "no-swap"])
+def test_payload_names_the_same_sections_as_the_markdown(monkeypatch, args_name):
+    monkeypatch.setattr(monday, "freshness", lambda season=None: {
+        "sleeper": (None, True), "nflverse": (None, True),
+        "espn": (None, True), "odds": (None, True),
+    })
+    args = {
+        "no-game": _NO_GAME_ARGS,
+        "populated": _populated_args(),
+        "no-swap": _no_swap_args(),
+    }[args_name]
+    kwargs = {"rendered_at": _FIXED_RENDERED_AT}
+
+    text = monday.render(*args, **kwargs)
+    header, sections = monday.payload(*args, **kwargs)
+
+    payload_helpers.assert_payload_matches_markdown(text, sections)
+    payload_helpers.assert_no_display_strings(sections)
+    payload_helpers.assert_json_serializable(header, sections)
+
+
+def test_payload_keeps_the_margin_signed(monkeypatch):
+    """The prose renders `abs(margin)` beside "up"/"down"; a consumer handed
+    only that cannot recover which way the game is going."""
+    monkeypatch.setattr(monday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = monday.payload(*_populated_args(), rendered_at=_FIXED_RENDERED_AT)
+    margin = next(s for s in sections if s["id"] == "live-margin")
+    assert margin["data"]["margin"] == 6.5 and margin["data"]["trailing"] is True
+
+
+def test_payload_flags_an_off_slot_render_as_data_not_only_prose(monkeypatch):
+    monkeypatch.setattr(monday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    args = list(_populated_args())
+    args[3] = pd.DataFrame(
+        [{"away_team": "NYG", "home_team": "LAR", "gametime": "20:15", "gameday": "2026-09-21"}]
+    )
+    _, sections = monday.payload(*args, rendered_at=_FIXED_RENDERED_AT)
+    game = next(s for s in sections if s["id"] == "tonights-game")
+    assert game["data"]["is_tonight"] is False and game["data"]["gameday"] == "2026-09-21"

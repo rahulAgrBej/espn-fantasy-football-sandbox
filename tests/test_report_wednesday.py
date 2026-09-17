@@ -10,6 +10,8 @@ import pytest
 
 from espn_ff.report import wednesday
 
+import payload_helpers
+
 
 # ---- fixture builders (same shapes as tests/test_report_waivers.py) ----
 
@@ -335,3 +337,118 @@ def test_render_claimed_by_us_and_newly_available_tables_render():
 
     assert "Our Add" in text
     assert "Dropped Guy" in text
+
+
+# ---- payload: the JSON twin ---------------------------------------------
+
+def _populated_args():
+    """One argument set exercising every section kind this report has: a
+    watchlist with and without a replacement, a full waiver-outcomes block
+    with a `####` per-player group, depth-chart moves, and a practice table."""
+    rosters = pd.DataFrame([
+        _roster_row(1, "Hurt Starter", "RB", "RB", True, projected=12.0),
+        _roster_row(3, "Good Backup", "RB", "Bench", False, projected=9.0),
+    ])
+    pool = pd.DataFrame([
+        _pool_row(1, "Hurt Starter", "RB", "RB, RB/WR, Bench", 12.0),
+        _pool_row(3, "Good Backup", "RB", "RB, RB/WR, Bench", 9.0),
+    ])
+    starters = wednesday.our_starters(rosters, week=2, team_id=5)
+    bench = rosters[~rosters["started"]]
+    avail = _avail([(1, "Hurt Starter", "Doubtful"), (3, "Good Backup", "CLEAR")])
+    # No player_name: practice_signals does not emit one, which is why
+    # depth_chart_moves takes roster_names separately. Adding it here would
+    # collide with avail_df's on the practice-report merge.
+    signals = pd.DataFrame([
+        {"player_id": 1, "practice_participation": "DNP",
+         "practice_trajectory": "DNP / — / —", "depth_chart_order": 1.0,
+         "depth_chart_order_prev": 2.0, "improved": True, "promoted": False,
+         "days_used": 3, "matched": True},
+    ])
+    watch_rows, _, _ = wednesday.watchlist(starters, bench, avail, signals, pool, _ALLOWED)
+    outcomes = _outcomes(
+        claimed_by_us=[{
+            "player_name": "Our Add", "position": "WR", "pro_team": "KC",
+            "bid_amount": 3, "scoring_period": 2, "proposed_date": "2026-09-16",
+        }],
+        claimed_by_others=[{
+            "player_id": 5, "player_name": "Rival Add", "position": "RB", "pro_team": "SEA",
+            "acting_team": "Team X", "acting_team_id": 3, "transaction_id": 100,
+            "bid_amount": 0, "scoring_period": 2, "proposed_date": "2026-09-16",
+        }],
+        newly_available=[{
+            "player_name": "Dropped Guy", "position": "RB", "pro_team": "NYJ",
+            "dropped_by_team": "Team Y", "scoring_period": 2, "proposed_date": "2026-09-16",
+        }],
+        pending_count=2,
+    )
+    alternates = {5: [{"player_name": "Alt Guy", "position": "RB", "pro_team": "DAL",
+                       "week_projected": 9.0}]}
+    moves = [{"player_name": "Hurt Starter", "depth_chart_order": 1.0, "improved": True,
+              "promoted": False, "days_used": 3}]
+    return (2026, 2, 5, watch_rows, signals, avail, starters, moves,
+            outcomes, alternates, wednesday.FOOTER_NOTES)
+
+
+@pytest.mark.parametrize("args_name", ["empty", "populated"])
+def test_payload_names_the_same_sections_as_the_markdown(monkeypatch, args_name):
+    monkeypatch.setattr(wednesday, "freshness", lambda season=None: {
+        "sleeper": (None, True), "nflverse": (None, True),
+        "espn": (None, True), "odds": (None, True),
+    })
+    args = (
+        (2026, 2, 5, [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [],
+         _INSUFFICIENT_OUTCOMES, {}, wednesday.FOOTER_NOTES)
+        if args_name == "empty" else _populated_args()
+    )
+    kwargs = {"window": None, "rendered_at": 1_760_000_000}
+
+    text = wednesday.render(*args, **kwargs)
+    _, sections = wednesday.payload(*args, **kwargs)
+
+    payload_helpers.assert_payload_matches_markdown(text, sections)
+    payload_helpers.assert_no_display_strings(sections)
+
+
+def test_payload_is_json_serializable(monkeypatch):
+    monkeypatch.setattr(wednesday, "freshness", lambda season=None: {
+        "sleeper": (None, True), "nflverse": (None, True),
+        "espn": (None, True), "odds": (None, True),
+    })
+    header, sections = wednesday.payload(
+        *_populated_args(), window=None, rendered_at=1_760_000_000
+    )
+    payload_helpers.assert_json_serializable(header, sections)
+
+
+def test_payload_carries_a_missing_trajectory_as_null_not_dashes(monkeypatch):
+    """render prints `-- / -- / --` for an absent trajectory. The JSON must
+    say null: a consumer handed the dashes would display them as data."""
+    monkeypatch.setattr(wednesday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    rosters = pd.DataFrame([
+        _roster_row(1, "Hurt Starter", "RB", "RB", True, projected=12.0),
+    ])
+    pool = pd.DataFrame([_pool_row(1, "Hurt Starter", "RB", "RB, RB/WR, Bench", 12.0)])
+    starters = wednesday.our_starters(rosters, week=2, team_id=5)
+    avail = _avail([(1, "Hurt Starter", "Doubtful")])
+    watch_rows, _, _ = wednesday.watchlist(
+        starters, rosters[~rosters["started"]], avail, pd.DataFrame(), pool, _ALLOWED
+    )
+    _, sections = wednesday.payload(
+        2026, 2, 5, watch_rows, pd.DataFrame(), avail, starters, [],
+        _INSUFFICIENT_OUTCOMES, {}, wednesday.FOOTER_NOTES, rendered_at=1_760_000_000,
+    )
+    watchlist_section = next(s for s in sections if s["id"] == "watchlist")
+    rows = watchlist_section["blocks"][0]["rows"]
+    assert rows[0]["practice_trajectory"] is None
+    assert rows[0]["replacement_name"] is None
+
+
+def test_payload_counts_survive_outside_the_prose(monkeypatch):
+    """The waiver-outcome counts exist in the markdown only inside an English
+    sentence. `data` is what stops the JSON inheriting that."""
+    monkeypatch.setattr(wednesday, "freshness", lambda season=None: {"sleeper": (None, True)})
+    _, sections = wednesday.payload(*_populated_args(), rendered_at=1_760_000_000)
+    outcomes_section = next(s for s in sections if s["id"] == "waiver-outcomes")
+    assert outcomes_section["data"]["claimed_by_us_count"] == 1
+    assert outcomes_section["data"]["pending_count"] == 2

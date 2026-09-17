@@ -31,6 +31,7 @@ WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 REPORT_YML = WORKFLOWS / "report.yml"
 SUMMARY_YML = WORKFLOWS / "summary.yml"
 SCHEDULER_YAML = Path(__file__).resolve().parent.parent / "infra" / "scheduler.yaml"
+SYNC_SH = Path(__file__).resolve().parent.parent / "scripts" / "s3_sync.sh"
 
 
 def _options_in_report_yml():
@@ -159,3 +160,38 @@ def test_summary_yml_pushes_summaries_append_only():
         line for line in text.splitlines() if not line.lstrip().startswith("#")
     )
     assert "--delete" not in commands
+
+
+def test_report_yml_pushes_reports_json_append_only():
+    """The asymmetry that matters in this workflow: reports/ is mirrored with
+    --delete because git restores it in full, while reports-json/ is
+    gitignored and a runner's tree holds only the report this run rendered.
+    A --delete sync over that prefix would wipe the season's JSON every run.
+    """
+    text = REPORT_YML.read_text()
+    assert "s3_sync.sh sync-reports-json" in text
+
+    script = SYNC_SH.read_text()
+    body = script.split("cmd_sync_reports_json() {")[1].split("}")[0]
+    assert "--delete" not in body, "sync-reports-json must never mirror with --delete"
+    assert "reports-json" in body
+
+
+def test_report_yml_commits_only_the_markdown_tree():
+    """`git add reports/` must not be widened to pick up reports-json/: the
+    JSON is an S3-only artifact, and committing it would also put it inside
+    the --delete mirror's tree."""
+    text = REPORT_YML.read_text()
+    commands = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "git add reports/" in commands
+    assert "git add reports-json" not in commands
+
+
+def test_sync_reports_json_is_wired_into_the_dispatcher():
+    """A cmd_* function with no `case` entry is dead code that fails the
+    workflow step with exit 64 rather than skipping it."""
+    script = SYNC_SH.read_text()
+    assert "sync-reports-json)" in script
+    assert "sync-reports-json" in script.split("usage:")[1]
