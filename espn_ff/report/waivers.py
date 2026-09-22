@@ -871,6 +871,11 @@ def build(season, week, team_id=None):
     explicitly rather than left implicit."""
     team_id = team_id if team_id is not None else config.TEAM_ID
 
+    # Pinned once, ahead of every reader: both emitters and the roster gate
+    # below read it, and two time.time() calls would stamp the markdown and
+    # the JSON that embeds it with different clock reads. Matches monday.build.
+    rendered_at = time.time()
+
     transactions_df = latest_export("transactions")
     teams_df = latest_export("teams")
     rosters_df = latest_export("weekly-rosters")
@@ -928,12 +933,13 @@ def build(season, week, team_id=None):
         )
 
     args = (season, week, team_id, settle, order, blocks, totals, drop_list, footer_notes)
-    # Pinned once: two emitters each defaulting to their own time.time() would
-    # stamp the markdown and the JSON embedding it with different clock reads.
+    # Reuses the `rendered_at` pinned at the top of build(): two emitters each
+    # defaulting to their own time.time() would stamp the markdown and the JSON
+    # embedding it with different clock reads.
     kwargs = {
         "window": weeks.week_window(season, week),
         "prev_window": weeks.week_window(season, week - 1) if week - 1 >= 1 else None,
-        "rendered_at": time.time(),
+        "rendered_at": rendered_at,
     }
     header, sections = payload(*args, **kwargs)
     return payload_lib.RenderedReport(

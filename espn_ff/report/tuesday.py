@@ -735,8 +735,12 @@ def build(season, week, team_id=None):
     team_id = team_id if team_id is not None else config.TEAM_ID
     review_week = week - 1
 
+    # Pinned once, before either branch: both emitters and the roster gate
+    # below read it, and two time.time() calls would stamp the markdown and
+    # the JSON that embeds it with different clock reads. Matches monday.build.
+    rendered_at = time.time()
+
     if review_week < 1:
-        rendered_at = time.time()
         title = f"Week {review_week} in review -- {season}"
         covers = "nothing -- there is no prior week to review"
         lines = header_lines(title, review_week, covers, None, rendered_at)
@@ -811,9 +815,10 @@ def build(season, week, team_id=None):
         season, review_week, closure, standings_result, regret_rows, optimal, drops,
         ir_now, ir_maybe, footer_notes,
     )
-    # Pinned once: two emitters each defaulting to their own time.time() would
-    # stamp the markdown and the JSON embedding it with different clock reads.
-    kwargs = {"window": weeks.week_window(season, review_week), "rendered_at": time.time()}
+    # Reuses the `rendered_at` pinned at the top of build(): two emitters each
+    # defaulting to their own time.time() would stamp the markdown and the JSON
+    # embedding it with different clock reads.
+    kwargs = {"window": weeks.week_window(season, review_week), "rendered_at": rendered_at}
     header, sections = payload(*args, **kwargs)
     return payload_lib.RenderedReport(
         render(*args, **kwargs), {"header": header, "sections": sections}

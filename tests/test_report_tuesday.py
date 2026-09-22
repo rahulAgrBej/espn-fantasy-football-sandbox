@@ -513,3 +513,46 @@ def test_payload_standings_carries_sortable_record_parts(monkeypatch):
     standings = next(s for s in sections if s["id"] == "standings")
     assert standings["rows"][0]["record"] == "2-0-0"
     assert standings["rows"][0]["wins"] == 2
+
+
+# ---- build: the reviewed-week path ---------------------------------------
+
+
+def test_build_renders_the_reviewed_week_path(monkeypatch):
+    """The only other build() test takes `review_week < 1`'s early return, so
+    nothing exercised the path every real Tuesday run takes -- which is how a
+    `rendered_at` referenced before assignment shipped and failed both Tuesday
+    reports on 2026-09-22. Assert the pinned timestamp reaches the roster gate
+    as one clock read, shared with the emitters."""
+    rosters_df, pool_df = _real_week1_fixtures()
+    # _real_week1_fixtures() carries only what regret/optimal read; drop
+    # candidates additionally need the season columns.
+    pool_df = pool_df.assign(season_points=0.0, season_projected=0.0)
+    teams_df = pd.DataFrame(
+        [
+            {"team_id": i, "team_name": f"T{i}", "wins": 1, "losses": 0, "ties": 0,
+             "points_for": 100.0 + i, "playoff_seed": i}
+            for i in range(1, 13)
+        ]
+    )
+    matchups_df = pd.DataFrame(_game(1, 1, 5, "T5", 6, "T6", "HOME", 120.0, 130.0))
+    exports = {
+        "matchups": matchups_df, "teams": teams_df, "weekly-rosters": rosters_df,
+        "player-pool": pool_df, "roster-slots": _REAL_ROSTER_SLOTS,
+    }
+    monkeypatch.setattr(tuesday, "latest_export", lambda name: exports[name])
+    monkeypatch.setattr(tuesday, "freshness", lambda season=None: {"espn": (None, False)})
+
+    seen = []
+    monkeypatch.setattr(
+        tuesday, "roster_staleness_note",
+        lambda rendered_at, **kwargs: seen.append(rendered_at) or None,
+    )
+
+    result = tuesday.build(2026, week=2, team_id=5)
+
+    assert seen and isinstance(seen[0], float)
+    assert result.data["header"]["rendered_at"] == seen[0]
+    payload_helpers.assert_payload_matches_markdown(
+        result.markdown, result.data["sections"]
+    )

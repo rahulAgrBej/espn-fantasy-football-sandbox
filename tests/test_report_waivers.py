@@ -879,3 +879,56 @@ def test_payload_carries_each_slots_bench_floor_as_data(monkeypatch):
     rb, wr = adds["blocks"]
     assert rb["data"]["bench_floor_projection"] == 6.5
     assert wr["data"]["bench_floor_projection"] is None and wr["data"]["row_count"] == 0
+
+
+# ---- build: end to end ---------------------------------------------------
+
+
+def test_build_renders_end_to_end(monkeypatch):
+    """Nothing exercised waivers.build at all, which is how a `rendered_at`
+    referenced before assignment shipped and failed the tuesday-waivers report
+    on 2026-09-22. Assert the pinned timestamp reaches the roster gate as one
+    clock read, shared with the emitters."""
+    rosters_df = pd.DataFrame([
+        _roster_row("qb1", "Starter QB", "QB", "QB", True, 18.0),
+        _roster_row("rb1", "Starter RB", "RB", "RB", True, 14.0),
+        _roster_row("wr1", "Starter WR", "WR", "WR", True, 12.0),
+        _roster_row("te1", "Starter TE", "TE", "TE", True, 9.0),
+        _roster_row("k1", "Starter K", "K", "K", True, 7.0),
+        _roster_row("dst1", "Starter DST", "D/ST", "D/ST", True, 6.0),
+        _roster_row("flex1", "Flex Guy", "WR", "RB/WR", True, 8.0),
+        _roster_row("bench1", "Bench WR", "WR", "Bench", False, 6.5),
+        _roster_row("bench2", "Bench RB", "RB", "Bench", False, 5.0),
+        _roster_row("bench3", "Bench TE", "TE", "Bench", False, 4.0),
+    ])
+    pool_df = pd.DataFrame([
+        _pool_row("fa1", "Free WR", "WR", "KC", "WR,RB/WR,Bench,IR", 11.0, percent_owned=40.0),
+        _pool_row("fa2", "Free RB", "RB", "SEA", "RB,RB/WR,Bench,IR", 9.5, percent_owned=25.0),
+    ])
+    teams_df = pd.DataFrame([_team_row(i, f"T{i}", waiver_rank=i) for i in range(1, 13)])
+    transactions_df = pd.DataFrame([_txn_row(2, "WAIVER", "ADD", bid_amount=4)])
+    exports = {
+        "transactions": transactions_df, "teams": teams_df, "weekly-rosters": rosters_df,
+        "player-pool": pool_df, "roster-slots": _ROSTER_SLOTS,
+    }
+    monkeypatch.setattr(waivers, "latest_export", lambda name: exports[name])
+    monkeypatch.setattr(waivers, "freshness", lambda season=None: {"espn": (None, False)})
+    monkeypatch.setattr(
+        waivers, "team_totals",
+        lambda week: {"insufficient": True, "reason": "no team_totals.parquet on disk",
+                      "by_team": {}, "captured_at": None},
+    )
+
+    seen = []
+    monkeypatch.setattr(
+        waivers, "roster_staleness_note",
+        lambda rendered_at, **kwargs: seen.append(rendered_at) or None,
+    )
+
+    result = waivers.build(2026, week=2, team_id=5)
+
+    assert seen and isinstance(seen[0], float)
+    assert result.data["header"]["rendered_at"] == seen[0]
+    payload_helpers.assert_payload_matches_markdown(
+        result.markdown, result.data["sections"]
+    )

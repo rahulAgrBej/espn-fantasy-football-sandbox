@@ -95,6 +95,12 @@ def test_a_fresh_other_view_does_not_make_a_stale_roster_look_current(tmp_path, 
         tmp_path, monkeypatch,
         **{ROSTER_SLUG: RENDERED_AT - 86_400, pool_slug: RENDERED_AT - 60},
     )
+    # `_espn_freshness` ages its max against the wall clock, not against the
+    # `rendered_at` every other test here passes explicitly -- so without this
+    # the "not stale" half of the assertion below silently bit-rots and starts
+    # failing once real time moves ESPN_STALE_HOURS past RENDERED_AT. It did:
+    # the test passed on 2026-09-17 and failed from 2026-09-18 on.
+    monkeypatch.setattr(loaders.time, "time", lambda: RENDERED_AT)
 
     assert loaders._espn_freshness(season=2026) == (pytest.approx(RENDERED_AT - 60), False)
     assert loaders.roster_read_is_current(RENDERED_AT, season=2026)[0] is False
