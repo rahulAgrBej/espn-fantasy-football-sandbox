@@ -7,6 +7,15 @@ GitHub, and how a failed trigger becomes visible.**
 
 GitHub Actions still does all the work. Only the trigger moved.
 
+**Status: paused since 2026-10-28.** The project is shelved, and all seven
+`*ScheduleState` switches on the `ff-scheduler` stack are `DISABLED`. None
+of the 30 schedules fires, and nothing runs unless someone dispatches it by
+hand *(Observed — `aws scheduler list-schedules --group-name ff-collection`
+returned no `ENABLED` schedule after the update)*. The stack itself is still
+deployed: bus, rules, connection, DLQ and alarm are all in place, so
+resuming means changing parameters, not bootstrapping again. See "Pausing
+and resuming" below.
+
 ## How to read this
 
 Cadence and behavioural claims are tagged the same three ways as
@@ -77,11 +86,10 @@ fields the schedule puts in the event detail.
 
 ## The schedules
 
-All thirty-two are pinned to `America/New_York` *(Documented —
-`infra/scheduler.yaml`; the twenty-eight that predate `report-saturday` and
-`report-sunday` are also **Observed** via `aws scheduler list-schedules
---group-name ff-collection`, but those four have not been deployed yet, so
-the count here is the template's, not the stack's)*. EventBridge cron takes
+All thirty are pinned to `America/New_York` *(Documented —
+`infra/scheduler.yaml`; also **Observed** — `aws scheduler list-schedules
+--group-name ff-collection` listed all thirty, `report-saturday` and
+`report-sunday` included, on 2026-10-28)*. EventBridge cron takes
 six fields
 — minute, hour, day-of-month, month, day-of-week, year — and requires `?` in
 one of the two day fields.
@@ -343,6 +351,56 @@ Worth doing the negative case too, because an alarm nobody has seen fire is an
 assumption: dispatch to a workflow filename that does not exist, confirm GitHub
 answers `404`, and confirm the message reaches the DLQ and trips the alarm.
 
+### Pausing and resuming
+
+To pause, flip all seven `*ScheduleState` switches to `DISABLED` in a change
+set built with `--use-previous-template`. Do not use `deploy` for this. The
+previous template guarantees that no template edits that were never deployed
+go out with the pause. Every other parameter goes in as
+`UsePreviousValue=true`, which keeps the `GitHubToken` that rotation set
+outside CloudFormation:
+
+```bash
+aws cloudformation create-change-set \
+  --stack-name ff-scheduler --change-set-name pause-all-schedules \
+  --use-previous-template --capabilities CAPABILITY_NAMED_IAM \
+  --parameters \
+    ParameterKey=GitHubOwner,UsePreviousValue=true \
+    ParameterKey=GitHubRepo,UsePreviousValue=true \
+    ParameterKey=GitHubRef,UsePreviousValue=true \
+    ParameterKey=GitHubToken,UsePreviousValue=true \
+    ParameterKey=AlarmEmail,UsePreviousValue=true \
+    ParameterKey=HealthScheduleState,ParameterValue=DISABLED \
+    ParameterKey=SleeperScheduleState,ParameterValue=DISABLED \
+    ParameterKey=NflverseScheduleState,ParameterValue=DISABLED \
+    ParameterKey=EspnScheduleState,ParameterValue=DISABLED \
+    ParameterKey=OddsScheduleState,ParameterValue=DISABLED \
+    ParameterKey=ReportScheduleState,ParameterValue=DISABLED \
+    ParameterKey=SummaryScheduleState,ParameterValue=DISABLED
+```
+
+The 2026-10-28 pause previewed as exactly thirty `Modify` actions, every one
+on an `AWS::Scheduler::Schedule` and none a replacement. Nothing else in the
+stack was touched *(Observed)*.
+
+All seven switches were `ENABLED` before the pause. To resume:
+
+1. **Rotate the dispatch token** with `./scripts/rotate_dispatch_token.sh`.
+   The current token expires 2027-02-28, so a resume after that date fails
+   with `403`s straight into the DLQ. The script ends by dispatching
+   `health.yml` through the whole AWS path, which proves the path works
+   before any schedule is relied on.
+2. **Rotate the ESPN cookies** with `./scripts/rotate_espn_cookies.sh`. They
+   expire on their own clock and will almost certainly be dead after an
+   offseason (see `docs/automation.md`).
+3. **Run the same change set with the switches set to `ENABLED`**, and
+   preview it the same way. The rollout ordering above no longer applies
+   because no `on.schedule` is left to race. Before re-enabling `odds`,
+   check the credit period in `docs/odds-budget.md`.
+4. **Deploy any template edits made while paused as their own step**, using
+   the previewed incremental `deploy` above. Keep them out of the resume
+   change set.
+
 ## What this closed
 
 GitHub disables scheduled workflows after 60 days of repository inactivity
@@ -353,6 +411,17 @@ auto-disable.
 
 ## Known gaps
 
+- **The pause does not stop `summary.yml`'s `workflow_run` trigger.** With
+  every schedule disabled, `report.yml` only runs when someone dispatches it
+  by hand. Each such run still fires `summary.yml` automatically, and that
+  makes a billed model call. This is left in place on purpose, since a
+  hand-run report normally wants its summary. To make a report run
+  completely inert, dispatch `report.yml` and then cancel the `summary` run,
+  or remove the trigger.
+- **Data from the paused period cannot be recovered.** The three feeds in
+  the table under "Why the clock moved" cannot be backfilled: `sleeper`
+  practice trajectory, Sunday live scoring and `odds pre_lock`. Resuming
+  starts those series again with a hole for the paused weeks.
 - **The dispatch token expires 2027-02-28**, which introduces a second
   credential that dies on a clock — the same class of problem as the ESPN
   cookies. The date lands in the offseason, which is the best case, but nothing

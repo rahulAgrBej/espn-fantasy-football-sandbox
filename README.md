@@ -389,6 +389,10 @@ gh workflow run odds.yml -f job=props -f dry_run=false   # or run it in CI
 
 ## Weekly collection schedule
 
+**Paused as of 2026-10-28.** Every schedule below is disabled, and nothing
+runs unless it is dispatched by hand. See `docs/aws-scheduling.md` for the
+status and how to resume.
+
 Times are ET and stay ET — the schedules are pinned to `America/New_York`, so
 no slot shifts when DST ends. *(Observed — EventBridge expressions in
 `infra/scheduler.yaml`.)* The compute runs on GitHub Actions but the clock is

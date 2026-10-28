@@ -16,6 +16,11 @@ undeliverable here — see `docs/aws-scheduling.md`, which owns the trigger
 path, the schedule table and the dispatch credential. This document picks up
 at the point a run starts.
 
+**The schedule is paused as of 2026-10-28.** Every EventBridge schedule is
+disabled, so the timings below describe how the pipeline is configured, not
+what currently runs. `docs/aws-scheduling.md` has the status and the steps
+to resume.
+
 ## How to read this
 
 Cadence and behavioural claims below are tagged the same three ways as
